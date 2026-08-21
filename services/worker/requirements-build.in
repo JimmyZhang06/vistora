@@ -1,0 +1,3 @@
+# Build-only tooling for the Worker wheel. Keep this aligned with
+# [build-system].requires in pyproject.toml. It is never installed at runtime.
+setuptools==83.0.0

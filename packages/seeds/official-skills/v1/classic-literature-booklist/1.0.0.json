@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0.0",
+  "id": "a74cc517-404a-50e8-a9a2-95d9342f1a61",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "16d8346f-6915-517d-8f52-4518711512ae",
+  "version": "1.0.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "文学荐读输入",
+    "description": "提供作品、主题和目标受众。",
+    "properties": {
+      "work": {"type": "string", "title": "作品名称", "minLength": 1, "maxLength": 300},
+      "theme": {"type": "string", "title": "共鸣主题", "maxLength": 300},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160}
+    },
+    "required": ["work"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "licensed_archive", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 2,
+    "maximum_sources": 8,
+    "freshness_days": null,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 75,
+    "tone_tags": ["温和", "共情", "克制"],
+    "structure": [
+      {"name": "作品到读者", "purpose": "用作品中的核心困境开场，概述必要背景，把主题连接到读者经验，并以不剧透的荐读理由收束。", "target_share": 1}
+    ],
+    "markdown_instructions": "先确认作品版本与版权状态。概述情节只保留理解主题所需的信息，避免关键剧透。引用必须短、准确、标明译本或来源；不能凭记忆改写成引号内容。温和表达不等于空泛赞美，要给出具体阅读理由。",
+    "prohibited_content": ["使用无授权的长段原文", "伪造或误译名句", "泄露关键结局", "把虚构情节当作现实事实"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "9:16",
+    "frame_rate": 30,
+    "visual_tags": ["文学感", "舒缓", "意境配图"],
+    "shot_duration_seconds": {"minimum": 3, "target": 6, "maximum": 10},
+    "text_safe_area_percent": 12,
+    "generated_media_allowed": true
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video", "document"],
+    "minimum_assets": 6,
+    "license_required": true,
+    "fallback": "licensed_stock",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "rights-verified", "category": "copyright", "description": "作品文本、译本、封面和配图的使用边界已记录。", "severity": "error", "action": "fail"},
+      {"id": "quotes-verified", "category": "factuality", "description": "所有直接引语与作品信息均可核验。", "severity": "error", "action": "fail"},
+      {"id": "spoiler-control", "category": "writing", "description": "文案不泄露理解荐读理由之外的关键结局。", "severity": "warning", "action": "request_review"},
+      {"id": "readable-subtitles", "category": "visual", "description": "字幕长度、停留时间和安全区适合移动端阅读。", "severity": "warning", "action": "request_review"}
+    ],
+    "human_review": "on_warning",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.source_grounding", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+  "content_hash": "82316753c0001abc72591006e37ba5ba24fc3b8970593efaa52090025f7799fb",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "published_at": "2026-08-15T00:00:00Z"
+}

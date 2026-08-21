@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/run.schema.json",
+  "title": "Run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "channel_id", "status", "idempotency_key",
+    "input", "composition_snapshot", "created_by", "created_at", "started_at", "finished_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "channel_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "status": { "$ref": "enums.schema.json#/$defs/RunStatus" },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "input": { "$ref": "#/$defs/InputValues" },
+    "composition_snapshot": { "$ref": "#/$defs/CompositionSnapshot" },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "started_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "finished_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "99999999-9999-4999-8999-999999999999",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "channel_id": "33333333-3333-4333-8333-333333333333",
+      "status": "queued",
+      "idempotency_key": "create-run-20260814-0001",
+      "input": { "topic": "How small teams verify sources", "audience": "new creators" },
+      "composition_snapshot": {
+        "skill_version": {
+          "id": "55555555-5555-4555-8555-555555555555",
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "asset_library_ids": ["66666666-6666-4666-8666-666666666666"],
+        "voice_profile_id": null,
+        "render_preset": {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "pipeline_version": {
+          "id": "88888888-8888-4888-8888-888888888888",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "capabilities": ["research.web_acquisition", "render.subtitle_sentence"]
+      },
+      "created_by": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-08-14T03:00:00Z",
+      "started_at": null,
+      "finished_at": null,
+      "updated_at": "2026-08-14T03:00:00Z"
+    }
+  ],
+  "$defs": {
+    "Scalar": { "type": ["string", "number", "integer", "boolean", "null"] },
+    "InputValues": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/Scalar" },
+          {
+            "type": "array",
+            "maxItems": 1000,
+            "items": { "$ref": "#/$defs/Scalar" }
+          }
+        ]
+      }
+    },
+    "VersionReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "content_hash"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" }
+      }
+    },
+    "NullableVersionReference": {
+      "oneOf": [
+        { "$ref": "#/$defs/VersionReference" },
+        { "type": "null" }
+      ]
+    },
+    "CompositionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill_version", "asset_library_ids", "voice_profile_id", "render_preset", "pipeline_version", "capabilities"],
+      "properties": {
+        "skill_version": { "$ref": "#/$defs/VersionReference" },
+        "asset_library_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" }
+        },
+        "voice_profile_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+        "render_preset": { "$ref": "#/$defs/NullableVersionReference" },
+        "pipeline_version": { "$ref": "#/$defs/VersionReference" },
+        "production_settings": { "$ref": "#/$defs/ProductionSettings" },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
+        }
+      }
+    },
+    "ProductionSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "language", "aspect_ratio", "target_duration_seconds", "visibility",
+        "auto_quality_check", "resolution", "frame_rate", "layout", "media_fit",
+        "subtitles", "asset_acquisition", "sources"
+      ],
+      "properties": {
+        "language": { "type": "string", "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+        "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1", "4:3"] },
+        "target_duration_seconds": { "type": "integer", "minimum": 15, "maximum": 3600 },
+        "visibility": { "type": "string", "enum": ["private", "workspace"] },
+        "auto_quality_check": { "type": "boolean" },
+        "resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 240, "maximum": 7680 },
+            "height": { "type": "integer", "minimum": 240, "maximum": 7680 }
+          }
+        },
+        "frame_rate": { "type": "integer", "enum": [24, 25, 30, 50, 60] },
+        "layout": { "type": "string", "enum": ["full_frame", "editorial"] },
+        "media_fit": { "type": "string", "enum": ["cover", "contain"] },
+        "subtitles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "position", "size", "max_lines"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "position": { "type": "string", "enum": ["bottom", "lower_third"] },
+            "size": { "type": "string", "enum": ["small", "medium", "large"] },
+            "max_lines": { "type": "integer", "minimum": 1, "maximum": 3 }
+          }
+        },
+        "asset_acquisition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "sources", "max_assets", "copyright_status", "rights_confirmed"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "sources": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["youtube", "bilibili", "wikimedia"] }
+            },
+            "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
+            "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
+            "rights_confirmed": { "type": "boolean" }
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "enum": ["run_override", "account_default", "system_default"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FrameFactory — 从主题到成片</title>
+    <meta name="description" content="面向知识创作者的 AI 视频生产工作台。">
+    <link rel="icon" href="/experience/shared/brand/framefactory-mark.png">
+    <link rel="stylesheet" href="/fonts.googleapis.com/css">
+    <link rel="stylesheet" href="/cdn.prod.website-files.com/692487b717cd11b0ad36e79a/css/ponderai-landing.webflow.shared.00a1bf3a3.min.css">
+    <link rel="stylesheet" href="/experience/shared/tokens.css">
+    <link rel="stylesheet" href="/experience/shared/base.css">
+    <link rel="stylesheet" href="/experience/home.css">
+  </head>
+  <body class="home-page" data-title-key="meta.homeTitle" data-description-key="meta.homeDescription">
+    <div class="page-shell">
+      <header class="site-header page-gutter" data-header>
+        <a class="brand-mark" href="/" aria-label="FrameFactory home">
+          <img src="/experience/shared/brand/framefactory-wordmark.png" alt="FrameFactory">
+        </a>
+        <button class="menu-trigger" type="button" aria-expanded="false" aria-controls="site-menu" data-menu-trigger>
+          <span data-i18n="common.menu">菜单</span>
+          <span class="menu-trigger__lines" aria-hidden="true"><i></i><i></i></span>
+        </button>
+        <div class="header-actions">
+          <div class="language-switch theme-switch" aria-label="Theme">
+          <button type="button" class="language-switch__option" data-theme-set="light" aria-current="false" data-i18n="common.themeLight">日</button>
+          <span aria-hidden="true">/</span>
+          <button type="button" class="language-switch__option" data-theme-set="dark" aria-current="true" data-i18n="common.themeDark">夜</button>
+        </div>
+        <div class="language-switch" aria-label="Language">
+            <button type="button" class="language-switch__option" data-locale-set="zh-CN" aria-current="true">中</button>
+            <span aria-hidden="true">/</span>
+            <button type="button" class="language-switch__option" data-locale-set="en" aria-current="false">EN</button>
+          </div>
+          <a class="header-cta" href="/login?returnTo=/create" data-i18n="common.enterStudio">进入工作台</a>
+        </div>
+      </header>
+
+      <div class="menu-overlay" id="site-menu" aria-hidden="true" data-menu>
+        <nav class="menu-overlay__nav page-gutter" aria-label="Primary">
+          <a href="#top"><span>( 1 )</span><strong data-i18n="nav.home">首页</strong></a>
+          <a href="#product"><span>( 2 )</span><strong data-i18n="nav.product">产品</strong></a>
+          <a href="#process"><span>( 3 )</span><strong data-i18n="nav.process">流程</strong></a>
+          <a href="/login?returnTo=/skills"><span>( 4 )</span><strong data-i18n="nav.skills">Skills</strong></a>
+        </nav>
+      </div>
+
+      <main>
+        <section class="hero" id="top" data-hero>
+          <div class="hero__copy page-gutter">
+            <p class="eyebrow hero__eyebrow" data-i18n="home.eyebrow">AI 内容生产工作台</p>
+            <h1 class="hero__title" data-hero-title>
+              <span data-i18n="home.heroLine1">一个主题，</span>
+              <span data-i18n="home.heroLine2">一条完整视频。</span>
+            </h1>
+            <p class="hero__body" data-i18n="home.heroBody">FrameFactory 理解你的创作意图，完成研究、脚本、配音、素材匹配与画面编排。</p>
+            <a class="primary-action" href="/login?returnTo=/create" data-i18n="common.enterStudio">进入工作台</a>
+          </div>
+
+          <div class="hero__orbit" aria-hidden="true">
+            <figure class="orbit-media orbit-media--one" data-orbit-card="1">
+              <div class="orbit-art orbit-art--research"><span></span><i></i><b></b></div>
+              <figcaption>RESEARCH / VERIFIED SOURCES</figcaption>
+            </figure>
+            <figure class="orbit-media orbit-media--two" data-orbit-card="2">
+              <div class="orbit-art orbit-art--script"><span></span><i></i><b></b></div>
+              <figcaption>SCRIPT / NARRATIVE ENGINE</figcaption>
+            </figure>
+            <figure class="orbit-media orbit-media--core" data-orbit-card="3">
+              <div class="orbit-art orbit-art--timeline"><span></span><i></i><b></b></div>
+              <figcaption>FRAMEFACTORY / FULL PIPELINE</figcaption>
+            </figure>
+            <figure class="orbit-media orbit-media--three" data-orbit-card="4">
+              <div class="orbit-art orbit-art--voice"><span></span><i></i><b></b></div>
+              <figcaption>VOICE / RHYTHM</figcaption>
+            </figure>
+            <figure class="orbit-media orbit-media--four" data-orbit-card="5">
+              <div class="orbit-art orbit-art--final"><span></span><i></i><b></b></div>
+              <figcaption>FINAL CUT / READY</figcaption>
+            </figure>
+          </div>
+
+          <div class="hero__timeline" aria-hidden="true">
+            <div class="hero__timeline-progress" data-scroll-progress></div>
+          </div>
+          <p class="hero__scroll ui-label" data-i18n="home.scroll">向下探索</p>
+        </section>
+
+        <section class="manifest-section page-gutter" id="product">
+          <div class="manifest-section__rule rule rule--dashed"></div>
+          <p class="eyebrow manifest-section__label">01 / SKILL SYSTEM</p>
+          <h2 class="display-lg manifest-section__title" data-i18n="home.statement">把一次灵感，变成稳定的内容生产线。</h2>
+          <p class="manifest-section__body" data-i18n="home.statementBody">从主题研究到成片交付，每一步都有明确输入、可检查产物和质量门槛。你只需保留观点与判断。</p>
+          <div class="product-proof" aria-label="产品能力概览">
+            <div><strong>01</strong><span data-i18n="home.proofInput">输入主题与观点</span></div>
+            <div><strong>06</strong><span data-i18n="home.proofStages">连续生产阶段</span></div>
+            <div><strong>2×</strong><span data-i18n="home.proofReview">关键人工确认</span></div>
+            <div><strong>1</strong><span data-i18n="home.proofOutput">可发布成片</span></div>
+          </div>
+          <div class="manifest-rail manifest-rail--skills">
+            <article class="manifest-rail__frame manifest-rail__frame--filled manifest-rail__frame--skill">
+              <span>PIPELINE / 01</span>
+              <strong data-i18n="home.skillCase1Title">研究与事实底座</strong>
+              <em>RESEARCH · SOURCE TRACE</em>
+              <p data-i18n="home.skillCase1Body">先理解主题，再整理可核实事实、关键时间线与争议点，为脚本建立可靠依据。</p>
+            </article>
+            <article class="manifest-rail__frame manifest-rail__frame--filled manifest-rail__frame--skill">
+              <span>PIPELINE / 02</span>
+              <strong data-i18n="home.skillCase2Title">脚本与视觉意图</strong>
+              <em>SCRIPT · SHOT BRIEF</em>
+              <p data-i18n="home.skillCase2Body">把观点组织成有节奏的叙事，同时为每一句生成具体、可检索的画面需求。</p>
+            </article>
+            <article class="manifest-rail__frame manifest-rail__frame--filled manifest-rail__frame--skill">
+              <span>PIPELINE / 03</span>
+              <strong data-i18n="home.skillCase3Title">配音、匹配与成片</strong>
+              <em>VOICE · ASSEMBLY · QC</em>
+              <p data-i18n="home.skillCase3Body">生成配音与字幕，匹配素材并自动编排；在交付前完成同步、素材和可发布性检查。</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="featured-skill page-gutter" data-reveal>
+          <div class="featured-skill__meta">
+            <p class="eyebrow" data-i18n="home.featuredLabel">内置创作模板</p>
+            <span class="featured-skill__number">01</span>
+          </div>
+          <div class="featured-skill__grid">
+            <div class="featured-skill__visual media-frame">
+              <div class="template-visual" aria-hidden="true"><span>AI</span><i></i><b></b></div>
+              <figcaption class="featured-skill__caption">AI FRONTIER / BUILT-IN TEMPLATE</figcaption>
+            </div>
+            <div class="featured-skill__content">
+              <h2 class="display-lg" data-i18n="home.featuredTitle">AI 前沿</h2>
+              <p data-i18n="home.featuredBody">面向大模型、智能硬件与科技公司动态，自动梳理时间线、技术突破、产业影响和争议，把复杂信息讲得清楚、有节奏。</p>
+              <div class="featured-skill__facts">
+                <span data-i18n="home.templateFact1">高信息密度科技解读</span>
+                <span data-i18n="home.templateFact2">研究 → 脚本 → 配音 → 成片</span>
+                <span data-i18n="home.templateFact3">支持 9:16 竖屏交付</span>
+              </div>
+              <a class="primary-action primary-action--light" href="/login?returnTo=/create" data-i18n="home.templateAction">用 AI 前沿开始创作</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="process-section" id="process">
+          <div class="process-section__heading page-gutter">
+            <p class="eyebrow" data-i18n="home.processLabel">生产序列</p>
+            <h2 class="display-lg process-section__title">
+              <span data-i18n="home.processTitle1">从人物到成片，</span>
+              <span data-i18n="home.processTitle2">六个连续步骤。</span>
+            </h2>
+          </div>
+          <div class="process-sequence page-gutter" data-process>
+            <ol class="process-list">
+              <li class="is-active" data-step="1"><span>01</span><div><strong data-i18n="task.production.slicing">拆分脚本</strong><p data-i18n="home.processSlicingBody">识别叙事节拍，把完整文案拆成可制作的镜头段落。</p></div></li>
+              <li data-step="2"><span>02</span><div><strong data-i18n="task.production.voice">生成配音</strong><p data-i18n="home.processVoiceBody">调用选定音色，建立语速、重音和段落停顿。</p></div></li>
+              <li data-step="3"><span>03</span><div><strong data-i18n="task.production.assets">匹配史料素材</strong><p data-i18n="home.processAssetsBody">按人物、时代和情绪标签检索本地视频资产。</p></div></li>
+              <li data-step="4"><span>04</span><div><strong data-i18n="task.production.subtitles">生成字幕</strong><p data-i18n="home.processSubtitlesBody">根据配音时间轴完成断句与字幕版式。</p></div></li>
+              <li data-step="5"><span>05</span><div><strong data-i18n="task.production.composition">编排画面</strong><p data-i18n="home.processCompositionBody">把人物、史料、字幕与节奏组装成完整叙事。</p></div></li>
+              <li data-step="6"><span>06</span><div><strong data-i18n="task.production.export">输出成片</strong><p data-i18n="home.processExportBody">完成质量检查并输出可发布的视频版本。</p></div></li>
+            </ol>
+            <div class="process-monitor" aria-hidden="true">
+              <div class="process-monitor__header"><span>PRODUCTION / LIVE</span><span data-process-counter>01 / 06</span></div>
+              <div class="process-monitor__stage">
+                <div class="process-monitor__grid" aria-hidden="true"></div>
+                <div class="process-monitor__import"><span>＋</span><strong data-i18n="assets.upload">从本地上传</strong></div>
+                <div class="process-monitor__assembly"><span>INPUT</span><i></i><span data-process-output>SCENE SEGMENTS / 12</span></div>
+                <figure class="process-media-card process-media-card--secondary-a" data-process-card="secondary-a"><div class="process-card-art process-card-art--source"></div><figcaption>SOURCE / VERIFIED</figcaption></figure>
+                <figure class="process-media-card process-media-card--main" data-process-card="main"><div class="process-card-art process-card-art--main" data-process-visual data-step="1"><span></span><i></i><b></b></div><figcaption><span data-process-stage>拆分脚本</span><small>FRAMEFACTORY / LIVE PIPELINE</small></figcaption></figure>
+                <figure class="process-media-card process-media-card--secondary-b" data-process-card="secondary-b"><div class="process-card-art process-card-art--output"></div><figcaption>OUTPUT / 9:16</figcaption></figure>
+              </div>
+              <div class="process-monitor__footer"><span>9:16</span><span>云健 · edge-tts</span><span>30 FPS</span></div>
+            </div>
+          </div>
+        </section>
+
+
+        <section class="showcase-section page-gutter" data-reveal>
+          <div class="showcase-section__head">
+            <p class="eyebrow" data-i18n="home.showcaseLabel">适合这些创作任务</p>
+            <h2 class="display-lg" data-i18n="home.showcaseTitle">需要持续更新，但不该反复从零开始。</h2>
+            <p data-i18n="home.showcaseBody">把高频内容生产变成可复用流程：保留人的观点、审美和最终判断，把重复执行交给系统。</p>
+          </div>
+          <div class="use-case-grid">
+            <article class="use-case-card use-case-card--ai"><span>01</span><strong data-i18n="home.useCase1Title">AI 与科技前沿</strong><p data-i18n="home.useCase1Body">快速梳理新品、模型更新和产业变化。</p></article>
+            <article class="use-case-card use-case-card--knowledge"><span>02</span><strong data-i18n="home.useCase2Title">知识型短视频</strong><p data-i18n="home.useCase2Body">把复杂主题拆成清楚、可信、可观看的叙事。</p></article>
+            <article class="use-case-card use-case-card--brand"><span>03</span><strong data-i18n="home.useCase3Title">品牌内容栏目</strong><p data-i18n="home.useCase3Body">固定表达、画面和交付标准，稳定连续更新。</p></article>
+            <article class="use-case-card use-case-card--team"><span>04</span><strong data-i18n="home.useCase4Title">小团队内容生产</strong><p data-i18n="home.useCase4Body">在一个工作台里完成脚本、素材、审核与成片。</p></article>
+          </div>
+        </section>
+        <section class="final-cta page-gutter">
+          <p class="eyebrow">FRAMEFACTORY / STUDIO</p>
+          <h2 class="display-xl" data-i18n="home.finalTitle">不再从空白项目开始。</h2>
+          <p data-i18n="home.finalBody">选择一个 Skill，把注意力留给观点和判断。</p>
+          <div class="final-cta__points"><span data-i18n="home.finalPoint1">从主题直接开始</span><span data-i18n="home.finalPoint2">过程可检查</span><span data-i18n="home.finalPoint3">结果可复用</span></div>
+          <a class="primary-action primary-action--light" href="/login?returnTo=/create" data-i18n="common.enterStudio">进入工作台</a>
+        </section>
+      </main>
+
+      <footer class="site-footer page-gutter">
+        <div class="site-footer__top">
+          <span>FRAMEFACTORY</span>
+          <nav><a href="/login?returnTo=/skills" data-i18n="nav.skills">Skills</a><a href="#process" data-i18n="nav.process">流程</a></nav>
+          <div class="language-switch" aria-label="Language">
+            <button type="button" class="language-switch__option" data-locale-set="zh-CN" aria-current="true">中</button><span>/</span><button type="button" class="language-switch__option" data-locale-set="en" aria-current="false">EN</button>
+          </div>
+        </div>
+        <div class="site-footer__wordmark">FrameFactory</div>
+        <div class="site-footer__bottom"><span>2026 © FrameFactory</span><span>SKILL-DRIVEN VIDEO PRODUCTION</span></div>
+      </footer>
+    </div>
+
+    <script src="/cdn.prod.website-files.com/gsap/3.15.0/gsap.min.js"></script>
+    <script src="/cdn.prod.website-files.com/gsap/3.15.0/ScrollTrigger.min.js"></script>
+    <script src="/cdn.prod.website-files.com/gsap/3.15.0/SplitText.min.js"></script>
+    <script src="/unpkg.com/lenis@1.3.23/dist/lenis.min.js"></script>
+    <script type="module" src="/experience/home.js"></script>
+  </body>
+</html>

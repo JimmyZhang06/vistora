@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 — FrameFactory</title>
+    <meta name="description" content="登录 FrameFactory，继续你的 AI 视频创作。">
+    <link rel="icon" href="/experience/shared/brand/framefactory-mark.png">
+    <link rel="stylesheet" href="/fonts.googleapis.com/css">
+    <link rel="stylesheet" href="/cdn.prod.website-files.com/692487b717cd11b0ad36e79a/css/ponderai-landing.webflow.shared.00a1bf3a3.min.css">
+    <link rel="stylesheet" href="/experience/shared/tokens.css">
+    <link rel="stylesheet" href="/experience/shared/base.css">
+    <link rel="stylesheet" href="/experience/auth.css">
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-intro" aria-labelledby="auth-intro-title">
+        <a class="auth-brand" href="/" aria-label="返回 FrameFactory 首页">
+          <img src="/experience/shared/brand/framefactory-wordmark.png" alt="FrameFactory">
+        </a>
+        <div class="auth-intro__copy">
+          <span class="auth-intro__index">01 / ACCOUNT ACCESS</span>
+          <h1 id="auth-intro-title">让想法，继续生长。</h1>
+          <p class="auth-intro__description">回到你的创作空间，继续研究、编写脚本、生成配音并完成画面编排。</p>
+        </div>
+        <div class="auth-intro__rail" aria-hidden="true">
+          <span>RESEARCH</span><span>WRITE</span><span>CREATE</span>
+        </div>
+      </section>
+
+      <section class="auth-main" aria-labelledby="auth-title">
+        <div class="auth-panel">
+          <header class="auth-panel__header">
+            <p class="auth-kicker">创作空间已就绪</p>
+            <h2 id="auth-title">欢迎回来</h2>
+            <p class="auth-panel__lede">使用 ChatGPT 账号安全登录，继续进入你的 FrameFactory 创作空间。</p>
+          </header>
+
+          <div class="auth-form">
+            <p class="auth-help">身份验证由托管登录服务完成。FrameFactory 不会读取或保存你的 ChatGPT 密码。</p>
+            <a class="auth-submit" href="/signin-with-chatgpt?return_to=%2Fcreate" data-signin-link>
+              <span>使用 ChatGPT 登录</span><span class="auth-submit__arrow" aria-hidden="true">→</span>
+            </a>
+          </div>
+
+          <p class="auth-alternative">想先了解产品？ <a href="/">返回产品介绍</a></p>
+          <p class="auth-footnote">FRAMEFACTORY / AI VIDEO PRODUCTION SYSTEM</p>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/experience/v3-auth.js"></script>
+  </body>
+</html>

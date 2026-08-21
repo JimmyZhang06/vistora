@@ -1,0 +1,86 @@
+{
+  "schema_version": "1",
+  "name": "FrameFactory domain-neutral semantic story baseline v1",
+  "lessons": [
+    {
+      "issue_code": "COMPOUND_VISUAL_BEAT",
+      "symptom": "一个分镜合并多个地点、动作或因果阶段，单个素材无法诚实覆盖。",
+      "root_cause": "写作输出只有自由文本 scenes，没有原子 Beat 契约。",
+      "fix": "写作输出按顺序提供结构化 Beat、对应旁白和 must/must-not 证据；兼容输入只按通用句法边界拆分。",
+      "regression_tests": ["services/worker/tests/test_database_assets.py::test_structured_beats_define_atomic_visual_units_for_any_subject"]
+    },
+    {
+      "issue_code": "SEMANTICALLY_WRONG_CUT",
+      "symptom": "旁白已进入下一叙事节点，画面仍停留在上一节点。",
+      "root_cause": "按句数均分或局部贪心选择压过了 Beat 与旁白的明确对应关系。",
+      "fix": "使用 Run 冻结的 Beat-to-narration 提示和单调全局规划，禁止剧情路径倒退。",
+      "regression_tests": ["services/worker/tests/test_legacy_media_adapters.py::test_timeline_plans_a_coherent_film_story_path"]
+    },
+    {
+      "issue_code": "SOURCE_SEGMENT_OVERRUN",
+      "symptom": "片段时长不足时读取后续原片，进入未选择的对白或场景。",
+      "root_cause": "时间线把素材片段边界当作软提示。",
+      "fix": "将入库片段 start/end 设为硬边界，不足只能显式 padding 或重新选片。",
+      "regression_tests": ["services/worker/tests/test_legacy_media_adapters.py::test_timeline_never_reads_past_an_ingested_virtual_clip"]
+    },
+    {
+      "issue_code": "MISSING_ASSET_STALL",
+      "symptom": "素材不足时任务永久停在 media.select，下载完成后仍需人工重试。",
+      "root_cause": "补采任务和素材分析没有 acquisition group 完成语义，也没有受限恢复预算。",
+      "fix": "按缺失 Beat 建补采槽位，整组分析完成后幂等恢复；预算耗尽或仍不匹配才转人工。",
+      "regression_tests": ["services/worker/tests/test_database_assets.py::test_second_acquisition_round_can_still_resume_without_a_human", "services/worker/tests/test_asset_service.py"]
+    },
+    {
+      "issue_code": "UNSUPPORTED_FACTUAL_PRECISION",
+      "symptom": "研究或旁白加入输入来源无法证明的日期、速度、温度或数量。",
+      "root_cause": "生成模型在重写后仍可能重复未经支持的精确数字。",
+      "fix": "研究和写作共享数量声明校验；重试后仍不合格则确定性改写为定性表达。",
+      "regression_tests": ["services/worker/tests/test_provider_adapters.py::test_research_quantity_fallback_keeps_meaning_without_false_precision", "services/worker/tests/test_provider_adapters.py::test_script_quantity_fallback_removes_persistent_provider_precision"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "manufacturing-four-stage-process",
+      "duration_seconds": 32.0,
+      "maximum_shot_seconds": 8.0,
+      "maximum_padding_seconds": 0.0,
+      "script": {"narration": "原料首先由传送带送入设备。机械臂随后完成核心部件组装。成品进入检测区域接受扫描。通过检测的产品最终装箱出库。", "scenes": ["传送带送入原料", "机械臂组装核心部件", "检测设备扫描成品", "产品装箱出库"]},
+      "assets": [
+        {"asset_id": "a", "selected_for_scene": "传送带送入原料", "selected_for_narration": "原料首先由传送带送入设备。", "description": "传送带运送原料", "start_ms": 0, "end_ms": 12000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "b", "selected_for_scene": "机械臂组装核心部件", "selected_for_narration": "机械臂随后完成核心部件组装。", "description": "机械臂进行组装", "start_ms": 0, "end_ms": 12000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "c", "selected_for_scene": "检测设备扫描成品", "selected_for_narration": "成品进入检测区域接受扫描。", "description": "设备扫描产品", "start_ms": 0, "end_ms": 12000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "d", "selected_for_scene": "产品装箱出库", "selected_for_narration": "通过检测的产品最终装箱出库。", "description": "产品装箱", "start_ms": 0, "end_ms": 12000, "cut_safe": true, "semantic_complete": true}
+      ],
+      "required_scene_order": ["传送带送入原料", "机械臂组装核心部件", "检测设备扫描成品", "产品装箱出库"]
+    },
+    {
+      "id": "emergency-response-causal-chain",
+      "duration_seconds": 30.0,
+      "maximum_shot_seconds": 8.0,
+      "maximum_padding_seconds": 0.0,
+      "script": {"narration": "监测系统发现河流水位快速上涨。值班人员立即发布预警。救援队随后转移低洼地区居民。水位回落后工作人员检查受损道路。", "scenes": ["设备监测河流水位", "值班中心发布预警", "救援队转移居民", "工作人员检查道路"]},
+      "assets": [
+        {"asset_id": "e", "selected_for_scene": "设备监测河流水位", "selected_for_narration": "监测系统发现河流水位快速上涨。", "description": "河流监测设备", "start_ms": 0, "end_ms": 10000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "f", "selected_for_scene": "值班中心发布预警", "selected_for_narration": "值班人员立即发布预警。", "description": "值班中心发布信息", "start_ms": 0, "end_ms": 10000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "g", "selected_for_scene": "救援队转移居民", "selected_for_narration": "救援队随后转移低洼地区居民。", "description": "救援人员组织转移", "start_ms": 0, "end_ms": 10000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "h", "selected_for_scene": "工作人员检查道路", "selected_for_narration": "水位回落后工作人员检查受损道路。", "description": "检查道路受损情况", "start_ms": 0, "end_ms": 10000, "cut_safe": true, "semantic_complete": true}
+      ],
+      "required_scene_order": ["设备监测河流水位", "值班中心发布预警", "救援队转移居民", "工作人员检查道路"]
+    },
+    {
+      "id": "single-source-character-story",
+      "duration_seconds": 40.0,
+      "maximum_shot_seconds": 8.0,
+      "maximum_padding_seconds": 0.0,
+      "script": {"narration": "最初，两个人在校园相遇。一次误会让他们争执并分开。多年后，他们在城市中各自工作。旧屋改造让两人重新面对共同记忆。最终，他们在完成的住宅前和解。", "scenes": ["校园初次相遇", "争执后分别离开", "多年后在城市工作", "共同改造旧屋", "住宅完成后和解"]},
+      "assets": [
+        {"asset_id": "master", "selected_for_scene": "校园初次相遇", "selected_for_narration": "最初，两个人在校园相遇。", "description": "年轻人在校园相遇", "start_ms": 120000, "end_ms": 135000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "master", "selected_for_scene": "争执后分别离开", "selected_for_narration": "一次误会让他们争执并分开。", "description": "争执后离开", "start_ms": 420000, "end_ms": 435000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "master", "selected_for_scene": "多年后在城市工作", "selected_for_narration": "多年后，他们在城市中各自工作。", "description": "在城市办公室工作", "start_ms": 1800000, "end_ms": 1815000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "master", "selected_for_scene": "共同改造旧屋", "selected_for_narration": "旧屋改造让两人重新面对共同记忆。", "description": "共同改造旧屋", "start_ms": 3600000, "end_ms": 3615000, "cut_safe": true, "semantic_complete": true},
+        {"asset_id": "master", "selected_for_scene": "住宅完成后和解", "selected_for_narration": "最终，他们在完成的住宅前和解。", "description": "住宅前平静和解", "start_ms": 6000000, "end_ms": 6015000, "cut_safe": true, "semantic_complete": true}
+      ],
+      "required_scene_order": ["校园初次相遇", "争执后分别离开", "多年后在城市工作", "共同改造旧屋", "住宅完成后和解"]
+    }
+  ]
+}

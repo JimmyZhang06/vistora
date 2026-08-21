@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-version.schema.json",
+  "title": "SkillVersion",
+  "description": "Immutable, declarative execution specification. Instructions are inert text and no executable or server-local reference fields are admitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "skill_id", "version", "state", "execution_kind",
+    "input_schema", "research_policy", "writing_policy", "visual_policy", "asset_policy", "qc_policy",
+    "capability_requirements", "output_contract", "default_pipeline_version_id", "content_hash",
+    "created_by", "created_at", "published_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "skill_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "state": { "$ref": "enums.schema.json#/$defs/SkillVersionState" },
+    "execution_kind": {
+      "type": "string",
+      "const": "declarative",
+      "description": "The worker interprets only the closed policy fields in this contract."
+    },
+    "input_schema": { "$ref": "#/$defs/InputSchema" },
+    "research_policy": { "$ref": "#/$defs/ResearchPolicy" },
+    "writing_policy": { "$ref": "#/$defs/WritingPolicy" },
+    "visual_policy": { "$ref": "#/$defs/VisualPolicy" },
+    "asset_policy": { "$ref": "#/$defs/AssetPolicy" },
+    "qc_policy": { "$ref": "#/$defs/QcPolicy" },
+    "capability_requirements": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/CapabilityRequirement" }
+    },
+    "output_contract": { "$ref": "#/$defs/OutputContract" },
+    "default_pipeline_version_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "content_hash": {
+      "$ref": "common.schema.json#/$defs/Sha256",
+      "pattern": "^[a-f0-9]{64}$",
+      "readOnly": true,
+      "description": "Immutable lowercase SHA-256 of RFC 8785 JCS canonical JSON UTF-8 for exactly input_schema, research_policy, writing_policy, visual_policy, asset_policy, qc_policy, capability_requirements, output_contract, and default_pipeline_version_id. Identity, lifecycle, timestamps, and the hash itself are excluded."
+    },
+    "revision": { "type": "integer", "minimum": 1, "readOnly": true },
+    "test_topics": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "release_notes": { "type": "string", "maxLength": 10000 },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp", "readOnly": true },
+    "published_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp", "readOnly": true }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "published" } }, "required": ["state"] },
+      "then": { "properties": { "published_at": { "$ref": "common.schema.json#/$defs/Timestamp" } } }
+    }
+  ],
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "55555555-5555-4555-8555-555555555555",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "skill_id": "44444444-4444-4444-8444-444444444444",
+      "version": "1.0.0",
+      "state": "published",
+      "execution_kind": "declarative",
+      "input_schema": {
+        "type": "object",
+        "title": "Explainer input",
+        "description": "Topic and intended audience.",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "title": "Topic",
+            "minLength": 3,
+            "maxLength": 300
+          },
+          "audience": {
+            "type": "string",
+            "title": "Audience",
+            "maxLength": 160
+          }
+        },
+        "required": ["topic"],
+        "additionalProperties": false
+      },
+      "research_policy": {
+        "mode": "required",
+        "allowed_source_types": ["primary", "official", "academic"],
+        "require_https": true,
+        "fact_treatment": "cite",
+        "citation_style": "artifact_only",
+        "minimum_sources": 2,
+        "maximum_sources": 10,
+        "freshness_days": 365,
+        "blocked_domains": []
+      },
+      "writing_policy": {
+        "language": "en-US",
+        "target_duration_seconds": 60,
+        "tone_tags": ["clear", "curious"],
+        "structure": [
+          { "name": "opening", "purpose": "State the useful question.", "target_share": 0.2 },
+          { "name": "explanation", "purpose": "Explain verified findings.", "target_share": 0.6 },
+          { "name": "close", "purpose": "Summarize the takeaway.", "target_share": 0.2 }
+        ],
+        "markdown_instructions": "Prefer concrete language. Attribute factual claims to the research artifact.",
+        "prohibited_content": ["Unsupported factual claims", "Unlicensed quotations"]
+      },
+      "visual_policy": {
+        "aspect_ratio": "9:16",
+        "frame_rate": 30,
+        "visual_tags": ["clean", "editorial"],
+        "shot_duration_seconds": { "minimum": 1.5, "target": 3, "maximum": 7 },
+        "text_safe_area_percent": 10,
+        "generated_media_allowed": false
+      },
+      "asset_policy": {
+        "library_binding": "run_composition",
+        "allowed_kinds": ["image", "video"],
+        "minimum_assets": 4,
+        "license_required": true,
+        "fallback": "fail",
+        "deduplicate_by_hash": true
+      },
+      "qc_policy": {
+        "rules": [
+          {
+            "id": "sources-present",
+            "category": "factuality",
+            "description": "Every material factual claim has research support.",
+            "severity": "error",
+            "action": "fail"
+          },
+          {
+            "id": "media-rights",
+            "category": "copyright",
+            "description": "Every selected asset has recorded usage rights.",
+            "severity": "error",
+            "action": "fail"
+          }
+        ],
+        "human_review": "on_warning",
+        "minimum_pass_rate": 1
+      },
+      "capability_requirements": [
+        { "name": "research.web_acquisition", "level": "required", "minimum_version": "1.0.0" },
+        { "name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0" }
+      ],
+      "output_contract": {
+        "artifacts": [
+          {
+            "name": "final-video",
+            "kind": "video",
+            "media_types": ["video/mp4"],
+            "required": true,
+            "maximum_bytes": 2147483648
+          },
+          {
+            "name": "quality-report",
+            "kind": "qc_report",
+            "media_types": ["application/json"],
+            "required": true,
+            "maximum_bytes": 10485760
+          }
+        ],
+        "allow_undeclared_artifacts": false
+      },
+      "default_pipeline_version_id": "88888888-8888-4888-8888-888888888888",
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "created_by": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-08-14T01:00:00Z",
+      "published_at": "2026-08-14T02:00:00Z"
+    }
+  ],
+  "$defs": {
+    "InputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "title", "properties", "required", "additionalProperties"],
+      "properties": {
+        "type": { "const": "object" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "properties": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "additionalProperties": { "$ref": "#/$defs/InputField" }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+        },
+        "additionalProperties": { "const": false }
+      }
+    },
+    "InputField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "title"],
+      "properties": {
+        "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "array"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "format": { "type": "string", "enum": ["date", "date-time", "email", "uri", "multiline"] },
+        "minLength": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "minItems": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "maxItems": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["string", "integer", "number", "boolean"] },
+            "format": { "type": "string", "enum": ["date", "date-time", "email", "uri"] }
+          }
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": ["string", "number", "integer", "boolean"] }
+        },
+        "default": { "type": ["string", "number", "integer", "boolean", "array"] }
+      }
+    },
+    "ResearchPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowed_source_types", "require_https", "fact_treatment", "citation_style", "minimum_sources", "maximum_sources", "freshness_days", "blocked_domains"],
+      "properties": {
+        "mode": { "$ref": "enums.schema.json#/$defs/ResearchMode" },
+        "allowed_source_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["primary", "official", "academic", "news", "licensed_archive", "user_provided"] }
+        },
+        "require_https": { "const": true },
+        "fact_treatment": { "$ref": "enums.schema.json#/$defs/FactTreatment" },
+        "citation_style": { "type": "string", "enum": ["inline", "endnotes", "artifact_only"] },
+        "minimum_sources": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "maximum_sources": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "freshness_days": { "type": ["integer", "null"], "minimum": 1, "maximum": 36500 },
+        "blocked_domains": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": "string", "format": "hostname", "maxLength": 253 }
+        }
+      }
+    },
+    "WritingPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "target_duration_seconds", "tone_tags", "structure", "markdown_instructions", "prohibited_content"],
+      "properties": {
+        "language": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+        "target_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 14400 },
+        "tone_tags": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 40 }
+        },
+        "structure": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "purpose", "target_share"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "purpose": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "target_share": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "markdown_instructions": {
+          "type": "string",
+          "maxLength": 50000,
+          "contentMediaType": "text/markdown",
+          "description": "Inert natural-language guidance; never evaluated or interpolated as executable code."
+        },
+        "prohibited_content": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    },
+    "VisualPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aspect_ratio", "frame_rate", "visual_tags", "shot_duration_seconds", "text_safe_area_percent", "generated_media_allowed"],
+      "properties": {
+        "aspect_ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5"] },
+        "frame_rate": { "type": "integer", "enum": [24, 25, 30, 50, 60] },
+        "visual_tags": {
+          "type": "array",
+          "maxItems": 30,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 60 }
+        },
+        "shot_duration_seconds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum", "target", "maximum"],
+          "properties": {
+            "minimum": { "type": "number", "minimum": 0.1, "maximum": 300 },
+            "target": { "type": "number", "minimum": 0.1, "maximum": 300 },
+            "maximum": { "type": "number", "minimum": 0.1, "maximum": 300 }
+          }
+        },
+        "text_safe_area_percent": { "type": "number", "minimum": 0, "maximum": 50 },
+        "generated_media_allowed": { "type": "boolean" }
+      }
+    },
+    "AssetPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["library_binding", "allowed_kinds", "minimum_assets", "license_required", "fallback", "deduplicate_by_hash"],
+      "properties": {
+        "library_binding": { "type": "string", "enum": ["run_composition", "channel_default", "none"] },
+        "allowed_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["image", "video", "audio", "document"] }
+        },
+        "minimum_assets": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "license_required": { "type": "boolean" },
+        "fallback": { "$ref": "enums.schema.json#/$defs/AssetFallback" },
+        "deduplicate_by_hash": { "const": true }
+      }
+    },
+    "QcPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "human_review", "minimum_pass_rate"],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/QcRule" }
+        },
+        "human_review": { "type": "string", "enum": ["never", "on_warning", "always"] },
+        "minimum_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "QcRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "description", "severity", "action"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "category": { "type": "string", "enum": ["factuality", "copyright", "safety", "writing", "visual", "audio", "technical"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "severity": { "$ref": "enums.schema.json#/$defs/QcSeverity" },
+        "action": { "$ref": "enums.schema.json#/$defs/QcAction" }
+      }
+    },
+    "CapabilityRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "level", "minimum_version"],
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/CapabilityName" },
+        "level": { "$ref": "enums.schema.json#/$defs/RequirementLevel" },
+        "minimum_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        }
+      }
+    },
+    "OutputContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifacts", "allow_undeclared_artifacts"],
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind", "media_types", "required", "maximum_bytes"],
+            "properties": {
+              "name": { "$ref": "common.schema.json#/$defs/Slug" },
+              "kind": { "$ref": "enums.schema.json#/$defs/ArtifactKind" },
+              "media_types": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "$ref": "common.schema.json#/$defs/MediaType" }
+              },
+              "required": { "type": "boolean" },
+              "maximum_bytes": { "type": "integer", "minimum": 1, "maximum": 107374182400 }
+            }
+          }
+        },
+        "allow_undeclared_artifacts": { "const": false }
+      }
+    }
+  }
+}

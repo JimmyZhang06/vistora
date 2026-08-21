@@ -1,0 +1,80 @@
+# Secrets and machine-local credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*_cookies.txt
+deploy/config.json
+src/agent/blockchain/config.json
+
+# Local runtime boundary. Only the boundary documentation is tracked.
+/var/*
+!/var/README.md
+
+# Legacy runtime data (kept in place until the explicit migration is run)
+/src/runs/
+/src/material-library/
+/src/accounts/*/library/
+/src/accounts/*/flywheel/
+/src/data/jobs/
+/src/data/flywheel/*
+!/src/data/flywheel/schema.sql
+/src/asset_scraper/_raw/
+/src/.trash/
+
+# Private research inputs
+/src/_corpus/
+/src/ip-skills/**/_research/
+
+# Test, build, and delivery artifacts
+/test-results/
+/playwright-report/
+/coverage/
+/htmlcov/
+/src/frontend/public/
+/src/frontend/dist/
+/src/frontend/node_modules/
+/src/frontend/.smoke-profile/
+/src/frontend/source-export/**/*.avif
+/src/frontend/source-export/**/*.png
+/src/frontend/source-export/**/*.jpg
+/src/frontend/source-export/**/*.jpeg
+/src/frontend/source-export/**/*.webp
+/src/frontend/source-export/**/*.gif
+/src/frontend/source-export/**/*.woff
+/src/frontend/source-export/**/*.woff2
+!/src/frontend/src/experience/shared/brand/*
+!/src/frontend/verify/*.png
+
+# Media and local delivery bundles do not belong in source control
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.flv
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+/*.zip
+/*.7z
+/*.rar
+/*.tar
+/*.tar.gz
+/*.tgz
+FrameFactory_Handoff_Package/
+FrameFactory_Handoff_Package.zip
+/frontend/
+
+# Python, Node, editor, and OS caches
+.venv/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db

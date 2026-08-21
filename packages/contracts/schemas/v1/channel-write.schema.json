@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/channel-write.schema.json",
+  "title": "ChannelWrite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "default_composition"],
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          { "required": ["handle"], "properties": { "handle": { "type": "string" } } },
+          {
+            "required": ["platform_connection_id"],
+            "properties": { "platform_connection_id": { "$ref": "common.schema.json#/$defs/Uuid" } }
+          }
+        ]
+      },
+      "then": {
+        "required": ["platform"],
+        "properties": { "platform": { "type": "string", "minLength": 1, "maxLength": 80 } }
+      }
+    }
+  ],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "slug": { "anyOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }] },
+    "description": { "$ref": "common.schema.json#/$defs/Description" },
+    "platform": { "type": ["string", "null"], "minLength": 1, "maxLength": 80 },
+    "handle": { "type": ["string", "null"], "minLength": 1, "maxLength": 300 },
+    "brand_profile": { "type": "object", "additionalProperties": true },
+    "platform_connection_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "status": { "type": "string", "enum": ["active", "paused", "archived"] },
+    "default_composition": { "$ref": "channel.schema.json#/$defs/DefaultComposition" }
+  },
+  "examples": [
+    {
+      "name": "Daily Ideas",
+      "description": "A sample publishing channel.",
+      "platform": "youtube",
+      "handle": "@dailyideas",
+      "brand_profile": { "tone": "clear" },
+      "platform_connection_id": null,
+      "status": "active",
+      "default_composition": {
+        "skill_version_id": "55555555-5555-4555-8555-555555555555",
+        "pipeline_version_id": "88888888-8888-4888-8888-888888888888",
+        "asset_library_ids": [],
+        "voice_profile_id": null,
+        "render_preset_version_id": null
+      }
+    }
+  ]
+}

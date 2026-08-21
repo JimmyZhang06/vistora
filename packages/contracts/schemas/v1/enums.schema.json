@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/enums.schema.json",
+  "title": "FrameFactory shared enumerations",
+  "$defs": {
+    "OwnershipType": { "type": "string", "enum": ["workspace", "system"] },
+    "PublisherType": { "type": "string", "enum": ["user", "system"] },
+    "Visibility": { "type": "string", "enum": ["private", "workspace", "public_readonly"] },
+    "UserStatus": { "type": "string", "enum": ["active", "suspended", "disabled"] },
+    "WorkspaceKind": { "type": "string", "enum": ["personal", "team", "system"] },
+    "ResourceStatus": { "type": "string", "enum": ["active", "archived"] },
+    "SkillStatus": { "type": "string", "enum": ["draft", "active", "deprecated", "archived"] },
+    "SkillVersionState": {
+      "type": "string",
+      "enum": ["draft", "validating", "ready", "published", "deprecated", "rejected"]
+    },
+    "RunStatus": {
+      "type": "string",
+      "enum": ["queued", "running", "awaiting_review", "retrying", "succeeded", "failed", "cancelled"]
+    },
+    "StepStatus": {
+      "type": "string",
+      "enum": ["queued", "running", "awaiting_review", "retrying", "succeeded", "failed", "cancelled"]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": ["research", "script", "image", "video", "audio", "subtitle", "manifest", "qc_report", "log_archive"]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "run.created", "run.graph_materialized", "run.cancellation_requested", "run.started", "run.awaiting_review", "run.retrying", "run.succeeded", "run.failed", "run.cancelled",
+        "step.queued", "step.started", "step.retrying", "step.awaiting_review", "step.succeeded", "step.failed", "step.cancelled",
+        "artifact.created", "review.recorded"
+      ]
+    },
+    "ResearchMode": { "type": "string", "enum": ["disabled", "optional", "required"] },
+    "FactTreatment": { "type": "string", "enum": ["cite", "attribute", "exclude_unverified"] },
+    "AssetFallback": { "type": "string", "enum": ["fail", "licensed_stock", "generated"] },
+    "RequirementLevel": { "type": "string", "enum": ["required", "optional"] },
+    "QcSeverity": { "type": "string", "enum": ["info", "warning", "error"] },
+    "QcAction": { "type": "string", "enum": ["report", "request_review", "fail"] }
+  }
+}

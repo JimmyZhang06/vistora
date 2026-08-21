@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/common.schema.json",
+  "title": "FrameFactory common definitions",
+  "$defs": {
+    "ContractVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "NullableUuid": {
+      "oneOf": [
+        { "$ref": "#/$defs/Uuid" },
+        { "type": "null" }
+      ]
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "NullableTimestamp": {
+      "oneOf": [
+        { "$ref": "#/$defs/Timestamp" },
+        { "type": "null" }
+      ]
+    },
+    "Slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "Name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "Description": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "MediaType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 127,
+      "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$"
+    },
+    "CapabilityName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
+    },
+    "Page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "has_more", "next_cursor"],
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "has_more": { "type": "boolean" },
+        "next_cursor": { "type": ["string", "null"], "maxLength": 512 }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "code", "message", "request_id"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/ContractVersion" },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "request_id": { "$ref": "#/$defs/Uuid" },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

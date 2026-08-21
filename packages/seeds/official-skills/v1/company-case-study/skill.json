@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "id": "78b00d0d-8ca5-528a-a42f-40674cc897c4",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "publisher_type": "system",
+  "publisher_name": "Vistora",
+  "name": "公司商业案例拆解",
+  "slug": "company-case-study",
+  "description": "用可核验资料复盘企业关键决策、商业机制和结果，不提供投资建议。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "current_version_id": "332d34fc-d1e3-5b16-8ca7-15a5de470e89",
+  "forked_from_skill_id": null,
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "updated_at": "2026-08-15T00:00:00Z"
+}

@@ -1,0 +1,2348 @@
+openapi: 3.1.0
+info:
+  title: FrameFactory Control API
+  version: 1.0.0
+  summary: Single-workspace content production API with a reserved workspace boundary
+  description: >-
+    Version 1 of the FrameFactory control-plane contract. The current product
+    runs in one configured personal workspace. Workspace identifiers remain in
+    resource contracts so a future multi-workspace mode does not require a
+    breaking schema change, but clients do not need to choose a workspace.
+    System-published and user-published skills use the same Skill and
+    SkillVersion schemas, storage, and endpoints.
+servers:
+  - url: https://api.framefactory.example
+    description: Example deployment
+security:
+  - bearerAuth: []
+  - workspaceApiKey: []
+tags:
+  - name: Context
+  - name: Account
+  - name: Users
+  - name: Workspaces
+  - name: Channels
+  - name: Skills
+  - name: Asset libraries
+  - name: Render presets
+  - name: Pipelines
+  - name: Runs
+  - name: Steps
+  - name: Artifacts
+  - name: Events
+paths:
+  /v1/context:
+    get:
+      tags: [Context]
+      operationId: getCurrentContext
+      summary: Resolve the installation's current single-workspace context
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/CurrentContext'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/capabilities:
+    get:
+      tags: [Account]
+      operationId: getAccountCapabilities
+      summary: List account capabilities available in this release
+      responses:
+        '200':
+          description: Account capability availability
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCapabilities' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/profile:
+    get:
+      tags: [Account]
+      operationId: getAccountProfile
+      summary: Get the current user's profile
+      responses:
+        '200':
+          description: Current account profile
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProfile' }
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      tags: [Account]
+      operationId: replaceAccountProfile
+      summary: Replace mutable fields in the current user's profile
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountProfileUpdate' }
+      responses:
+        '200':
+          description: Updated account profile
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProfile' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/creation-preferences:
+    get:
+      tags: [Account]
+      operationId: getCreationPreferences
+      summary: Get defaults used by the creation workflow
+      responses:
+        '200':
+          description: Creation preferences
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreationPreferences' }
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      tags: [Account]
+      operationId: replaceCreationPreferences
+      summary: Replace defaults used by the creation workflow
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreationPreferencesUpdate' }
+      responses:
+        '200':
+          description: Updated creation preferences
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreationPreferences' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/sessions:
+    get:
+      tags: [Account]
+      operationId: listAccountSessions
+      summary: List sessions belonging to the current user
+      responses:
+        '200':
+          description: Account sessions; token and IP hashes are never returned
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountSession' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/sessions/{session_id}:
+    delete:
+      tags: [Account]
+      operationId: revokeAccountSession
+      summary: Revoke one account session
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '204': { description: Session revoked }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/api-keys:
+    get:
+      tags: [Account]
+      operationId: listAccountApiKeys
+      summary: List API key metadata without secrets or hashes
+      responses:
+        '200':
+          description: API key metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Account]
+      operationId: createAccountApiKey
+      summary: Create an API key and return its plaintext exactly once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKeyCreate' }
+      responses:
+        '201':
+          description: API key metadata and one-time plaintext
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyCreated' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/api-keys/{key_id}:
+    delete:
+      tags: [Account]
+      operationId: revokeAccountApiKey
+      summary: Revoke one API key
+      parameters:
+        - $ref: '#/components/parameters/ApiKeyId'
+      responses:
+        '204': { description: API key revoked }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/account/two-factor:
+    post:
+      tags: [Account]
+      operationId: configureTwoFactor
+      summary: Report that two-factor authentication is unavailable in this release
+      responses:
+        '501':
+          $ref: '#/components/responses/Error'
+  /v1/users:
+    get:
+      tags: [Reserved]
+      operationId: listUsersReserved
+      summary: Reserved user directory interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/users/{user_id}:
+    get:
+      tags: [Reserved]
+      operationId: getUserReserved
+      summary: Reserved user detail interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/workspaces:
+    get:
+      tags: [Reserved]
+      operationId: listWorkspacesReserved
+      summary: Reserved workspace list interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Reserved]
+      operationId: createWorkspaceReserved
+      summary: Reserved workspace creation interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/workspaces/{workspace_id}:
+    get:
+      tags: [Reserved]
+      operationId: getWorkspaceReserved
+      summary: Reserved workspace detail interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/channels:
+    get:
+      tags: [Channels]
+      operationId: listChannels
+      summary: List publishing Channels in the configured workspace
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ChannelSearch'
+        - $ref: '#/components/parameters/ChannelPlatform'
+        - $ref: '#/components/parameters/ChannelStatus'
+      responses:
+        '200': { $ref: '#/components/responses/ChannelList' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Channels]
+      operationId: createChannel
+      summary: Create a Channel with durable default composition references
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/ChannelWrite'
+      responses:
+        '201': { $ref: '#/components/responses/Channel' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/channels/{channel_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Channels]
+      operationId: getChannel
+      summary: Get a Channel and its current default composition
+      responses:
+        '200': { $ref: '#/components/responses/Channel' }
+        default: { $ref: '#/components/responses/Error' }
+    put:
+      tags: [Channels]
+      operationId: replaceChannel
+      summary: Replace a Channel using its numeric ETag revision
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        $ref: '#/components/requestBodies/ChannelWrite'
+      responses:
+        '200': { $ref: '#/components/responses/Channel' }
+        '412': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Channels]
+      operationId: archiveChannel
+      summary: Archive a Channel using its numeric ETag revision
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204': { description: Channel archived }
+        '412': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/asset-libraries:
+    get:
+      tags: [Assets]
+      operationId: listAssetLibraries
+      summary: List durable asset libraries in the default workspace
+      responses:
+        '200': { description: Asset library page }
+    post:
+      tags: [Assets]
+      operationId: createAssetLibrary
+      summary: Create an asset library
+      responses:
+        '201': { description: Asset library created }
+  /v1/asset-libraries/{library_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetLibraryId'
+    get:
+      tags: [Assets]
+      operationId: getAssetLibrary
+      summary: Get an asset library and its readiness counts
+      responses:
+        '200': { description: Asset library }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/asset-libraries/{library_id}/assets:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetLibraryId'
+    get:
+      tags: [Assets]
+      operationId: listLibraryAssets
+      summary: List workspace-scoped assets using a filter-bound keyset cursor
+      x-required-scopes: [assets:read]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/AssetStatus' }
+        - name: kind
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/AssetKind' }
+        - name: copyright_status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CopyrightStatus' }
+        - name: analysis_status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/AnalysisStatus' }
+        - name: tag
+          in: query
+          schema: { type: array, items: { type: string, maxLength: 100 } }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 300 }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { $ref: '#/components/responses/AssetPage' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/asset-libraries/{library_id}/import-jobs:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetLibraryId'
+    get:
+      tags: [Assets]
+      operationId: listAssetImportJobs
+      summary: List asynchronous import jobs for an asset library
+      x-required-scopes: [assets:read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { $ref: '#/components/responses/ResourcePage' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/batch-review:
+    post:
+      tags: [Assets]
+      operationId: batchReviewAssets
+      summary: Apply a review transition to at most 100 revision-fenced assets
+      x-required-scopes: [assets:review]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetBatchReview' }
+      responses:
+        '200': { $ref: '#/components/responses/BatchAssetResult' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/batch-tags:
+    post:
+      tags: [Assets]
+      operationId: batchTagAssets
+      summary: Add or remove manual tags from at most 100 revision-fenced assets
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetBatchTags' }
+      responses:
+        '200': { $ref: '#/components/responses/BatchAssetResult' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/batch-reanalyze:
+    post:
+      tags: [Assets]
+      operationId: batchReanalyzeAssets
+      summary: Queue reanalysis for at most 100 revision-fenced assets
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetBatchReanalysis' }
+      responses:
+        '202': { $ref: '#/components/responses/BatchAssetResult' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/{asset_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [Assets]
+      operationId: getAsset
+      summary: Get workspace-scoped asset metadata without storage credentials or object keys
+      x-required-scopes: [assets:read]
+      responses:
+        '200': { $ref: '#/components/responses/Asset' }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [Assets]
+      operationId: updateAssetMetadata
+      summary: Safely update mutable metadata using optimistic concurrency
+      x-required-scopes: [assets:write]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetMetadataPatch' }
+      responses:
+        '200': { $ref: '#/components/responses/Asset' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Assets]
+      operationId: softDeleteAsset
+      summary: Soft-delete asset metadata without deleting its object
+      x-required-scopes: [assets:write]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      responses:
+        '200': { $ref: '#/components/responses/Asset' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/{asset_id}/status-transitions:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetId'
+    post:
+      tags: [Assets]
+      operationId: transitionAssetStatus
+      summary: Apply an audited status transition; ready always rechecks every safety gate
+      x-required-scopes: [assets:review]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetStatusTransition' }
+      responses:
+        '200': { $ref: '#/components/responses/Asset' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/{asset_id}/restore:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetId'
+    post:
+      tags: [Assets]
+      operationId: restoreAsset
+      summary: Restore a soft-deleted asset and re-evaluate ready gates when needed
+      x-required-scopes: [assets:write]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      responses:
+        '200': { $ref: '#/components/responses/Asset' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/{asset_id}/segments:
+    get:
+      tags: [Assets]
+      operationId: listAssetSegments
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/analyses:
+    get:
+      tags: [Assets]
+      operationId: listAssetAnalyses
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/sources:
+    get:
+      tags: [Assets]
+      operationId: listAssetSources
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/rights-evidence:
+    get:
+      tags: [Assets]
+      operationId: listAssetRightsEvidence
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/usage-records:
+    get:
+      tags: [Assets]
+      operationId: listAssetUsageRecords
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/analysis-jobs:
+    get:
+      tags: [Assets]
+      operationId: listAssetAnalysisJobs
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/audit-events:
+    get:
+      tags: [Assets]
+      operationId: listAssetAuditEvents
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses: { '200': { $ref: '#/components/responses/ResourcePage' }, default: { $ref: '#/components/responses/Error' } }
+  /v1/assets/{asset_id}/reanalyze:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetId'
+    post:
+      tags: [Assets]
+      operationId: requestAssetReanalysis
+      summary: Persist and enqueue a reanalysis job without recomputing in HTTP
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetReanalysisRequest' }
+      responses:
+        '202': { description: Reanalysis job queued }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/assets/{asset_id}/downloads/{variant}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/AssetId'
+      - name: variant
+        in: path
+        required: true
+        schema: { type: string, enum: [poster, preview, original] }
+    get:
+      tags: [Assets]
+      operationId: createAssetDownload
+      summary: Create a short-lived signed download using only the persisted object descriptor
+      x-required-scopes: [assets:download]
+      parameters:
+        - name: expires_in
+          in: query
+          schema: { type: integer, minimum: 60, maximum: 1800, default: 900 }
+      responses:
+        '200': { description: Short-lived signed request }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/asset-uploads:
+    post:
+      tags: [Assets]
+      operationId: createAssetUpload
+      summary: Initiate a checksum-bound direct media upload
+      responses:
+        '201': { description: Presigned upload prepared }
+  /v1/asset-uploads/{asset_id}/complete:
+    post:
+      tags: [Assets]
+      operationId: completeAssetUpload
+      summary: Verify an uploaded object and make the asset searchable
+      responses:
+        '200': { description: Asset ready }
+  /v1/asset-imports:
+    post:
+      tags: [Assets]
+      operationId: importRemoteAsset
+      summary: Download a user-authorized public video and store it in an asset library
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [library_id, source_url, copyright_status, rights_confirmed]
+              properties:
+                library_id: { type: string, format: uuid }
+                source_url: { type: string, format: uri, maxLength: 2048 }
+                title: { type: [string, 'null'], maxLength: 300 }
+                description: { type: string, maxLength: 2000, default: '' }
+                copyright_status:
+                  type: string
+                  enum: [owned, licensed, public_domain]
+                tags:
+                  type: array
+                  maxItems: 64
+                  items: { type: string, maxLength: 100 }
+                rights_confirmed: { type: boolean, const: true }
+      responses:
+        '201': { description: Remote asset downloaded and stored }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/asset-acquisitions:
+    post:
+      tags: [Assets]
+      operationId: acquireAssetsForTopics
+      summary: Search approved remote providers and import rights-confirmed candidates
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [library_id, queries, sources, rights_confirmed]
+              properties:
+                library_id: { type: string, format: uuid }
+                queries:
+                  type: array
+                  minItems: 1
+                  maxItems: 12
+                  items: { type: string, minLength: 1, maxLength: 500 }
+                sources:
+                  type: array
+                  minItems: 1
+                  maxItems: 2
+                  uniqueItems: true
+                  items: { type: string, enum: [youtube, bilibili, wikimedia] }
+                max_assets: { type: integer, minimum: 1, maximum: 6, default: 3 }
+                copyright_status: { type: string, enum: [licensed, public_domain], default: licensed }
+                rights_confirmed: { type: boolean, const: true }
+                run_id: { type: [string, 'null'], format: uuid }
+                step_id: { type: [string, 'null'], maxLength: 255 }
+      responses:
+        '201': { description: Acquisition summary }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/render-presets:
+    get:
+      tags: [Reserved]
+      operationId: listRenderPresetsReserved
+      summary: Reserved render preset list interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Reserved]
+      operationId: createRenderPresetReserved
+      summary: Reserved render preset creation interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/render-presets/{render_preset_id}:
+    get:
+      tags: [Reserved]
+      operationId: getRenderPresetReserved
+      summary: Reserved render preset detail interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/pipelines:
+    get:
+      tags: [Reserved]
+      operationId: listPipelinesReserved
+      summary: Reserved pipeline authoring interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Reserved]
+      operationId: createPipelineReserved
+      summary: Reserved pipeline creation interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/pipelines/{pipeline_id}:
+    get:
+      tags: [Reserved]
+      operationId: getPipelineReserved
+      summary: Reserved pipeline detail interface for a future release
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /v1/skills/{skill_id}/fork:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/SkillId'
+    post:
+      tags: [Skills]
+      operationId: forkSkill
+      summary: Fork an official or user-visible Skill into the current workspace
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/ForkSkill'
+      responses:
+        '201':
+          $ref: '#/components/responses/ForkSkill'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skills:
+    get:
+      tags: [Skills]
+      operationId: listSkills
+      summary: List authorized user and system-published skills
+      description: System and user skills are returned as the same Skill resource.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillList'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Skills]
+      operationId: createSkill
+      summary: Create a skill in the active workspace
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/SkillCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/Skill'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skills/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/SkillId'
+    get:
+      tags: [Skills]
+      operationId: getSkill
+      summary: Get an authorized skill
+      responses:
+        '200':
+          $ref: '#/components/responses/Skill'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      tags: [Skills]
+      operationId: replaceSkill
+      summary: Replace mutable skill identity metadata
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        $ref: '#/components/requestBodies/SkillCreate'
+      responses:
+        '200':
+          $ref: '#/components/responses/Skill'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Skills]
+      operationId: deleteSkill
+      summary: Delete an unreferenced user-owned draft Skill
+      responses:
+        '204':
+          description: Skill deleted
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-versions:
+    get:
+      tags: [Skills]
+      operationId: listSkillVersions
+      summary: List immutable skill versions
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: skill_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionList'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Skills]
+      operationId: createSkillVersion
+      summary: Create a declarative skill version
+      description: The server applies RFC 8785 JCS to the nine declarative hash-domain fields and sets their lowercase SHA-256 content_hash.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/SkillVersionCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/SkillVersion'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-versions/{skill_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/SkillVersionId'
+    get:
+      tags: [Skills]
+      operationId: getSkillVersion
+      summary: Get an immutable skill version
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersion'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      tags: [Skills]
+      operationId: patchSkillVersion
+      summary: Update an unpublished draft with optimistic concurrency
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        $ref: '#/components/requestBodies/SkillVersionPatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersion'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Skills]
+      operationId: deleteSkillVersion
+      summary: Delete an unreferenced draft
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Draft deleted
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-versions/{skill_version_id}/validate:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/SkillVersionId'
+    post:
+      tags: [Skills]
+      operationId: validateSkillVersion
+      summary: Validate a draft and transition it to ready or rejected
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/ValidationReport'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-versions/{skill_version_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/SkillVersionId'
+    post:
+      tags: [Skills]
+      operationId: publishSkillVersion
+      summary: Publish an immutable user-owned SkillVersion
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        $ref: '#/components/requestBodies/PublishSkillVersion'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersion'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-test-executions:
+    get:
+      tags: [Skills]
+      operationId: listSkillTestExecutions
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillTestExecutionList'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Skills]
+      operationId: createSkillTestExecution
+      summary: Execute the stage-one deterministic local comparison evaluator
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/SkillTestExecutionCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/SkillTestExecution'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/skill-test-executions/{execution_id}:
+    get:
+      tags: [Skills]
+      operationId: getSkillTestExecution
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: execution_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillTestExecution'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/generation-batches:
+    get:
+      tags: [Batches]
+      operationId: listGenerationBatches
+      summary: List durable generation batches in the active workspace
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Generation batch page
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Batches]
+      operationId: createGenerationBatch
+      summary: Atomically create up to 5000 normal Runs under one batch
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '202':
+          description: Durable batch accepted for dispatch
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/generation-batches/{batch_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: batch_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Batches]
+      operationId: getGenerationBatch
+      responses:
+        '200':
+          description: Aggregated generation batch
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/generation-batches/{batch_id}/items:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: batch_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Batches]
+      operationId: listGenerationBatchItems
+      summary: Page and filter Run-backed items without loading the whole batch
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: search
+          in: query
+          schema: { type: string, maxLength: 300 }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Filtered batch item page
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/generation-batches/{batch_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: batch_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Batches]
+      operationId: cancelGenerationBatch
+      summary: Idempotently request cancellation for every non-terminal Run in a batch
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Cancellation requests have been persisted
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/generation-batches/{batch_id}/retry-failed:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: batch_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Batches]
+      operationId: retryFailedGenerationBatch
+      summary: Create a new immutable batch from the failed items in a source batch
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '202':
+          description: New retry batch accepted for dispatch
+          content:
+            application/json:
+              schema: { type: object }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/runs:
+    get:
+      tags: [Runs]
+      operationId: listRuns
+      summary: List runs in the active workspace
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/RunList'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Runs]
+      operationId: createRun
+      summary: Create an idempotent run with an immutable composition snapshot
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/RunCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/Run'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/runs/estimate:
+    post:
+      tags: [Runs]
+      operationId: estimateRun
+      summary: Validate an immutable run composition against current Worker capabilities
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/RunCreate'
+      responses:
+        '200':
+          description: Run estimate and executable capability gaps
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [cost, duration_seconds, capability_gaps, capabilities_known]
+                properties:
+                  cost:
+                    type: object
+                    additionalProperties: false
+                    required: [amount, currency]
+                    properties:
+                      amount: { type: number, minimum: 0 }
+                      currency: { type: string, enum: [CNY, USD] }
+                  duration_seconds: { type: integer, minimum: 1 }
+                  capability_gaps:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [capability, resource, message]
+                      properties:
+                        capability: { type: string }
+                        resource: { type: string }
+                        message: { type: string }
+                  capabilities_known: { type: boolean }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      operationId: getRun
+      summary: Get an authorized run
+      responses:
+        '200':
+          $ref: '#/components/responses/Run'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/runs/{run_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: cancelRun
+      summary: Request cancellation of a run
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/Run'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/steps:
+    get:
+      tags: [Steps]
+      operationId: listSteps
+      summary: List recoverable steps
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: run_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/StepList'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/steps/{step_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/StepId'
+    get:
+      tags: [Steps]
+      operationId: getStep
+      summary: Get a recoverable step
+      responses:
+        '200':
+          $ref: '#/components/responses/Step'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/steps/{step_id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/StepId'
+    post:
+      tags: [Steps]
+      operationId: retryStep
+      summary: Request an idempotent retry for an eligible step
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          $ref: '#/components/responses/Step'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/steps/{step_id}/review:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/StepId'
+    post:
+      tags: [Steps]
+      operationId: reviewStep
+      summary: Approve or reject a step waiting at a human review gate
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StepReviewRequest' }
+      responses:
+        '202':
+          $ref: '#/components/responses/Step'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/artifacts:
+    get:
+      tags: [Artifacts]
+      operationId: listArtifacts
+      summary: List artifact metadata for an authorized run
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: run_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/ArtifactList'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/artifacts/{artifact_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      tags: [Artifacts]
+      operationId: getArtifact
+      summary: Get artifact metadata; content access uses a separate signed URL flow
+      responses:
+        '200':
+          $ref: '#/components/responses/Artifact'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/artifacts/{artifact_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      tags: [Artifacts]
+      operationId: getArtifactContent
+      summary: Read a small text artifact inline or redirect to a signed download URL
+      parameters:
+        - name: inline
+          in: query
+          required: false
+          description: Return integrity-checked JSON or text content directly for browser preview.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Inline JSON or text artifact content
+          headers:
+            X-Content-SHA256:
+              schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+          content:
+            application/json:
+              schema: {}
+            text/plain:
+              schema: { type: string }
+        '307':
+          description: Temporary redirect to private object storage
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/events:
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: List durable events for an authorized run
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: run_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: after_sequence
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/EventList'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/events/{event_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Get a durable event
+      responses:
+        '200':
+          $ref: '#/components/responses/Event'
+        default:
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    workspaceApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    WorkspaceHeader:
+      name: X-Workspace-Id
+      in: header
+      required: false
+      description: >-
+        Reserved workspace boundary. In the current single-workspace runtime it
+        may be omitted and resolves to the configured workspace. When supplied,
+        it is ignored rather than selecting a tenant.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 255
+        pattern: '^[A-Za-z0-9._:-]+$'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Quoted or unquoted numeric revision returned in ETag.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 32
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 512
+    ChannelSearch:
+      name: search
+      in: query
+      required: false
+      description: Case-insensitive substring search across Channel name, slug, description, and handle.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 160
+    ChannelPlatform:
+      name: platform
+      in: query
+      required: false
+      description: Case-insensitive exact platform filter; Channel platform values are stored in lowercase.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 80
+    ChannelStatus:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [active, paused, archived]
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkspaceId:
+      name: workspace_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ChannelId:
+      name: channel_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SkillId:
+      name: skill_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SkillVersionId:
+      name: skill_version_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AssetLibraryId:
+      name: library_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AssetId:
+      name: asset_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RenderPresetId:
+      name: render_preset_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PipelineId:
+      name: pipeline_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    StepId:
+      name: step_id
+      in: path
+      required: true
+      description: Stable worker step id composed from the Run id and pipeline node key.
+      schema:
+        type: string
+        minLength: 38
+        maxLength: 101
+        pattern: '^[0-9a-fA-F-]{36}:[a-z][a-z0-9_]{0,63}$'
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ApiKeyId:
+      name: key_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    AssetStatus:
+      type: string
+      enum: [processing, quarantined, ready, disabled, deleted]
+    AssetKind:
+      type: string
+      enum: [image, video, audio, document, text, other]
+    CopyrightStatus:
+      type: string
+      enum: [unknown, owned, licensed, public_domain, restricted]
+    AnalysisStatus:
+      type: string
+      enum: [pending, running, completed, failed]
+    Asset:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, workspace_id, library_id, kind, title, description,
+        metadata, copyright_status, status, analysis_status, revision, deleted_at, tags,
+        created_by, created_at, updated_at, file]
+      properties:
+        schema_version: { type: string, const: 1.0.0 }
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        library_id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/AssetKind' }
+        title: { type: string, minLength: 1, maxLength: 300 }
+        description: { type: string, maxLength: 2000 }
+        metadata: { type: object }
+        copyright_status: { $ref: '#/components/schemas/CopyrightStatus' }
+        status: { $ref: '#/components/schemas/AssetStatus' }
+        analysis_status: { $ref: '#/components/schemas/AnalysisStatus' }
+        revision: { type: integer, minimum: 1 }
+        deleted_at: { type: [string, 'null'], format: date-time }
+        tags: { type: array, maxItems: 64, items: { type: string, maxLength: 100 } }
+        created_by: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        file:
+          type: object
+          additionalProperties: false
+          required: [id, original_filename, media_type, byte_size, scan_status, width,
+            height, duration_ms]
+          properties:
+            id: { type: string, format: uuid }
+            original_filename: { type: [string, 'null'] }
+            media_type: { type: string }
+            byte_size: { type: integer, minimum: 0 }
+            scan_status: { type: string, enum: [pending, clean, rejected, failed] }
+            width: { type: [integer, 'null'], minimum: 1 }
+            height: { type: [integer, 'null'], minimum: 1 }
+            duration_ms: { type: [integer, 'null'], minimum: 0 }
+    AssetMetadataPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 300 }
+        description: { type: string, maxLength: 2000 }
+        copyright_status: { $ref: '#/components/schemas/CopyrightStatus' }
+        rights_confirmed: { type: boolean }
+        rights_evidence: { type: object, minProperties: 1 }
+        tags: { type: array, maxItems: 64, items: { type: string, minLength: 1, maxLength: 100 } }
+    AssetStatusTransition:
+      type: object
+      additionalProperties: false
+      required: [target_status, reason]
+      properties:
+        target_status: { type: string, enum: [processing, quarantined, ready, disabled] }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    AssetReanalysisRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 500, default: manual_reanalysis }
+    AssetBatchItem:
+      type: object
+      additionalProperties: false
+      required: [asset_id, expected_revision]
+      properties:
+        asset_id: { type: string, format: uuid }
+        expected_revision: { type: integer, minimum: 1 }
+    AssetBatchReview:
+      type: object
+      additionalProperties: false
+      required: [items, target_status, reason]
+      properties:
+        items: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/AssetBatchItem' } }
+        target_status: { type: string, enum: [processing, quarantined, ready, disabled] }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    AssetBatchTags:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/AssetBatchItem' } }
+        add: { type: array, maxItems: 64, items: { type: string, maxLength: 100 } }
+        remove: { type: array, maxItems: 64, items: { type: string, maxLength: 100 } }
+    AssetBatchReanalysis:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/AssetBatchItem' } }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    ResourcePage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { type: object } }
+        page: { $ref: '#/components/schemas/Page' }
+    AssetPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Asset' } }
+        page: { $ref: '#/components/schemas/Page' }
+    BatchAssetResult:
+      type: object
+      additionalProperties: false
+      required: [succeeded_count, failed_count, succeeded, failures]
+      properties:
+        succeeded_count: { type: integer, minimum: 0, maximum: 100 }
+        failed_count: { type: integer, minimum: 0, maximum: 100 }
+        succeeded: { type: array, maxItems: 100, items: { type: object } }
+        failures:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [asset_id, code, message]
+            properties:
+              asset_id: { type: string, format: uuid }
+              code: { type: string }
+              message: { type: string }
+              current_revision: { type: integer, minimum: 1 }
+    AccountCapabilities:
+      type: object
+      additionalProperties: false
+      required: [profile, creation_preferences, sessions, api_keys, two_factor_authentication]
+      properties:
+        profile: { type: string, const: available }
+        creation_preferences: { type: string, const: available }
+        sessions:
+          type: string
+          const: not_recorded
+          description: Management endpoints exist, but the current single-user context does not create login sessions.
+        api_keys:
+          type: string
+          const: management_only
+          description: Key creation, listing and revocation exist; request authentication and scope enforcement are not connected yet.
+        two_factor_authentication: { type: string, const: unavailable }
+    AccountProfile:
+      type: object
+      additionalProperties: false
+      required: [user_id, workspace_id, email, display_name, avatar_url, locale, timezone, revision, updated_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string, minLength: 1, maxLength: 160 }
+        avatar_url: { type: [string, 'null'], maxLength: 2048 }
+        locale: { type: string, pattern: '^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$' }
+        timezone: { type: string, minLength: 1, maxLength: 100 }
+        revision: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    AccountProfileUpdate:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 160 }
+        avatar_url: { type: [string, 'null'], maxLength: 2048 }
+        locale: { type: string, pattern: '^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$', default: zh-CN }
+        timezone: { type: string, minLength: 1, maxLength: 100, default: Asia/Shanghai }
+    CreationPreferences:
+      type: object
+      additionalProperties: false
+      required: [user_id, workspace_id, default_language, default_aspect_ratio, default_duration_seconds, default_visibility, auto_quality_check, revision, updated_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        default_language: { type: string }
+        default_aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3'] }
+        default_duration_seconds: { type: integer, minimum: 15, maximum: 3600 }
+        default_visibility: { type: string, enum: [private, workspace] }
+        auto_quality_check: { type: boolean }
+        revision: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    CreationPreferencesUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        default_language: { type: string, default: zh-CN }
+        default_aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3'], default: '16:9' }
+        default_duration_seconds: { type: integer, minimum: 15, maximum: 3600, default: 180 }
+        default_visibility: { type: string, enum: [private, workspace], default: private }
+        auto_quality_check: { type: boolean, default: true }
+    AccountSession:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, user_id, user_agent, created_at, expires_at, last_seen_at, revoked_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        user_agent: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+    ApiKey:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, name, key_prefix, scopes, created_at, expires_at, last_used_at, revoked_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        key_prefix: { type: string }
+        scopes:
+          type: array
+          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write'] }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+    ApiKeyCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          default: [skills:read]
+          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write'] }
+        expires_at: { type: [string, 'null'], format: date-time }
+    ApiKeyCreated:
+      type: object
+      additionalProperties: false
+      required: [key, api_key]
+      properties:
+        key: { $ref: '#/components/schemas/ApiKey' }
+        api_key:
+          type: string
+          description: Returned once and never persisted in plaintext.
+    StepReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject, revise] }
+        reason: { type: [string, 'null'], maxLength: 4000 }
+        issue_codes:
+          type: array
+          maxItems: 20
+          items: { type: string, pattern: '^[a-z0-9]+(?:[._-][a-z0-9]+)*$', maxLength: 80 }
+        expected_revision: { type: [integer, 'null'], minimum: 0 }
+    CurrentContext:
+      type: object
+      additionalProperties: false
+      required: [mode, user_id, workspace_id, workspace_name, workspace_header_required, multi_tenant_features_enabled]
+      properties:
+        mode: { type: string, const: single_workspace }
+        user_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        workspace_name: { type: string, minLength: 1, maxLength: 160 }
+        workspace_header_required: { type: boolean, const: false }
+        multi_tenant_features_enabled: { type: boolean, const: false }
+    ForkSkillRequest:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        source_version_id: { type: [string, 'null'], format: uuid }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', maxLength: 80 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        publisher_name: { type: string, minLength: 1, maxLength: 160, default: My FrameFactory }
+        visibility: { type: string, enum: [private, workspace], default: private }
+    ForkSkillResponse:
+      type: object
+      additionalProperties: false
+      required: [skill, version]
+      properties:
+        skill: { $ref: '#/components/schemas/Skill' }
+        version: { $ref: '#/components/schemas/SkillVersion' }
+    PublishSkillVersionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        release_notes: { type: [string, 'null'], maxLength: 10000 }
+    ValidationReport:
+      type: object
+      additionalProperties: false
+      required: [skill_id, version_id, ready, revision, checks, estimated_cost]
+      properties:
+        skill_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        ready: { type: boolean }
+        revision: { type: integer, minimum: 1 }
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, label, passed, severity, message, path]
+            properties:
+              id: { type: string }
+              label: { type: string }
+              passed: { type: boolean }
+              severity: { type: string, enum: [error, warning, info] }
+              message: { type: string }
+              path: { type: [string, 'null'] }
+        estimated_cost:
+          type: object
+          additionalProperties: false
+          required: [amount, currency]
+          properties:
+            amount: { type: number, minimum: 0 }
+            currency: { type: string, enum: [CNY, USD] }
+    User:
+      $ref: '../schemas/v1/user.schema.json'
+    Workspace:
+      $ref: '../schemas/v1/workspace.schema.json'
+    Channel:
+      $ref: '../schemas/v1/channel.schema.json'
+    ChannelWrite:
+      $ref: '../schemas/v1/channel-write.schema.json'
+    Skill:
+      $ref: '../schemas/v1/skill.schema.json'
+    SkillVersion:
+      $ref: '../schemas/v1/skill-version.schema.json'
+    SkillCreate:
+      $ref: '../schemas/v1/skill-create.schema.json'
+    SkillVersionCreate:
+      $ref: '../schemas/v1/skill-version-create.schema.json'
+    SkillVersionPatch:
+      $ref: '../schemas/v1/skill-version-patch.schema.json'
+    SkillTestExecution:
+      $ref: '../schemas/v1/skill-test-execution.schema.json'
+    SkillTestExecutionCreate:
+      $ref: '../schemas/v1/skill-test-execution-create.schema.json'
+    AssetLibrary:
+      $ref: '../schemas/v1/asset-library.schema.json'
+    RenderPreset:
+      $ref: '../schemas/v1/render-preset.schema.json'
+    Pipeline:
+      $ref: '../schemas/v1/pipeline.schema.json'
+    Run:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - id
+        - workspace_id
+        - ownership_type
+        - channel_id
+        - status
+        - cancellation_requested_at
+        - idempotency_key
+        - input
+        - composition_snapshot
+        - created_by
+        - created_at
+        - started_at
+        - finished_at
+        - updated_at
+      properties:
+        schema_version: { $ref: '../schemas/v1/common.schema.json#/$defs/ContractVersion' }
+        id: { $ref: '../schemas/v1/common.schema.json#/$defs/Uuid' }
+        workspace_id: { $ref: '../schemas/v1/common.schema.json#/$defs/Uuid' }
+        ownership_type: { $ref: '../schemas/v1/enums.schema.json#/$defs/OwnershipType' }
+        channel_id: { $ref: '../schemas/v1/common.schema.json#/$defs/NullableUuid' }
+        status: { $ref: '../schemas/v1/enums.schema.json#/$defs/RunStatus' }
+        cancellation_requested_at:
+          $ref: '../schemas/v1/common.schema.json#/$defs/NullableTimestamp'
+        idempotency_key:
+          type: string
+          minLength: 8
+          maxLength: 255
+          pattern: '^[A-Za-z0-9._:-]+$'
+        input: { $ref: '../schemas/v1/run.schema.json#/$defs/InputValues' }
+        composition_snapshot:
+          $ref: '../schemas/v1/run.schema.json#/$defs/CompositionSnapshot'
+        created_by: { $ref: '../schemas/v1/common.schema.json#/$defs/Uuid' }
+        created_at: { $ref: '../schemas/v1/common.schema.json#/$defs/Timestamp' }
+        started_at: { $ref: '../schemas/v1/common.schema.json#/$defs/NullableTimestamp' }
+        finished_at: { $ref: '../schemas/v1/common.schema.json#/$defs/NullableTimestamp' }
+        updated_at: { $ref: '../schemas/v1/common.schema.json#/$defs/Timestamp' }
+    RunCreate:
+      $ref: '../schemas/v1/run-create.schema.json'
+    Step:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - id
+        - workspace_id
+        - run_id
+        - node_key
+        - operation
+        - status
+        - queue_name
+        - required_capabilities
+        - input_snapshot
+        - output_summary
+        - output_artifacts
+        - dependencies
+        - attempt
+        - maximum_attempts
+        - error
+        - review_required
+        - review
+        - lease_owner
+        - lease_expires_at
+        - heartbeat_at
+        - next_attempt_at
+        - cancellation_requested_at
+        - created_at
+        - started_at
+        - finished_at
+        - updated_at
+        - revision
+      properties:
+        schema_version: { type: string, const: 1.0.0 }
+        id:
+          type: string
+          pattern: '^[0-9a-fA-F-]{36}:[a-z][a-z0-9_]{0,63}$'
+        workspace_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        node_key: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+        operation: { type: string, pattern: '^[a-z][a-z0-9_.-]{0,127}$' }
+        status:
+          type: string
+          enum: [queued, running, awaiting_review, retrying, succeeded, failed, cancelled]
+        queue_name: { type: string }
+        required_capabilities: { type: array, items: { type: string } }
+        input_snapshot: {}
+        output_summary: { type: [object, array, string, number, boolean, 'null'] }
+        output_artifacts: { type: array, items: { type: object } }
+        dependencies: { type: array, items: { type: string } }
+        attempt: { type: integer, minimum: 0, maximum: 20 }
+        maximum_attempts: { type: integer, minimum: 1, maximum: 20 }
+        error: { type: [object, 'null'] }
+        review_required: { type: boolean }
+        review:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [decision, actor_id, comment, requested_at, decided_at]
+              properties:
+                decision: { type: [string, 'null'], enum: [approve, reject, request_changes, null] }
+                actor_id: { type: [string, 'null'] }
+                comment: { type: [string, 'null'] }
+                requested_at: { type: [string, 'null'], format: date-time }
+                decided_at: { type: [string, 'null'], format: date-time }
+            - type: 'null'
+        lease_owner: { type: [string, 'null'] }
+        lease_expires_at: { type: [string, 'null'], format: date-time }
+        heartbeat_at: { type: [string, 'null'], format: date-time }
+        next_attempt_at: { type: [string, 'null'], format: date-time }
+        cancellation_requested_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+        revision: { type: integer, minimum: 0 }
+    Artifact:
+      $ref: '../schemas/v1/artifact.schema.json'
+    Event:
+      $ref: '../schemas/v1/event.schema.json'
+    Page:
+      $ref: '../schemas/v1/common.schema.json#/$defs/Page'
+    Error:
+      $ref: '../schemas/v1/common.schema.json#/$defs/Error'
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/User' } }
+        page: { $ref: '#/components/schemas/Page' }
+    WorkspacePage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Workspace' } }
+        page: { $ref: '#/components/schemas/Page' }
+    ChannelPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Channel' } }
+        page: { $ref: '#/components/schemas/Page' }
+    SkillPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Skill' } }
+        page: { $ref: '#/components/schemas/Page' }
+    SkillVersionPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/SkillVersion' } }
+        page: { $ref: '#/components/schemas/Page' }
+    SkillTestExecutionPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/SkillTestExecution' } }
+        page: { $ref: '#/components/schemas/Page' }
+    AssetLibraryPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/AssetLibrary' } }
+        page: { $ref: '#/components/schemas/Page' }
+    RenderPresetPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/RenderPreset' } }
+        page: { $ref: '#/components/schemas/Page' }
+    PipelinePage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Pipeline' } }
+        page: { $ref: '#/components/schemas/Page' }
+    RunPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Run' } }
+        page: { $ref: '#/components/schemas/Page' }
+    StepPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Step' } }
+        page: { $ref: '#/components/schemas/Page' }
+    ArtifactPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
+        page: { $ref: '#/components/schemas/Page' }
+    EventPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Event' } }
+        page: { $ref: '#/components/schemas/Page' }
+  requestBodies:
+    ForkSkill:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ForkSkillRequest' }
+    Workspace:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Workspace' }
+    ChannelWrite:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ChannelWrite' }
+    Skill:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Skill' }
+    SkillCreate:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillCreate' }
+    SkillVersion:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillVersion' }
+    SkillVersionCreate:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillVersionCreate' }
+    SkillVersionPatch:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillVersionPatch' }
+    PublishSkillVersion:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PublishSkillVersionRequest' }
+    SkillTestExecutionCreate:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillTestExecutionCreate' }
+    AssetLibrary:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssetLibrary' }
+    RenderPreset:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RenderPreset' }
+    Pipeline:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Pipeline' }
+    Run:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Run' }
+    RunCreate:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RunCreate' }
+  responses:
+    Asset:
+      description: Workspace-scoped asset metadata
+      headers:
+        ETag: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Asset' }
+    AssetPage:
+      description: Cursor-paginated asset page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssetPage' }
+    ResourcePage:
+      description: Cursor-paginated related resource page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ResourcePage' }
+    BatchAssetResult:
+      description: Per-item successes and failures for a bounded batch
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BatchAssetResult' }
+    CurrentContext:
+      description: Current single-workspace context
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/CurrentContext' }
+    ForkSkill:
+      description: Forked Skill and initial draft version
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ForkSkillResponse' }
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    User:
+      description: User
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/User' }
+    Workspace:
+      description: Workspace
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Workspace' }
+    Channel:
+      description: Channel
+      headers:
+        ETag:
+          description: Quoted numeric Channel revision for If-Match.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Channel' }
+    Skill:
+      description: Skill
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Skill' }
+    SkillVersion:
+      description: Skill version
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillVersion' }
+    ValidationReport:
+      description: Draft validation report
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationReport' }
+    SkillTestExecution:
+      description: Skill test execution and current status
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillTestExecution' }
+    AssetLibrary:
+      description: Asset library
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssetLibrary' }
+    RenderPreset:
+      description: Render preset
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RenderPreset' }
+    Pipeline:
+      description: Pipeline
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Pipeline' }
+    Run:
+      description: Run
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Run' }
+    Step:
+      description: Step
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Step' }
+    Artifact:
+      description: Artifact
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Artifact' }
+    Event:
+      description: Event
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Event' }
+    UserList:
+      description: User page
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UserPage'
+    WorkspaceList:
+      description: Workspace page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WorkspacePage' }
+    ChannelList:
+      description: Channel page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ChannelPage' }
+    SkillList:
+      description: Skill page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillPage' }
+    SkillVersionList:
+      description: Skill version page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillVersionPage' }
+    SkillTestExecutionList:
+      description: Skill test execution page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SkillTestExecutionPage' }
+    AssetLibraryList:
+      description: Asset library page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssetLibraryPage' }
+    RenderPresetList:
+      description: Render preset page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RenderPresetPage' }
+    PipelineList:
+      description: Pipeline page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PipelinePage' }
+    RunList:
+      description: Run page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RunPage' }
+    StepList:
+      description: Step page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StepPage' }
+    ArtifactList:
+      description: Artifact page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ArtifactPage' }
+    EventList:
+      description: Event page
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EventPage' }

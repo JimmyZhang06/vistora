@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/step.schema.json",
+  "title": "Step",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "run_id", "node_key", "operation", "status",
+    "attempt", "maximum_attempts", "idempotency_key", "input_snapshot", "input_artifact_ids", "output_artifact_ids",
+    "error", "lease_owner", "lease_expires_at", "heartbeat_at", "next_attempt_at", "cancellation_requested_at",
+    "created_at", "started_at", "finished_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "run_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "node_key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "operation": { "$ref": "common.schema.json#/$defs/CapabilityName" },
+    "status": { "$ref": "enums.schema.json#/$defs/StepStatus" },
+    "attempt": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "maximum_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "readOnly": true
+    },
+    "input_snapshot": { "$ref": "#/$defs/InputSnapshot", "readOnly": true },
+    "input_artifact_ids": {
+      "type": "array",
+      "maxItems": 1000,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/Uuid" }
+    },
+    "output_artifact_ids": {
+      "type": "array",
+      "maxItems": 1000,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/Uuid" }
+    },
+    "error": {
+      "oneOf": [
+        { "$ref": "#/$defs/StepError" },
+        { "type": "null" }
+      ]
+    },
+    "lease_owner": { "type": ["string", "null"], "maxLength": 255 },
+    "lease_expires_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "heartbeat_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "next_attempt_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "cancellation_requested_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "started_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "finished_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "run_id": "99999999-9999-4999-8999-999999999999",
+      "node_key": "research",
+      "operation": "research.collect",
+      "status": "queued",
+      "attempt": 0,
+      "maximum_attempts": 3,
+      "idempotency_key": "99999999-9999-4999-8999-999999999999:research:v1",
+      "input_snapshot": {
+        "values": { "topic": "How small teams verify sources" },
+        "artifacts": [],
+        "capabilities": ["research.web_acquisition"],
+        "content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "input_artifact_ids": [],
+      "output_artifact_ids": [],
+      "error": null,
+      "lease_owner": null,
+      "lease_expires_at": null,
+      "heartbeat_at": null,
+      "next_attempt_at": null,
+      "cancellation_requested_at": null,
+      "created_at": "2026-08-14T03:00:00Z",
+      "started_at": null,
+      "finished_at": null,
+      "updated_at": "2026-08-14T03:00:00Z"
+    }
+  ],
+  "$defs": {
+    "SnapshotValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/SnapshotValue" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 1000,
+          "propertyNames": { "maxLength": 128 },
+          "additionalProperties": { "$ref": "#/$defs/SnapshotValue" }
+        }
+      ]
+    },
+    "ArtifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "content_hash"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "kind": { "$ref": "enums.schema.json#/$defs/ArtifactKind" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" }
+      }
+    },
+    "InputSnapshot": {
+      "description": "Immutable, content-addressed inputs captured before the first delivery of this step.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["values", "artifacts", "capabilities", "content_hash"],
+      "properties": {
+        "values": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "additionalProperties": { "$ref": "#/$defs/SnapshotValue" }
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/ArtifactReference" }
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
+        },
+        "content_hash": {
+          "allOf": [{ "$ref": "common.schema.json#/$defs/Sha256" }],
+          "readOnly": true
+        }
+      }
+    },
+    "StepError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "maxLength": 80 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

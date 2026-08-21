@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "framefactory-worker"
+version = "0.1.0"
+description = "FrameFactory worker execution kernel"
+requires-python = ">=3.11"
+dependencies = [
+  "boto3>=1.35,<2",
+  "edge-tts>=7.2.8,<8",
+  "psycopg[binary]>=3.2,<4",
+  "redis>=5,<7",
+]
+
+[project.scripts]
+framefactory-worker = "framefactory.worker.__main__:main"
+framefactory-semantic-timeline-benchmark = "framefactory.worker.semantic_timeline_benchmark:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["framefactory*"]

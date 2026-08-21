@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/render-preset.schema.json",
+  "title": "RenderPreset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "name", "slug", "description", "visibility",
+    "status", "version", "canvas", "subtitles", "layout", "motion", "brand", "capability_requirements",
+    "content_hash", "created_by", "created_at", "published_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "slug": { "$ref": "common.schema.json#/$defs/Slug" },
+    "description": { "$ref": "common.schema.json#/$defs/Description" },
+    "visibility": { "$ref": "enums.schema.json#/$defs/Visibility" },
+    "status": { "$ref": "enums.schema.json#/$defs/ResourceStatus" },
+    "version": { "type": "integer", "minimum": 1 },
+    "canvas": { "$ref": "#/$defs/Canvas" },
+    "subtitles": { "$ref": "#/$defs/Subtitles" },
+    "layout": { "$ref": "#/$defs/Layout" },
+    "motion": { "$ref": "#/$defs/Motion" },
+    "brand": { "$ref": "#/$defs/Brand" },
+    "capability_requirements": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
+    },
+    "content_hash": { "$ref": "common.schema.json#/$defs/Sha256", "readOnly": true },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "published_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "77777777-7777-4777-8777-777777777777",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "name": "Vertical Clean",
+      "slug": "vertical-clean",
+      "description": "A restrained vertical presentation.",
+      "visibility": "workspace",
+      "status": "active",
+      "version": 1,
+      "canvas": { "width": 1080, "height": 1920, "frame_rate": 30, "background_color": "#101218" },
+      "subtitles": {
+        "enabled": true,
+        "mode": "sentence",
+        "max_lines": 2,
+        "font_family": "Noto Sans",
+        "font_size": 54,
+        "text_color": "#FFFFFF",
+        "highlight_color": "#FFD166"
+      },
+      "layout": { "mode": "full_frame", "safe_area_percent": 10, "media_fit": "cover" },
+      "motion": { "transition": "fade", "transition_seconds": 0.25, "image_motion": "pan_zoom" },
+      "brand": { "logo_asset_id": null, "primary_color": "#FFD166", "secondary_color": "#101218" },
+      "capability_requirements": ["render.subtitle_sentence"],
+      "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "created_by": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-08-14T01:00:00Z",
+      "published_at": "2026-08-14T02:00:00Z"
+    }
+  ],
+  "$defs": {
+    "Canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "frame_rate", "background_color"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 240, "maximum": 7680 },
+        "height": { "type": "integer", "minimum": 240, "maximum": 7680 },
+        "frame_rate": { "type": "integer", "enum": [24, 25, 30, 50, 60] },
+        "background_color": { "type": "string", "pattern": "^#[A-Fa-f0-9]{6}(?:[A-Fa-f0-9]{2})?$" }
+      }
+    },
+    "Subtitles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mode", "max_lines", "font_family", "font_size", "text_color", "highlight_color"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": { "type": "string", "enum": ["sentence", "word", "karaoke"] },
+        "max_lines": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "font_family": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "font_size": { "type": "integer", "minimum": 8, "maximum": 240 },
+        "text_color": { "type": "string", "pattern": "^#[A-Fa-f0-9]{6}(?:[A-Fa-f0-9]{2})?$" },
+        "highlight_color": { "type": "string", "pattern": "^#[A-Fa-f0-9]{6}(?:[A-Fa-f0-9]{2})?$" }
+      }
+    },
+    "Layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "safe_area_percent", "media_fit"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["full_frame", "split", "picture_in_picture"] },
+        "safe_area_percent": { "type": "number", "minimum": 0, "maximum": 40 },
+        "media_fit": { "type": "string", "enum": ["cover", "contain"] }
+      }
+    },
+    "Motion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transition", "transition_seconds", "image_motion"],
+      "properties": {
+        "transition": { "type": "string", "enum": ["cut", "fade", "slide"] },
+        "transition_seconds": { "type": "number", "minimum": 0, "maximum": 10 },
+        "image_motion": { "type": "string", "enum": ["none", "pan", "zoom", "pan_zoom"] }
+      }
+    },
+    "Brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logo_asset_id", "primary_color", "secondary_color"],
+      "properties": {
+        "logo_asset_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+        "primary_color": { "type": "string", "pattern": "^#[A-Fa-f0-9]{6}(?:[A-Fa-f0-9]{2})?$" },
+        "secondary_color": { "type": "string", "pattern": "^#[A-Fa-f0-9]{6}(?:[A-Fa-f0-9]{2})?$" }
+      }
+    }
+  }
+}

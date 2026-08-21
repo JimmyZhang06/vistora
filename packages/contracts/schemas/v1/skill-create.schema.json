@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-create.schema.json",
+  "title": "SkillCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "slug"],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "publisher_name": { "$ref": "common.schema.json#/$defs/Name", "default": "My FrameFactory" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "slug": { "$ref": "common.schema.json#/$defs/Slug" },
+    "description": { "$ref": "common.schema.json#/$defs/Description", "default": "" },
+    "visibility": { "type": "string", "enum": ["private", "workspace"], "default": "private" }
+  }
+}

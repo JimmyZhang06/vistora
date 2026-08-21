@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/artifact.schema.json",
+  "title": "Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "run_id", "step_id", "kind", "media_type",
+    "object_key", "byte_size", "content_hash", "filename", "created_at", "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "run_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "step_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "kind": { "$ref": "enums.schema.json#/$defs/ArtifactKind" },
+    "media_type": { "$ref": "common.schema.json#/$defs/MediaType" },
+    "object_key": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 1024,
+      "pattern": "^(?:workspaces/[0-9a-fA-F-]{36}/runs/[0-9a-fA-F-]{36}/artifacts/[0-9a-fA-F-]{36}|system/runs/[0-9a-fA-F-]{36}/artifacts/[0-9a-fA-F-]{36})(?:/[A-Za-z0-9._-]+)?$",
+      "readOnly": true
+    },
+    "byte_size": { "type": "integer", "minimum": 0 },
+    "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "filename": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\]+$" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "expires_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "run_id": "99999999-9999-4999-8999-999999999999",
+      "step_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "kind": "research",
+      "media_type": "application/json",
+      "object_key": "workspaces/22222222-2222-4222-8222-222222222222/runs/99999999-9999-4999-8999-999999999999/artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/research.json",
+      "byte_size": 4096,
+      "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "filename": "research.json",
+      "created_at": "2026-08-14T03:05:00Z",
+      "expires_at": null
+    }
+  ]
+}

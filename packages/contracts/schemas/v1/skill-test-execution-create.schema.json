@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-test-execution-create.schema.json",
+  "title": "SkillTestExecutionCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["skill_id", "left_version_id", "right_version_id", "topic"],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "skill_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "left_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "right_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "topic": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "inputs": { "type": "object", "default": {} }
+  }
+}

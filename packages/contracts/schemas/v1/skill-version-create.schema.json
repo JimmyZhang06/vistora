@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-version-create.schema.json",
+  "title": "SkillVersionCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["skill_id", "version"],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "skill_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "source_version_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "input_schema": { "$ref": "skill-version.schema.json#/$defs/InputSchema" },
+    "research_policy": { "$ref": "skill-version.schema.json#/$defs/ResearchPolicy" },
+    "writing_policy": { "$ref": "skill-version.schema.json#/$defs/WritingPolicy" },
+    "visual_policy": { "$ref": "skill-version.schema.json#/$defs/VisualPolicy" },
+    "asset_policy": { "$ref": "skill-version.schema.json#/$defs/AssetPolicy" },
+    "qc_policy": { "$ref": "skill-version.schema.json#/$defs/QcPolicy" },
+    "capability_requirements": {
+      "type": "array", "maxItems": 64, "uniqueItems": true,
+      "items": { "$ref": "skill-version.schema.json#/$defs/CapabilityRequirement" }
+    },
+    "output_contract": { "$ref": "skill-version.schema.json#/$defs/OutputContract" },
+    "default_pipeline_version_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "test_topics": { "type": "array", "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "release_notes": { "type": "string", "maxLength": 10000 }
+  },
+  "anyOf": [
+    {
+      "required": ["source_version_id"],
+      "properties": { "source_version_id": { "type": "string", "format": "uuid" } }
+    },
+    { "required": ["input_schema", "research_policy", "writing_policy", "visual_policy", "asset_policy", "qc_policy", "capability_requirements", "output_contract"] }
+  ]
+}

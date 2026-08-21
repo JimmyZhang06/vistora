@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0.0",
+  "id": "332d34fc-d1e3-5b16-8ca7-15a5de470e89",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "78b00d0d-8ca5-528a-a42f-40674cc897c4",
+  "version": "1.0.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "公司案例输入",
+    "description": "提供公司、分析问题和资料截止时间。",
+    "properties": {
+      "company": {"type": "string", "title": "公司或品牌", "minLength": 1, "maxLength": 300},
+      "question": {"type": "string", "title": "分析问题", "format": "multiline", "maxLength": 1000},
+      "as_of": {"type": "string", "title": "资料截止日期", "format": "date"},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160}
+    },
+    "required": ["company", "question"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "news", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 4,
+    "maximum_sources": 16,
+    "freshness_days": 120,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 240,
+    "tone_tags": ["故事化", "具体", "分析型"],
+    "structure": [
+      {"name": "决策复盘", "purpose": "从关键结果或矛盾切入，建立时间线，解释商业机制与关键决策，再总结可迁移但有限定条件的经验。", "target_share": 1}
+    ],
+    "markdown_instructions": "明确资料截止时间，优先使用财报、监管披露、公司公告和可靠访谈。区分收入、利润、估值和市场份额，不混用指标。解释决策时同时呈现当时约束与后见偏差。结论是案例复盘，不构成证券或投资建议。",
+    "prohibited_content": ["具体买卖或收益建议", "使用未经证实的传闻", "攻击企业或个人", "无证据预测市场、价格或政策", "混淆财务指标"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "9:16",
+    "frame_rate": 30,
+    "visual_tags": ["商业编辑感", "时间线", "数据可读"],
+    "shot_duration_seconds": {"minimum": 2, "target": 5, "maximum": 9},
+    "text_safe_area_percent": 10,
+    "generated_media_allowed": false
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video", "document"],
+    "minimum_assets": 10,
+    "license_required": true,
+    "fallback": "fail",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "financial-claims", "category": "factuality", "description": "财务、市场和时间线陈述可追溯到截止日期前的可靠资料。", "severity": "error", "action": "fail"},
+      {"id": "no-investment-advice", "category": "safety", "description": "内容不包含具体证券买卖、收益承诺或个性化投资建议。", "severity": "error", "action": "fail"},
+      {"id": "metric-context", "category": "writing", "description": "数据包含时期、口径和必要比较基准。", "severity": "warning", "action": "request_review"},
+      {"id": "brand-media-rights", "category": "copyright", "description": "品牌素材、报道画面和图表具备来源与权利记录。", "severity": "error", "action": "fail"}
+    ],
+    "human_review": "always",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.source_grounding", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.web_acquisition", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 31457280},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+  "content_hash": "47407b08b14ff5d95ebdfa5de4276fa391083da2ffe1be7ccf6a39874cca9d6f",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "published_at": "2026-08-15T00:00:00Z"
+}

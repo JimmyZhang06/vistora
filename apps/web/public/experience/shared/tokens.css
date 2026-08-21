@@ -1,0 +1,127 @@
+:root {
+  color-scheme: dark;
+
+  --color-canvas: #020202;
+  --color-foreground: #f1f1f1;
+  --color-secondary: rgba(255, 255, 255, 0.7);
+  --color-muted: rgba(241, 241, 241, 0.5);
+  --color-quiet: rgba(241, 241, 241, 0.34);
+  --color-hover: rgba(241, 241, 241, 0.08);
+  --color-glass: rgba(2, 2, 2, 0.55);
+  --color-status: #53b365;
+  --color-status-soft: rgba(83, 179, 101, 0.32);
+
+  --border-quiet: rgba(241, 241, 241, 0.15);
+  --border-default: rgba(241, 241, 241, 0.2);
+  --border-strong: rgba(241, 241, 241, 0.25);
+
+  --font-grotesk: "Lay Grotesk", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-interface: "Lay Grotesk", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  --display-xl: clamp(3.25rem, 6.2vw, 7rem);
+  --display-lg: clamp(2.75rem, 4.35vw, 4.2rem);
+  --heading-md: clamp(1.75rem, 2.2vw, 2.35rem);
+  --body-lg: clamp(1rem, 1.28vw, 1.3rem);
+  --body-md: clamp(0.9rem, 1vw, 1.05rem);
+  --label-sm: clamp(0.72rem, 0.75vw, 0.82rem);
+
+  --leading-compressed: 0.86;
+  --leading-tight: 1;
+  --leading-body: 1.45;
+  --tracking-display: -0.02em;
+  --tracking-label: 0.05em;
+
+  --gutter-desktop: 32px;
+  --gutter-tablet: 20px;
+  --gutter-mobile: 16px;
+  --section-space: clamp(6rem, 12vw, 11rem);
+
+  --radius-0: 0;
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-circle: 50%;
+
+  --motion-fast: 180ms;
+  --motion-base: 420ms;
+  --motion-slow: 900ms;
+  --ease-ponder: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-linear: linear;
+
+  /* 抬升面（composer / inspector / 卡片）——之前写死在 studio.css 的深色，令牌化后亮色主题才有落点 */
+  --surface-raised: rgba(12, 12, 12, 0.96);
+  --surface-panel: #060606;
+  --surface-card: #1a1a1a;
+  --color-scrim: rgba(2, 2, 2, 0.76);
+  --border-card: rgba(241, 241, 241, 0.38);
+  --color-card-copy: rgba(241, 241, 241, 0.72);
+  /* 强调色：暗色主题与前景同色（不引入新色相），亮色主题换陶土橙 */
+  --color-accent: #f1f1f1;
+
+  /* ── BOT Chain 品牌色 ── */
+  --color-rwa:        #00d4aa;
+  --color-rwa-soft:   rgba(0, 212, 170, 0.18);
+  --color-rwa-dim:    rgba(0, 212, 170, 0.5);
+  --color-chain:      #ff6b35;
+  --color-chain-soft: rgba(255, 107, 53, 0.15);
+  --color-chain-dim:  rgba(255, 107, 53, 0.5);
+}
+
+/* ---------------------------------------------------------------------------
+   白天模式（2026-07-25 风云拍板新增）
+   调色板逐值取自概率论复习资料真品 CSS（D:\Dev\gailv-fuxi\概率论与数理统计精讲.html）：
+   --bg:#faf8f5 --card:#fff --ink:#1f2430 --line:#e6e3dd --soft:#5b6472
+   --orange:#D97757 --right:#1f9d57
+--------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-canvas: #faf8f5;
+  --color-foreground: #1f2430;
+  --color-secondary: #5b6472;
+  --color-muted: rgba(31, 36, 48, 0.58);
+  --color-quiet: rgba(31, 36, 48, 0.4);
+  --color-hover: rgba(217, 119, 87, 0.08);
+  --color-glass: rgba(250, 248, 245, 0.82);
+  --color-status: #1f9d57;
+  --color-status-soft: rgba(31, 157, 87, 0.24);
+
+  --border-quiet: #ece8e1;
+  --border-default: #e6e3dd;
+  --border-strong: #d8d2c6;
+
+  --surface-raised: #ffffff;
+  --surface-panel: #fbf3ec;
+  --surface-card: #ffffff;
+  --color-scrim: rgba(31, 36, 48, 0.72);
+  --border-card: #d8d2c6;
+  --color-card-copy: #5b6472;
+  --color-accent: #d97757;
+
+  /* ── BOT Chain 品牌色（亮色） ── */
+  --color-rwa:        #0a9e7a;
+  --color-rwa-soft:    rgba(10, 158, 122, 0.12);
+  --color-rwa-dim:     rgba(10, 158, 122, 0.6);
+  --color-chain:       #c45a28;
+  --color-chain-soft:  rgba(196, 90, 40, 0.12);
+  --color-chain-dim:   rgba(196, 90, 40, 0.6);
+}
+
+@media (max-width: 991px) {
+  :root {
+    --page-gutter: var(--gutter-tablet);
+  }
+}
+
+@media (min-width: 992px) {
+  :root {
+    --page-gutter: var(--gutter-desktop);
+  }
+}
+
+@media (max-width: 479px) {
+  :root {
+    --page-gutter: var(--gutter-mobile);
+  }
+}

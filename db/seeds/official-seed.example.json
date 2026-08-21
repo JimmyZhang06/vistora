@@ -1,0 +1,16 @@
+{
+  "schema_version": "framefactory.official-seed.v1",
+  "publisher": {
+    "type": "system",
+    "workspace_slug": "replace-at-import"
+  },
+  "id_strategy": "allocate_on_import",
+  "resources": {
+    "skills": [],
+    "skill_versions": [],
+    "render_presets": [],
+    "render_preset_versions": [],
+    "pipelines": [],
+    "pipeline_versions": []
+  }
+}

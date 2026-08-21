@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/run-create.schema.json",
+  "title": "RunCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["input"],
+  "anyOf": [
+    { "required": ["composition"] },
+    {
+      "required": ["channel_id"],
+      "properties": {
+        "channel_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+      }
+    }
+  ],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "channel_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "input": { "$ref": "run.schema.json#/$defs/InputValues" },
+    "video_settings": { "$ref": "#/$defs/VideoSettings" },
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill_version_id", "pipeline_version_id"],
+      "properties": {
+        "skill_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "pipeline_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "asset_library_ids": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/Uuid" } },
+        "voice_profile_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+        "render_preset_version_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+        "capabilities": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/CapabilityName" } }
+      }
+    }
+  },
+  "$defs": {
+    "SubtitleSettings": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": ["boolean", "null"] },
+        "position": { "type": ["string", "null"], "enum": ["bottom", "lower_third", null] },
+        "size": { "type": ["string", "null"], "enum": ["small", "medium", "large", null] },
+        "max_lines": { "type": ["integer", "null"], "minimum": 1, "maximum": 3 }
+      }
+    },
+    "AssetAcquisitionSettings": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["youtube", "bilibili", "wikimedia"] }
+        },
+        "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
+        "rights_confirmed": { "type": "boolean" }
+      }
+    },
+    "VideoSettings": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "language": { "type": ["string", "null"], "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
+        "aspect_ratio": { "type": ["string", "null"], "enum": ["16:9", "9:16", "1:1", "4:3", null] },
+        "target_duration_seconds": { "type": ["integer", "null"], "minimum": 15, "maximum": 3600 },
+        "visibility": { "type": ["string", "null"], "enum": ["private", "workspace", null] },
+        "auto_quality_check": { "type": ["boolean", "null"] },
+        "layout": { "type": ["string", "null"], "enum": ["full_frame", "editorial", null] },
+        "media_fit": { "type": ["string", "null"], "enum": ["cover", "contain", null] },
+        "frame_rate": { "type": ["integer", "null"], "enum": [24, 25, 30, 50, 60, null] },
+        "subtitles": { "$ref": "#/$defs/SubtitleSettings" },
+        "asset_acquisition": { "$ref": "#/$defs/AssetAcquisitionSettings" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "input": { "topic": "A practical introduction to declarative skills" },
+      "composition": {
+        "skill_version_id": "11111111-1111-4111-8111-111111111111",
+        "pipeline_version_id": "22222222-2222-4222-8222-222222222222",
+        "asset_library_ids": [],
+        "capabilities": []
+      }
+    }
+  ]
+}

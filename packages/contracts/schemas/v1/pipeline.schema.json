@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/pipeline.schema.json",
+  "title": "Pipeline",
+  "description": "Immutable declarative step graph using only registered operations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "ownership_type", "name", "slug", "description", "visibility",
+    "status", "version", "nodes", "capability_requirements", "content_hash", "created_by", "created_at", "published_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "slug": { "$ref": "common.schema.json#/$defs/Slug" },
+    "description": { "$ref": "common.schema.json#/$defs/Description" },
+    "visibility": { "$ref": "enums.schema.json#/$defs/Visibility" },
+    "status": { "$ref": "enums.schema.json#/$defs/ResourceStatus" },
+    "version": { "type": "integer", "minimum": 1 },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/PipelineNode" }
+    },
+    "capability_requirements": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
+    },
+    "content_hash": { "$ref": "common.schema.json#/$defs/Sha256", "readOnly": true },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "published_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "88888888-8888-4888-8888-888888888888",
+      "workspace_id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "name": "Standard Production",
+      "slug": "standard-production",
+      "description": "Research, compose, select media, render, and evaluate.",
+      "visibility": "workspace",
+      "status": "active",
+      "version": 1,
+      "nodes": [
+        { "key": "research", "operation": "research.collect", "depends_on": [], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false },
+        { "key": "write", "operation": "writing.compose", "depends_on": ["research"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false },
+        { "key": "tts", "operation": "audio.synthesize", "depends_on": ["write"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false },
+        { "key": "assets", "operation": "media.select", "depends_on": ["write"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false },
+        { "key": "render", "operation": "render.compose", "depends_on": ["tts", "assets"], "required": true, "maximum_attempts": 2, "timeout_seconds": 3600, "review_gate": false },
+        { "key": "quality", "operation": "quality.evaluate", "depends_on": ["render"], "required": true, "maximum_attempts": 2, "timeout_seconds": 900, "review_gate": true }
+      ],
+      "capability_requirements": ["research.web_acquisition", "render.subtitle_sentence"],
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "created_by": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-08-14T01:00:00Z",
+      "published_at": "2026-08-14T02:00:00Z"
+    }
+  ],
+  "$defs": {
+    "PipelineNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "operation", "depends_on", "required", "maximum_attempts", "timeout_seconds", "review_gate"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "operation": {
+          "type": "string",
+          "enum": ["research.collect", "research.verify", "writing.compose", "audio.synthesize", "media.select", "media.generate", "timeline.align", "render.compose", "quality.evaluate", "review.gate", "delivery.package"]
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 99,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+        },
+        "required": { "type": "boolean" },
+        "maximum_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "review_gate": { "type": "boolean" }
+      }
+    }
+  }
+}

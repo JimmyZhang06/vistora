@@ -1,0 +1,12 @@
+{
+  "name": "@framefactory/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Versioned JSON Schema and OpenAPI contracts for FrameFactory",
+  "license": "UNLICENSED",
+  "files": [
+    "schemas",
+    "examples",
+    "openapi"
+  ]
+}

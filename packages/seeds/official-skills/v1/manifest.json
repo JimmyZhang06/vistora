@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "package_id": "framefactory.official-skills.v1",
+  "package_version": "1.0.0",
+  "description": "Curated official starting points represented as ordinary declarative Skill and SkillVersion records.",
+  "dry_run_only": true,
+  "publisher": {
+    "type": "system",
+    "name": "Vistora",
+    "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+    "actor_id": "e1574325-feff-5570-a90f-2261616c9872"
+  },
+  "identity": {
+    "algorithm": "uuid5",
+    "namespace_uuid": "8540d083-d10f-5eae-80de-a3cb5bc42e20",
+    "namespace_source": "uuid5(URL, https://framefactory.dev/seeds/official-skills/v1)",
+    "skill_key": "skill:{slug}",
+    "version_key": "skill-version:{slug}:{version}",
+    "pipeline_key": "pipeline:{slug}",
+    "pipeline_version_key": "pipeline-version:{slug}:{version}"
+  },
+  "content_hash": {
+    "algorithm": "sha256",
+    "canonicalization": "RFC 8785 JCS",
+    "included_fields": [
+      "input_schema",
+      "research_policy",
+      "writing_policy",
+      "visual_policy",
+      "asset_policy",
+      "qc_policy",
+      "capability_requirements",
+      "output_contract",
+      "default_pipeline_version_id"
+    ],
+    "numeric_profile": "integers-only"
+  },
+  "pipeline_content_hash": {
+    "algorithm": "sha256",
+    "canonicalization": "RFC 8785 JCS",
+    "included_fields": ["nodes", "capability_requirements"],
+    "numeric_profile": "integers-only"
+  },
+  "pipelines": [
+    {
+      "order": 10,
+      "slug": "standard-production",
+      "pipeline_id": "2c15b2d6-1460-5d30-a718-f4b06d8e28d7",
+      "version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+      "version": "pipelines/standard-production/1.json",
+      "expected_content_hash": "87ab3ff535a8e56a745f46170ecd0d8ff23201f09b98328a1fc09598c07e8801"
+    }
+  ],
+  "entries": [
+    {
+      "order": 10,
+      "slug": "general-topic-explainer",
+      "skill": "general-topic-explainer/skill.json",
+      "version": "general-topic-explainer/1.0.0.json",
+      "expected_content_hash": "2db0b1ed1fc14a49df05dcadec6f068c50ffa7e33c1820ceac7e652be82cedac"
+    },
+    {
+      "order": 20,
+      "slug": "historical-figure-explainer",
+      "skill": "historical-figure-explainer/skill.json",
+      "version": "historical-figure-explainer/1.0.0.json",
+      "expected_content_hash": "9ea31c845e85215cfa1f841c90a9779ed241330bcac1a5cbb987873be420c808"
+    },
+    {
+      "order": 30,
+      "slug": "ai-technology-briefing",
+      "skill": "ai-technology-briefing/skill.json",
+      "version": "ai-technology-briefing/1.0.0.json",
+      "expected_content_hash": "f81ee0eb6cba98858d9ae9290fdae27fb219b6eab9eeb01b63f4409d8d8280ee"
+    },
+    {
+      "order": 40,
+      "slug": "classic-literature-booklist",
+      "skill": "classic-literature-booklist/skill.json",
+      "version": "classic-literature-booklist/1.0.0.json",
+      "expected_content_hash": "82316753c0001abc72591006e37ba5ba24fc3b8970593efaa52090025f7799fb"
+    },
+    {
+      "order": 50,
+      "slug": "company-case-study",
+      "skill": "company-case-study/skill.json",
+      "version": "company-case-study/1.0.0.json",
+      "expected_content_hash": "47407b08b14ff5d95ebdfa5de4276fa391083da2ffe1be7ccf6a39874cca9d6f"
+    }
+  ]
+}

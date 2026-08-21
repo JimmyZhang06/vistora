@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-version-patch.schema.json",
+  "title": "SkillVersionPatch",
+  "type": "object",
+  "minProperties": 1,
+  "additionalProperties": false,
+  "properties": {
+    "input_schema": { "$ref": "skill-version.schema.json#/$defs/InputSchema" },
+    "research_policy": { "$ref": "skill-version.schema.json#/$defs/ResearchPolicy" },
+    "writing_policy": { "$ref": "skill-version.schema.json#/$defs/WritingPolicy" },
+    "visual_policy": { "$ref": "skill-version.schema.json#/$defs/VisualPolicy" },
+    "asset_policy": { "$ref": "skill-version.schema.json#/$defs/AssetPolicy" },
+    "qc_policy": { "$ref": "skill-version.schema.json#/$defs/QcPolicy" },
+    "capability_requirements": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "skill-version.schema.json#/$defs/CapabilityRequirement" } },
+    "output_contract": { "$ref": "skill-version.schema.json#/$defs/OutputContract" },
+    "default_pipeline_version_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "test_topics": { "type": "array", "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "release_notes": { "type": "string", "maxLength": 10000 }
+  }
+}

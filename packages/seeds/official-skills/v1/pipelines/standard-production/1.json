@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0.0",
+  "id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "标准视频生产",
+  "slug": "standard-production",
+  "description": "通用的研究、写稿、配音与素材并行处理、渲染和人工质检流水线。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 1,
+  "nodes": [
+    {
+      "key": "research",
+      "operation": "research.collect",
+      "depends_on": [],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "write",
+      "operation": "writing.compose",
+      "depends_on": ["research"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "tts",
+      "operation": "audio.synthesize",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "assets",
+      "operation": "media.select",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 6,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "render",
+      "operation": "render.compose",
+      "depends_on": ["tts", "assets"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 3600,
+      "review_gate": false
+    },
+    {
+      "key": "quality",
+      "operation": "quality.evaluate",
+      "depends_on": ["render"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 900,
+      "review_gate": false
+    }
+  ],
+  "capability_requirements": [
+    "model.text_generation",
+    "research.web_acquisition",
+    "render.subtitle_sentence"
+  ],
+  "content_hash": "87ab3ff535a8e56a745f46170ecd0d8ff23201f09b98328a1fc09598c07e8801",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "published_at": "2026-08-15T00:00:00Z"
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/skill-test-execution.schema.json",
+  "title": "SkillTestExecution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "workspace_id", "ownership_type", "skill_id", "left_version_id", "right_version_id", "topic", "inputs", "status", "evaluator", "result", "error", "created_by", "created_at", "started_at", "finished_at", "updated_at"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "skill_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "left_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "right_version_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "topic": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "inputs": { "type": "object" },
+    "status": { "type": "string", "enum": ["queued", "running", "succeeded", "failed"] },
+    "evaluator": { "type": "string", "enum": ["local_deterministic_v1"] },
+    "result": { "type": ["object", "null"] },
+    "error": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Error" }, { "type": "null" }] },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "started_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "finished_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  }
+}

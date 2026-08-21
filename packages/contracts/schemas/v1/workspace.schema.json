@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/workspace.schema.json",
+  "title": "Workspace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "ownership_type", "kind", "name", "slug", "status", "owner_user_id", "created_at", "updated_at"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "ownership_type": { "$ref": "enums.schema.json#/$defs/OwnershipType" },
+    "kind": { "$ref": "enums.schema.json#/$defs/WorkspaceKind" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "slug": { "$ref": "common.schema.json#/$defs/Slug" },
+    "status": { "$ref": "enums.schema.json#/$defs/ResourceStatus" },
+    "owner_user_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "system" } }, "required": ["kind"] },
+      "then": {
+        "properties": {
+          "ownership_type": { "const": "system" },
+          "owner_user_id": { "type": "null" }
+        }
+      },
+      "else": {
+        "properties": {
+          "ownership_type": { "const": "workspace" },
+          "owner_user_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "id": "22222222-2222-4222-8222-222222222222",
+      "ownership_type": "workspace",
+      "kind": "personal",
+      "name": "Example Studio",
+      "slug": "example-studio",
+      "status": "active",
+      "owner_user_id": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-08-14T01:00:00Z",
+      "updated_at": "2026-08-14T01:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0.0",
+  "id": "ddd49010-5050-57cf-a6c8-a90fa0882f87",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "44ea396b-dddd-55a8-8d59-52c96656c195",
+  "version": "1.0.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "历史解读输入",
+    "description": "提供人物、事件或制度，以及希望回答的历史问题。",
+    "properties": {
+      "topic": {"type": "string", "title": "人物或主题", "minLength": 2, "maxLength": 300},
+      "question": {"type": "string", "title": "核心问题", "format": "multiline", "maxLength": 1000},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160}
+    },
+    "required": ["topic"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "licensed_archive", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 3,
+    "maximum_sources": 12,
+    "freshness_days": null,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 150,
+    "tone_tags": ["故事化", "有观点", "机制解释"],
+    "structure": [
+      {"name": "问题驱动叙事", "purpose": "从可验证的认知冲突切入，交代处境，用人物行动、制度机制和后果建立因果链，结尾回答开场问题。", "target_share": 1}
+    ],
+    "markdown_instructions": "反常识角度必须有史料支持，不能为了钩子改写事实。区分史料记载、学术解释和创作者推论。现代类比只帮助理解，不得替代历史语境。避免虚构心理活动和伪造直接引语。",
+    "prohibited_content": ["虚构史料、引语或人物心理", "将争议解释伪装成定论", "当代敏感政治人物或事件", "只靠悲情和猎奇推动叙事"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "9:16",
+    "frame_rate": 30,
+    "visual_tags": ["历史质感", "叙事镜头", "时代准确"],
+    "shot_duration_seconds": {"minimum": 2, "target": 5, "maximum": 9},
+    "text_safe_area_percent": 10,
+    "generated_media_allowed": false
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video", "document"],
+    "minimum_assets": 8,
+    "license_required": true,
+    "fallback": "fail",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "historical-claims", "category": "factuality", "description": "人物、年代、制度和因果陈述均有证据，争议处标明边界。", "severity": "error", "action": "fail"},
+      {"id": "no-fabricated-quotes", "category": "writing", "description": "不存在无法核验的直接引语或心理描写。", "severity": "error", "action": "fail"},
+      {"id": "period-appropriate-media", "category": "visual", "description": "素材不误配时代、人物或地域。", "severity": "warning", "action": "request_review"},
+      {"id": "media-provenance", "category": "copyright", "description": "素材来源与使用权记录完整。", "severity": "error", "action": "fail"}
+    ],
+    "human_review": "on_warning",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.source_grounding", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.web_acquisition", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 20971520},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+  "content_hash": "9ea31c845e85215cfa1f841c90a9779ed241330bcac1a5cbb987873be420c808",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "published_at": "2026-08-15T00:00:00Z"
+}

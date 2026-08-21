@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "production_paths": [
+    "deploy/production",
+    ".github/workflows/release-gates.yml"
+  ],
+  "dependency_paths": [
+    "apps/api",
+    "apps/web",
+    "services/worker"
+  ],
+  "npm_audit_level": "high"
+}

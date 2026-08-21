@@ -1,0 +1,513 @@
+name: Release gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_live_recovery_and_s3:
+        description: Run recovery and S3 integrity gates on the protected release runner
+        required: true
+        default: false
+        type: boolean
+      run_quiesced_restore_gate:
+        description: Run backup/restore after operators have quiesced the protected source DB
+        required: true
+        default: false
+        type: boolean
+      run_live_asset_gates:
+        description: Run asset E2E, 1k/5k load, and full read-only integrity audit
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API tests and Ruff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            apps/api/requirements-prod.txt
+
+      - name: Install API test dependencies
+        run: python -m pip install --disable-pip-version-check -e "./apps/api[dev]"
+
+      - name: Lint API
+        run: python -m ruff check apps/api/src apps/api/tests
+
+      - name: Test API
+        run: python -m pytest apps/api/tests
+
+  worker:
+    name: Worker tests and Ruff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            apps/api/requirements-prod.txt
+            services/worker/pyproject.toml
+            services/worker/requirements-prod.txt
+
+      - name: Install Worker test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -e "./apps/api[dev]" -e ./services/worker
+
+      - name: Lint Worker
+        run: python -m ruff check services/worker
+
+      - name: Test Worker
+        run: python -m pytest services/worker/tests
+
+      - name: Enforce semantic cut quality baseline
+        run: >-
+          python -m framefactory.worker.temporal_benchmark
+          services/worker/benchmarks/temporal_cut_v1.json
+          --minimum-f1 0.90
+          --maximum-unsafe-rate 0
+
+  contracts-seeds-tools:
+    name: Contracts and release tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/contract/requirements.txt
+
+      - name: Install contract test dependencies
+        run: python -m pip install --disable-pip-version-check -r tests/contract/requirements.txt
+
+      - name: Test contracts and release-tool boundaries
+        run: python -m pytest tests/contract tools/tests
+
+  web:
+    name: Web lint, tests, and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked Web dependencies
+        run: npm ci
+
+      - name: Lint Web
+        run: npm run lint
+
+      # package.json's test script performs the production build before node:test,
+      # so this proves both with one build instead of compiling twice.
+      - name: Test Web and build once
+        run: npm test
+
+  packaging:
+    name: Compose and PowerShell validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Validate local persistence Compose
+        run: docker compose -f deploy/docker-compose.persistence.yml config --quiet
+
+      - name: Validate hardened production Compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret_dir="$RUNNER_TEMP/framefactory-compose-secrets"
+          install -d -m 700 "$secret_dir"
+          printf '%s' 'ci-dummy-postgres-password' > "$secret_dir/postgres_password"
+          printf '%s' 'postgresql://framefactory:ci-only@postgres:5432/framefactory' > "$secret_dir/database_url"
+          printf '%s' 'ci-dummy-redis-password' > "$secret_dir/redis_password"
+          printf '%s' 'redis://:ci-only@redis:6379/0' > "$secret_dir/redis_url"
+          printf '%s' 'ci-dummy-s3-access-key' > "$secret_dir/s3_access_key"
+          printf '%s' 'ci-dummy-s3-secret-key' > "$secret_dir/s3_secret_key"
+          export FF_DEFAULT_USER_ID='11111111-1111-4111-8111-111111111111'
+          export FF_DEFAULT_WORKSPACE_ID='22222222-2222-4222-8222-222222222222'
+          export FF_CORS_ALLOW_ORIGINS='https://framefactory.invalid'
+          export FF_POSTGRES_PASSWORD_FILE="$secret_dir/postgres_password"
+          export FF_DATABASE_URL_FILE="$secret_dir/database_url"
+          export FF_REDIS_PASSWORD_FILE="$secret_dir/redis_password"
+          export FF_REDIS_URL_FILE="$secret_dir/redis_url"
+          export FF_S3_ACCESS_KEY_FILE="$secret_dir/s3_access_key"
+          export FF_S3_SECRET_KEY_FILE="$secret_dir/s3_secret_key"
+          docker compose -f deploy/production/compose.yml config --quiet
+
+      - name: Parse start and stop PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @('start.ps1', 'stop.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script).Path,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+              throw "$script contains PowerShell parser errors"
+            }
+          }
+
+  python-supply-chain:
+    name: Locked Python production dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements-build.txt
+            apps/api/requirements-prod.txt
+            services/worker/requirements-build.txt
+            services/worker/requirements-prod.txt
+
+      - name: Install pinned lock compiler
+        run: python -m pip install --disable-pip-version-check uv==0.8.12
+
+      - name: Verify build declarations and lock files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib
+          import tomllib
+
+          for project in (pathlib.Path("apps/api"), pathlib.Path("services/worker")):
+              declared = tomllib.loads((project / "pyproject.toml").read_text())["build-system"]["requires"]
+              source = [
+                  line.strip()
+                  for line in (project / "requirements-build.in").read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")
+              ]
+              if declared != source:
+                  raise SystemExit(f"{project}: build-system.requires and requirements-build.in differ")
+          PY
+
+          common=(
+            --python-version 3.12
+            --python-platform x86_64-manylinux_2_28
+            --only-binary :all:
+            --generate-hashes
+            --no-header
+            --no-annotate
+            --exclude-newer 2026-08-16T00:00:00Z
+          )
+          verify_lock() {
+            local source="$1"
+            local lock="$2"
+            local candidate="$RUNNER_TEMP/$(echo "$lock" | tr '/\\' '--')"
+            cp "$lock" "$candidate"
+            uv pip compile "$source" "${common[@]}" --output-file "$candidate"
+            if ! cmp --silent "$lock" "$candidate"; then
+              diff --unified "$lock" "$candidate" || true
+              echo "Lock drift detected: $lock" >&2
+              return 1
+            fi
+          }
+          verify_lock apps/api/pyproject.toml apps/api/requirements-prod.txt
+          verify_lock apps/api/requirements-build.in apps/api/requirements-build.txt
+          verify_lock services/worker/pyproject.toml services/worker/requirements-prod.txt
+          verify_lock services/worker/requirements-build.in services/worker/requirements-build.txt
+
+      - name: Verify CPython 3.12 Linux amd64 wheels and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/python-wheelhouse"
+          mkdir -p "$wheelhouse"
+          for lock in \
+            apps/api/requirements-build.txt \
+            apps/api/requirements-prod.txt \
+            services/worker/requirements-build.txt \
+            services/worker/requirements-prod.txt
+          do
+            python -m pip download \
+              --disable-pip-version-check \
+              --dest "$wheelhouse" \
+              --require-hashes \
+              --only-binary=:all: \
+              --platform manylinux_2_28_x86_64 \
+              --implementation cp \
+              --python-version 312 \
+              --abi cp312 \
+              --requirement "$lock"
+          done
+
+  security-and-dependencies:
+    name: Secrets, production config, dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+
+      - name: Install pinned Python auditor
+        run: python -m pip install --disable-pip-version-check pip-audit==2.9.0
+
+      - name: Run fail-closed release security gate
+        run: python tools/release/security_gate.py --report artifacts/release/security-gate.json
+
+      - name: Upload machine-readable gate report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-security-gate
+          path: artifacts/release/security-gate.json
+          if-no-files-found: error
+          retention-days: 30
+
+  asset-release-contract:
+    name: Asset API, Worker, Web, and durable contract
+    needs: [api, worker, contracts-seeds-tools, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/contract/requirements.txt
+
+      - name: Install gate dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r tests/contract/requirements.txt -e ./apps/api
+
+      - name: Test asset gate helpers with deterministic 1k/5k fixtures
+        run: python -m pytest tools/tests/test_asset_release_gate.py
+
+      - name: Evaluate fail-closed asset contract
+        id: asset_contract
+        continue-on-error: true
+        run: >-
+          python tools/release/asset_contract_gate.py
+          --report artifacts/release/asset-contract-gate.json
+
+      - name: Upload asset contract report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: asset-release-contract
+          path: artifacts/release/asset-contract-gate.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce asset contract result
+        if: steps.asset_contract.outcome != 'success'
+        run: |
+          echo "Asset release contract is incomplete; see the uploaded report." >&2
+          exit 1
+
+  protected-asset-release:
+    name: Protected asset E2E, scale, and integrity
+    needs: [asset-release-contract]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live_asset_gates)
+    runs-on: [self-hosted, release-verification]
+    environment: release-verification
+    timeout-minutes: 180
+    env:
+      FF_RELEASE_ASSET_TEST_WORKSPACE: ${{ vars.FF_RELEASE_ASSET_TEST_WORKSPACE }}
+      FF_RELEASE_API_URL: ${{ secrets.FF_RELEASE_API_URL }}
+      FF_RELEASE_API_TOKEN: ${{ secrets.FF_RELEASE_API_TOKEN }}
+      FF_RELEASE_API_KEY: ${{ secrets.FF_RELEASE_API_KEY }}
+      FF_RELEASE_ASSET_WORKSPACE_ID: ${{ vars.FF_RELEASE_ASSET_AUDIT_WORKSPACE_ID }}
+      FF_RELEASE_ASSET_OTHER_WORKSPACE_ID: ${{ vars.FF_RELEASE_ASSET_OTHER_WORKSPACE_ID }}
+      FF_RELEASE_ASSET_FIXTURE_FILE: ${{ vars.FF_RELEASE_ASSET_FIXTURE_FILE }}
+      FF_RELEASE_ASSET_LOAD_MANIFEST: ${{ vars.FF_RELEASE_ASSET_LOAD_MANIFEST }}
+      FF_RELEASE_QUARANTINE_MANIFEST: ${{ vars.FF_RELEASE_QUARANTINE_MANIFEST }}
+      FF_RELEASE_ASSET_AUDIT_QUIESCED: ${{ vars.FF_RELEASE_ASSET_AUDIT_QUIESCED }}
+      FF_RELEASE_EXPECTED_QUARANTINED_ASSETS: "1247"
+      FF_RELEASE_DATABASE_URL: ${{ secrets.FF_RELEASE_DATABASE_URL }}
+      FF_RELEASE_S3_ENDPOINT_URL: ${{ vars.FF_RELEASE_S3_ENDPOINT_URL }}
+      FF_RELEASE_S3_REGION: ${{ vars.FF_RELEASE_S3_REGION }}
+      FF_RELEASE_S3_BUCKET: ${{ vars.FF_RELEASE_S3_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.FF_RELEASE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.FF_RELEASE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify protected runner tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python
+          command -v psql
+          command -v aws
+
+      - name: Run complete asset lifecycle gate
+        shell: bash
+        env:
+          FF_RELEASE_WORKSPACE_ID: ${{ vars.FF_RELEASE_ASSET_E2E_WORKSPACE_ID }}
+          FF_RELEASE_ASSET_EPHEMERAL_SCOPE: ${{ vars.FF_RELEASE_ASSET_E2E_SCOPE }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release
+          python tools/release/asset_e2e_gate.py | tee artifacts/release/asset-e2e-gate.json
+
+      - name: Run 1k/5k pagination, bulk, and queue gate
+        shell: bash
+        env:
+          FF_RELEASE_WORKSPACE_ID: ${{ vars.FF_RELEASE_ASSET_LOAD_WORKSPACE_ID }}
+          FF_RELEASE_ASSET_EPHEMERAL_SCOPE: ${{ vars.FF_RELEASE_ASSET_LOAD_SCOPE }}
+        run: |
+          set -euo pipefail
+          python tools/release/asset_load_gate.py | tee artifacts/release/asset-load-gate.json
+
+      - name: Audit all PostgreSQL and MinIO locators
+        run: >-
+          python tools/release/asset_integrity_audit.py --rehash-all
+          --report artifacts/release/asset-integrity-audit.json
+
+      - name: Upload protected asset reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protected-asset-release
+          path: artifacts/release/asset-*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  protected-recovery-and-s3:
+    name: Protected live recovery and S3 integrity
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_live_recovery_and_s3
+    runs-on: [self-hosted, release-verification]
+    environment: release-verification
+    timeout-minutes: 45
+    env:
+      FF_RELEASE_API_URL: ${{ secrets.FF_RELEASE_API_URL }}
+      FF_RELEASE_API_TOKEN: ${{ secrets.FF_RELEASE_API_TOKEN }}
+      FF_RELEASE_API_KEY: ${{ secrets.FF_RELEASE_API_KEY }}
+      FF_RELEASE_WORKSPACE_ID: ${{ vars.FF_RELEASE_WORKSPACE_ID }}
+      FF_RELEASE_COMPOSE_FILE: ${{ vars.FF_RELEASE_COMPOSE_FILE }}
+      FF_RELEASE_COMPOSE_PROJECT: ${{ vars.FF_RELEASE_COMPOSE_PROJECT }}
+      FF_RELEASE_WORKER_SERVICE: ${{ vars.FF_RELEASE_WORKER_SERVICE }}
+      FF_RELEASE_RECOVERY_RUN_PAYLOAD_FILE: ${{ vars.FF_RELEASE_RECOVERY_RUN_PAYLOAD_FILE }}
+      FF_RELEASE_DATABASE_URL: ${{ secrets.FF_RELEASE_DATABASE_URL }}
+      FF_RELEASE_S3_ENDPOINT_URL: ${{ vars.FF_RELEASE_S3_ENDPOINT_URL }}
+      FF_RELEASE_S3_REGION: ${{ vars.FF_RELEASE_S3_REGION }}
+      FF_RELEASE_S3_BUCKET: ${{ vars.FF_RELEASE_S3_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.FF_RELEASE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.FF_RELEASE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify protected runner tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python
+          command -v docker
+          command -v psql
+          command -v aws
+
+      - name: Prove worker interruption recovery
+        run: python tools/release/recovery_gate.py
+
+      - name: Verify PostgreSQL artifact metadata against S3
+        run: python tools/release/s3_integrity_gate.py
+
+  protected-backup-restore:
+    name: Protected quiesced backup and restore
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_quiesced_restore_gate
+    runs-on: [self-hosted, release-verification]
+    environment: release-verification
+    timeout-minutes: 30
+    env:
+      FF_RELEASE_DATABASE_QUIESCED: "1"
+      FF_RELEASE_DATABASE_URL: ${{ secrets.FF_RELEASE_DATABASE_URL }}
+      FF_RELEASE_RESTORE_DATABASE_URL: ${{ secrets.FF_RELEASE_RESTORE_DATABASE_URL }}
+      FF_RELEASE_RESTORE_DATABASE_PREFIX: ${{ vars.FF_RELEASE_RESTORE_DATABASE_PREFIX }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify protected runner PostgreSQL tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python
+          command -v psql
+          command -v pg_dump
+          command -v pg_restore
+
+      - name: Prove backup and empty-database restore
+        run: python tools/release/postgres_restore_gate.py

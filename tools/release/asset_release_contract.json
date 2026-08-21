@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.1.0",
+  "quarantine_inventory": {
+    "expected_count": 1247,
+    "eligible_copyright_statuses": ["owned", "licensed", "public_domain"]
+  },
+  "api": {
+    "required_operations": [
+      {"path": "/v1/asset-libraries", "method": "post"},
+      {"path": "/v1/asset-libraries/{library_id}", "method": "get"},
+      {
+        "path": "/v1/asset-libraries/{library_id}/assets",
+        "method": "get",
+        "parameters": ["status", "kind", "copyright_status", "analysis_status", "tag", "q", "limit", "cursor"]
+      },
+      {"path": "/v1/asset-libraries/{library_id}/import-jobs", "method": "get"},
+      {"path": "/v1/asset-uploads", "method": "post"},
+      {"path": "/v1/asset-uploads/{asset_id}/complete", "method": "post"},
+      {"path": "/v1/asset-imports", "method": "post"},
+      {"path": "/v1/asset-acquisitions", "method": "post"},
+      {"path": "/v1/assets/{asset_id}", "method": "get"},
+      {"path": "/v1/assets/{asset_id}", "method": "patch"},
+      {"path": "/v1/assets/{asset_id}", "method": "delete"},
+      {"path": "/v1/assets/{asset_id}/status-transitions", "method": "post"},
+      {"path": "/v1/assets/{asset_id}/restore", "method": "post"},
+      {"path": "/v1/assets/{asset_id}/segments", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/analyses", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/sources", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/usage-records", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/analysis-jobs", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/audit-events", "method": "get"},
+      {"path": "/v1/assets/{asset_id}/reanalyze", "method": "post"},
+      {"path": "/v1/assets/{asset_id}/downloads/{variant}", "method": "get"},
+      {"path": "/v1/assets/batch-review", "method": "post"},
+      {"path": "/v1/assets/batch-tags", "method": "post"},
+      {"path": "/v1/assets/batch-reanalyze", "method": "post"},
+      {"path": "/v1/artifacts/{artifact_id}/content", "method": "get"}
+    ],
+    "required_tokens": [
+      "processing", "pending", "running", "completed", "failed",
+      "ready", "quarantined", "disabled", "deleted",
+      "expected_revision", "rights_confirmed", "IdempotencyKey"
+    ]
+  },
+  "database": {
+    "required_tokens": [
+      "CREATE TABLE assets", "asset_analysis_jobs", "asset_review_actions",
+      "asset_usage_records", "audit_logs", "representative_frame_key",
+      "content_hash", "revision", "workspace_id"
+    ],
+    "forbidden_patterns": []
+  },
+  "worker": {
+    "required_tokens": [
+      "a.status='ready'", "af.scan_status='clean'", "aa.status='completed'",
+      "a.copyright_status IN ('owned','licensed','public_domain')",
+      "blocking_reason", "action_required"
+    ]
+  },
+  "web": {
+    "required_tokens": [
+      "listAssets", "reviewAsset", "bulkUpdateAssets", "deleteAsset",
+      "status-transitions", "batch-review", "batch-tags", "batch-reanalyze",
+      "downloads/preview", "quarantined"
+    ]
+  }
+}

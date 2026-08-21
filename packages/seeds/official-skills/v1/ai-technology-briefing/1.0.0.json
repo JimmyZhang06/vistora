@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0.0",
+  "id": "64d55cde-8a64-537e-8ba7-eb36e9c458d6",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "b443ac8f-3541-5234-8a50-255c5f018d07",
+  "version": "1.0.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "科技动态解读输入",
+    "description": "提供科技事件、产品或技术问题，以及资料截止时间。",
+    "properties": {
+      "topic": {"type": "string", "title": "事件或技术", "minLength": 3, "maxLength": 300},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160},
+      "as_of": {"type": "string", "title": "资料截止日期", "format": "date"}
+    },
+    "required": ["topic"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "news", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 3,
+    "maximum_sources": 12,
+    "freshness_days": 30,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 180,
+    "tone_tags": ["高信息密度", "清晰", "克制"],
+    "structure": [
+      {"name": "事件到影响", "purpose": "先说明确切发生了什么，再分点解释技术机制、证据限制和对用户或行业的实际影响。", "target_share": 1}
+    ],
+    "markdown_instructions": "用发布日期和资料截止时间限定时效。优先引用官方发布、论文和原始数据；媒体报道用于补充语境。把产品宣称、测评结果与独立事实分开。技术术语首次出现时用准确的通俗语言解释。",
+    "prohibited_content": ["制造未经证实的突发感", "伪造性能数据或引用", "把公司宣传当作独立结论", "无依据预测市场或政策"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "9:16",
+    "frame_rate": 30,
+    "visual_tags": ["科技编辑感", "数据清晰", "节奏紧凑"],
+    "shot_duration_seconds": {"minimum": 2, "target": 4, "maximum": 7},
+    "text_safe_area_percent": 10,
+    "generated_media_allowed": true
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video", "document"],
+    "minimum_assets": 8,
+    "license_required": true,
+    "fallback": "licensed_stock",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "fresh-sources", "category": "factuality", "description": "时效性结论使用截止日期前的最新可靠来源。", "severity": "error", "action": "fail"},
+      {"id": "claims-separated", "category": "factuality", "description": "官方宣称、独立测量和创作者推论被清楚区分。", "severity": "error", "action": "fail"},
+      {"id": "technical-clarity", "category": "writing", "description": "技术解释准确且对目标受众可理解。", "severity": "warning", "action": "request_review"},
+      {"id": "asset-rights", "category": "copyright", "description": "产品图、演示视频与图表具备使用权记录。", "severity": "error", "action": "fail"}
+    ],
+    "human_review": "on_warning",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.source_grounding", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.web_acquisition", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 20971520},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
+  "content_hash": "f81ee0eb6cba98858d9ae9290fdae27fb219b6eab9eeb01b63f4409d8d8280ee",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-15T00:00:00Z",
+  "published_at": "2026-08-15T00:00:00Z"
+}
