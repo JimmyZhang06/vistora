@@ -1,192 +1,81 @@
-# FrameFactory Control API
+# Vistora Control API
 
-This package is the second-generation HTTP control plane for FrameFactory. It currently runs as a
-single-user, single-workspace service while keeping the context and repository seams needed for a
-future deployment model.
+本包是 Vistora 的 FastAPI 控制面。Python 模块名仍为 `framefactory_api`，环境变量仍使用 `FRAMEFACTORY_` 前缀，以保持迁移兼容；产品数据和本地持久化栈已经使用独立的 Vistora 数据库、Bucket、Redis namespace 和 Compose 项目。
 
-## Current scope
+## 当前接口范围
 
-- `GET /healthz` and `GET /v1/context`
-- account profile and creation-preference reads/writes with `ETag` concurrency
-- session inventory/revocation and hashed API key creation/list/revocation
-- Skill create, list, read, optimistic-concurrency replace, and delete
-- editable SkillVersion drafts, validation, RFC 8785 content hashing, and immutable publication
-- forking any ready/published Skill version, including ordinary `ownership_type=system` catalog data
-- queryable deterministic local Skill test executions
-- idempotent reference-based Run creation plus list/read; clients never submit snapshot hashes
-- asset-library upload plus controlled public-link import from YouTube, Bilibili, and RedNote
-- contract-shaped errors and cursor pagination
+- `/healthz`、`/readyz`、`/v1/context`
+- 账户资料、偏好、Session、API Key 元数据和明确不可用的双因素入口
+- Channel CRUD 与暂停/恢复
+- Skill、可编辑草稿、校验、测试、发布、分叉和不可变版本
+- Run 估算/创建/取消，Step 查询/重试/审核，Artifact 和 Event 查询
+- Generation Batch 创建、列表、取消和失败项重试
+- 素材库、预签名上传、公开视频导入、分页/筛选、批量审核/标签/重分析、软删除/恢复
+- 素材来源、分析、片段、分析任务、使用记录、下载变体和状态转换
 
-The API validates persisted Skill, SkillVersion, and Run resources against
-`packages/contracts/schemas/v1`. It never branches on an official Skill ID. Official catalog and
-user-created resources use the same resource schemas, repository, and execution references.
+持久化资源通过 `packages/contracts/schemas/v1` 校验。官方 Skill 和用户 Skill 使用相同的资源、Repository 和执行引用；服务端拥有 ID、工作区、生命周期、revision、时间戳、内容哈希和 Run 组合快照。
 
-## Single-workspace behavior
+## 单工作区与并发边界
 
-`WorkspaceContextProvider` is the forward-compatible context seam. The active
-`DefaultWorkspaceContextProvider` always returns the installation's default user and workspace.
-`X-Workspace-Id` is optional and ignored; it cannot select another tenant.
+当前 `DefaultWorkspaceContextProvider` 返回安装时配置的默认用户和工作区。`X-Workspace-Id` 是预留字段，不能在当前模式中选择其他租户。工作区 CRUD、成员邀请、跨工作区管理、完整 RLS 和请求认证尚未开放。
 
-Browser clients may call the API directly. Development permits localhost origins on any port;
-deployments configure `FRAMEFACTORY_CORS_ALLOW_ORIGINS` (comma-separated) and optionally
-`FRAMEFACTORY_CORS_ALLOW_ORIGIN_REGEX`. `ETag`, `Location`, and `X-Request-Id` are exposed.
+草稿和可变资源更新使用响应 `ETag` 对应的 `If-Match`；过期 revision 返回 `412 REVISION_CONFLICT`。创建和动作请求使用 `Idempotency-Key`；相同键配不同请求体返回 `409 IDEMPOTENCY_KEY_REUSED`。
 
-Create/update request models are deliberately distinct from persisted resources. The server owns
-IDs, workspace/ownership metadata, lifecycle state, revisions, timestamps, content hashes, and Run
-composition snapshots. Draft writes use the numeric `ETag` in `If-Match`; a stale write returns
-`412 REVISION_CONFLICT`. Create/action requests use `Idempotency-Key`; reuse with a different body
-returns `409 IDEMPOTENCY_KEY_REUSED`.
+API Key 接口目前只管理哈希凭据记录，不会自动为所有 HTTP 请求启用认证。公网部署必须在 API 前增加 HTTPS 和身份网关。
 
-The fallback IDs are deterministic development IDs derived with UUID v5, not product accounts or
-an account list. A production installation must set `FRAMEFACTORY_DEFAULT_USER_ID` and
-`FRAMEFACTORY_DEFAULT_WORKSPACE_ID`, or replace the provider with a persisted first-run bootstrap.
-It can also set `FRAMEFACTORY_DEFAULT_WORKSPACE_NAME`,
-`FRAMEFACTORY_DEFAULT_USER_EMAIL`, and `FRAMEFACTORY_DEFAULT_USER_DISPLAY_NAME`. Startup creates
-missing account preferences but never overwrites profile edits made by the user.
+## 本地运行
 
-The development app discovers `packages/seeds/official-skills/v1/manifest.json`
-and loads that validated catalog into the same repository used for user Skills.
-Packaged deployments set `FRAMEFACTORY_OFFICIAL_SEED_MANIFEST` to the copied
-manifest path; absence of a catalog never enables a hidden built-in fallback.
-
-Workspace CRUD, members, invitations, tenant selection, RLS policy, and cross-workspace APIs are
-not enabled. The corresponding paths/header in the shared OpenAPI file are reserved contract
-surface, not current product behavior.
-
-## Run locally
-
-The default development profile uses the in-process repository and does not require external
-services. It is intentionally non-durable and is suitable only for tests and local UI work.
+完整、持久化的本地环境请在仓库根目录运行：
 
 ```powershell
-python -m pip install -e ".\apps\api[dev]"
-python -m uvicorn framefactory_api.main:app --reload --port 8200
+.\start.ps1
 ```
 
-To exercise durable persistence locally, start the infrastructure stack, copy
-`apps/api/.env.example` into your preferred secret/env loader, then set the repository backend to
-`postgresql` and enable Redis and object storage:
+它使用下列独立连接，不复用旧 FrameFactory：
+
+```text
+PostgreSQL  postgresql://vistora:…@127.0.0.1:55432/vistora
+Redis       redis://127.0.0.1:56379/0  (namespace: vistora-local)
+MinIO       http://127.0.0.1:59000     (bucket: vistora-local)
+API         http://127.0.0.1:8200
+```
+
+只做 API 测试或 UI 联调时可使用非持久内存 Repository：
 
 ```powershell
-docker compose -f deploy/docker-compose.persistence.yml up -d
-$env:FRAMEFACTORY_REPOSITORY_BACKEND = "postgresql"
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://framefactory:framefactory-local-only@localhost:5432/framefactory"
-$env:FRAMEFACTORY_REDIS_ENABLED = "true"
-$env:FRAMEFACTORY_REDIS_URL = "redis://localhost:6379/0"
-$env:FRAMEFACTORY_OBJECT_STORAGE_ENABLED = "true"
-$env:FRAMEFACTORY_S3_BUCKET = "framefactory"
-$env:FRAMEFACTORY_S3_ENDPOINT_URL = "http://localhost:9000"
-$env:FRAMEFACTORY_S3_ACCESS_KEY_ID = "framefactory"
-$env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = "framefactory-local-only"
-$env:FRAMEFACTORY_S3_ADDRESSING_STYLE = "path"
-$env:FRAMEFACTORY_S3_VERIFY_TLS = "false"
-python -m uvicorn framefactory_api.main:app --port 8200
+.\.venv\Scripts\python.exe -m pip install -e ".\apps\api[dev]"
+$env:FRAMEFACTORY_ENV = "development"
+$env:FRAMEFACTORY_REPOSITORY_BACKEND = "memory"
+.\.venv\Scripts\python.exe -m uvicorn framefactory_api.main:app --reload --port 8200
 ```
 
-The Compose stack runs a one-shot `migrate` service after PostgreSQL becomes healthy. For a
-host-managed database, run the same upgrade gate before starting API or Worker processes:
+内存模式重启即丢数据，也不能代表 Worker、Redis 或对象存储集成通过。生产模式拒绝内存 Repository。
+
+## 迁移
+
+统一入口按顺序执行 `db/migrations/*.sql` 与 `services/worker/migrations/*.sql`：
 
 ```powershell
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://framefactory:change-me@localhost:5432/framefactory"
-python -m framefactory_api.migrate --project-root .
+$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55432/vistora"
+.\.venv\Scripts\python.exe -m framefactory_api.migrate --project-root .
 ```
 
-The runner applies `db/migrations/*.sql` followed by `services/worker/migrations/*.sql`, records
-their SHA-256 checksums in `schema_migrations`, and serializes deploys with a PostgreSQL advisory
-lock. Never edit an applied SQL file: checksum drift intentionally blocks startup; add a new
-migration instead. A pre-ledger installation is baselined only when the runner can prove the
-expected tables and columns already exist. A partial legacy schema fails closed for manual review.
+迁移校验和记录在 `schema_migrations`，并由 PostgreSQL advisory lock 串行化。不要修改已执行迁移；应新增文件。生产 Compose 的一次性 `migrate` 服务使用同一入口。
 
-`FRAMEFACTORY_DATABASE_URL`, `FRAMEFACTORY_REDIS_URL`, and the `FRAMEFACTORY_S3_*` variables in
-`.env.example` match the host ports and development credentials in that Compose file. If the API
-runs in the same Compose network, replace `localhost` with service names `postgres`, `redis`, and
-`minio` respectively.
+## 素材边界
 
-Run checks from `apps/api`:
+本地上传先创建记录和预签名 PUT，再完成上传并进入素材分析队列。素材只有在版权状态、扫描、分析和审核条件满足后才可进入 `ready`。分析结果、代表帧、预览、来源、人工审核和 Run 使用证据均持久化。
+
+`POST /v1/asset-imports` 处理用户明确给出的公开视频链接并要求权利确认；平台解析器不是版权授权。自动补采只允许 Run 快照中启用的来源和预算，找不到权利与语义均合格的素材时会 fail closed 或请求审核。
+
+旧媒体重建工具只应面向明确的源目录和独立测试计划，不能扫描整个仓库、`var/` 或生成产物目录，也不能在没有证据时把版权标为 `owned`、`licensed` 或 `public_domain`。
+
+## 验证
 
 ```powershell
-python -m pytest
-python -m ruff check .
+.\.venv\Scripts\python.exe -m pytest apps/api/tests
+.\.venv\Scripts\python.exe -m ruff check apps/api
+.\.venv\Scripts\python.exe -m pytest tests/contract
 ```
 
-## Import a public video URL
-
-`POST /v1/asset-imports` accepts a user-supplied public YouTube, Bilibili, or Xiaohongshu link
-after explicit usage-rights confirmation. The API downloads without browser cookies, rejects
-playlists/live/private/paid/DRM access, limits a file to 500 MB and one hour, verifies SHA-256,
-streams it into S3/R2, and stores platform/source/author/license/retrieval provenance with the
-ready asset. YouTube and Bilibili use the pinned `yt-dlp` runtime dependency. Xiaohongshu links
-are resolved through `https://rednote-downloader.online/api/check`; this is an undocumented
-third-party boundary and therefore fails closed if its response shape or availability changes.
-
-This endpoint imports an explicit URL; it does not automatically search arbitrary platform
-results when a scene has no match. Search-based acquisition needs a separate provider policy so
-licensing, attribution, ranking, quotas, and duplicate control remain auditable.
-
-## Rebuild and re-index source assets
-
-The v2 importer reads media files themselves and never trusts v1 catalog/tag JSON. It rejects
-repository-wide scans and generated output roots, validates media with FFprobe, stores each unique
-file under a SHA-256 content address in S3/R2, and records source provenance separately. Unknown
-rights stay quarantined and are not eligible for automatic rendering.
-
-```powershell
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://framefactory:framefactory-local-only@localhost:5432/framefactory_v2"
-$env:FRAMEFACTORY_S3_BUCKET = "framefactory-v2"
-$env:FRAMEFACTORY_S3_ENDPOINT_URL = "http://localhost:9000"
-$env:FRAMEFACTORY_S3_ACCESS_KEY_ID = "framefactory"
-$env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = "framefactory-local-only"
-$env:FRAMEFACTORY_S3_ADDRESSING_STYLE = "path"
-$env:FRAMEFACTORY_S3_VERIFY_TLS = "false"
-python -m framefactory_api.asset_ingest `
-  --source ..\src\material-library `
-  --library-slug reindexed-source-media `
-  --copyright-status unknown
-```
-
-Add `--tag --limit 5` for a cost-bounded visual-analysis pilot. Visual tagging requires
-`FRAMEFACTORY_VISION_API_KEY` (or its `_FILE` form); every analysis is versioned, videos receive
-time-bounded scene segments, and provider output is normalized before persistence. Run a pilot and
-review its accuracy before expanding the limit. Do not mark an asset `owned`, `licensed`, or
-`public_domain`, or its file scan `clean`, without the corresponding evidence and safety check.
-
-## Production persistence boundary
-
-`ControlRepository` is the application port. `InMemoryControlRepository` is intentionally limited
-to local UI integration and tests: it loses state on restart and its lock only protects one Python
-process. `FRAMEFACTORY_ENV=production` refuses to start with that backend and defaults
-`FRAMEFACTORY_REPOSITORY_BACKEND` to `postgresql`; a production installation must provide
-`FRAMEFACTORY_DATABASE_URL`.
-
-The PostgreSQL adapter provides:
-
-- unique `(workspace_id, slug)` and `(skill_id, version)` constraints;
-- a transaction for fork creation and version publication;
-- a durable idempotency table with request fingerprints and response resource IDs;
-- optimistic concurrency/version checks for mutable Skill metadata and drafts;
-- an outbox record in the same transaction as Run creation for worker dispatch.
-- durable profile/preferences revisions, session revocation, and API key metadata. API key
-  plaintext is returned only by the create response; PostgreSQL stores only its SHA-256 hash.
-
-Redis and S3/R2 remain independently configurable because API-only development does not require
-them. Set `FRAMEFACTORY_REDIS_ENABLED=true` and `FRAMEFACTORY_OBJECT_STORAGE_ENABLED=true` in a
-worker-capable deployment. Startup verifies every enabled dependency, `/healthz` rechecks it, and
-lifespan shutdown closes owned database and Redis connections. Bucket creation is disabled by
-default in production-style configuration; use `FRAMEFACTORY_S3_CREATE_BUCKET=true` only for
-controlled bootstrap environments such as the local MinIO stack.
-
-The stage-one Skill test evaluator is explicitly `local_deterministic_v1`: it verifies and compares
-stored declarative policies without invoking a model or network. Its resource already exposes
-queued/running/succeeded/failed states so a worker-backed evaluator can replace it later.
-
-Published Pipeline versions are persisted and validated alongside Skills. Run creation resolves the
-selected SkillVersion and PipelineVersion from the repository, permits only the current workspace or
-published system seeds, and records their real content hashes in the immutable composition snapshot.
-Rendering itself remains a Worker provider capability and fails closed until a production render
-plugin is configured.
-
-Authentication should be added by supplying another `WorkspaceContextProvider`; repository and
-service methods already require a resolved context. This boundary does not imply that multi-tenant
-product features are currently supported. Creating an API key currently manages credentials but
-does not by itself enable request authentication. Two-factor authentication is deliberately
-reported as unavailable instead of exposing a non-functional setting.
+OpenAPI 运行时页面位于 <http://127.0.0.1:8200/docs>。发布前还必须执行 `tools/release/` 下与目标环境匹配的 fail-closed 门禁。

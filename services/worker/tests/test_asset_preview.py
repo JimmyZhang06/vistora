@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -135,6 +136,33 @@ class AssetPreviewTests(unittest.TestCase):
         self.assertEqual(result["frames"][1]["object_key"], result["poster"]["object_key"])
         self.assertEqual("image/jpeg", result["poster"]["media_type"])
         self.assertEqual(len(b"representative-frame"), result["poster"]["byte_size"])
+
+    def test_image_keyframe_does_not_seek_past_the_only_frame(self) -> None:
+        store = FakeStore()
+        processor = LocalAssetStageProcessor(store, SimpleNamespace(), SimpleNamespace())
+        commands: list[tuple[str, ...]] = []
+
+        def run(command, **_kwargs):
+            commands.append(tuple(command))
+            Path(command[-1]).write_bytes(b"still-frame")
+            return SimpleNamespace(returncode=0)
+
+        try:
+            with patch("shutil.which", return_value="ffmpeg"), patch(
+                "subprocess.run", side_effect=run
+            ):
+                result = processor.run(
+                    AssetStage.KEYFRAMES,
+                    replace(work(), media_type="image/jpeg"),
+                    {"ffprobe": {"duration_ms": 40}},
+                    lambda: False,
+                )
+        finally:
+            processor.close()
+
+        self.assertEqual("single_image", result["sampling_strategy"])
+        self.assertEqual(1, len(result["frames"]))
+        self.assertNotIn("-ss", commands[0])
 
 
 if __name__ == "__main__":

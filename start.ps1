@@ -1,5 +1,5 @@
 <#
-  FrameFactory v3 local production-like launcher.
+  Vistora local production-like launcher.
 
   Usage:
     .\start.ps1
@@ -28,6 +28,17 @@ $venvPython = Join-Path $venvRoot "Scripts\python.exe"
 $webRoot = Join-Path $projectRoot "apps\web"
 $apiUrl = "http://127.0.0.1:8200"
 $webUrl = "http://localhost:4173"
+$databaseName = "vistora"
+$databaseUser = "vistora"
+$databasePassword = "vistora-local-only"
+$postgresPort = 55432
+$redisPort = 56379
+$minioApiPort = 59000
+$minioConsolePort = 59001
+$redisNamespace = "vistora-local"
+$s3Bucket = "vistora-local"
+$s3AccessKey = "vistora"
+$s3SecretKey = "vistora-local-only"
 if ([string]::IsNullOrWhiteSpace($ProviderEnvFile)) {
     $ProviderEnvFile = Join-Path $projectRoot "var\secrets\worker-provider.env"
 }
@@ -242,8 +253,17 @@ if (-not $NoInstall) {
     }
 }
 
-$env:FRAMEFACTORY_S3_BUCKET = "framefactory-v2"
-Write-Info "启动 PostgreSQL、Redis 与 MinIO"
+$env:POSTGRES_DB = $databaseName
+$env:POSTGRES_USER = $databaseUser
+$env:POSTGRES_PASSWORD = $databasePassword
+$env:POSTGRES_PORT = "$postgresPort"
+$env:REDIS_PORT = "$redisPort"
+$env:MINIO_API_PORT = "$minioApiPort"
+$env:MINIO_CONSOLE_PORT = "$minioConsolePort"
+$env:FRAMEFACTORY_S3_BUCKET = $s3Bucket
+$env:FRAMEFACTORY_S3_ACCESS_KEY_ID = $s3AccessKey
+$env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = $s3SecretKey
+Write-Info "启动 Vistora 独立 PostgreSQL、Redis 与 MinIO"
 $env:FRAMEFACTORY_REDIS_PROTECTED_MODE = "no"
 Invoke-Checked -FilePath "docker" -Arguments @(
     "compose", "-f", $composePath, "up", "-d", "--wait", "postgres", "redis", "minio"
@@ -252,32 +272,31 @@ Invoke-Checked -FilePath "docker" -Arguments @(
     "compose", "-f", $composePath, "run", "--rm", "minio-init"
 ) -FailureMessage "对象存储初始化失败"
 
-$databaseName = "framefactory_v2"
 $databaseExists = & docker compose -f $composePath exec -T postgres `
-    psql -U framefactory -d postgres -tAc `
+    psql -U $databaseUser -d postgres -tAc `
     "SELECT 1 FROM pg_database WHERE datname='$databaseName'" 2>$null | Out-String
 if ($databaseExists.Trim() -ne "1") {
-    Write-Info "创建新版数据库 $databaseName"
+    Write-Info "创建 Vistora 数据库 $databaseName"
     Invoke-Checked -FilePath "docker" -Arguments @(
         "compose", "-f", $composePath, "exec", "-T", "postgres",
-        "createdb", "-U", "framefactory", $databaseName
-    ) -FailureMessage "新版数据库创建失败"
+        "createdb", "-U", $databaseUser, $databaseName
+    ) -FailureMessage "Vistora 数据库创建失败"
 }
 
 $env:FRAMEFACTORY_ENV = "development"
 $env:FRAMEFACTORY_REPOSITORY_BACKEND = "postgresql"
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://framefactory:framefactory-local-only@127.0.0.1:5432/$databaseName"
+$env:FRAMEFACTORY_DATABASE_URL = "postgresql://${databaseUser}:${databasePassword}@127.0.0.1:${postgresPort}/$databaseName"
 $env:FRAMEFACTORY_REDIS_ENABLED = "true"
-$env:FRAMEFACTORY_REDIS_URL = "redis://127.0.0.1:6379/0"
-$env:FRAMEFACTORY_REDIS_NAMESPACE = "framefactory-v2"
+$env:FRAMEFACTORY_REDIS_URL = "redis://127.0.0.1:${redisPort}/0"
+$env:FRAMEFACTORY_REDIS_NAMESPACE = $redisNamespace
 $env:FRAMEFACTORY_WORKER_CONCURRENCY = "2"
 $env:FRAMEFACTORY_WORKER_LEASE_SECONDS = "300"
 $env:FRAMEFACTORY_OBJECT_STORAGE_ENABLED = "true"
-$env:FRAMEFACTORY_S3_ENDPOINT_URL = "http://127.0.0.1:9000"
-$env:FRAMEFACTORY_S3_BUCKET = "framefactory-v2"
+$env:FRAMEFACTORY_S3_ENDPOINT_URL = "http://127.0.0.1:${minioApiPort}"
+$env:FRAMEFACTORY_S3_BUCKET = $s3Bucket
 $env:FRAMEFACTORY_S3_REGION = "us-east-1"
-$env:FRAMEFACTORY_S3_ACCESS_KEY_ID = "framefactory"
-$env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = "framefactory-local-only"
+$env:FRAMEFACTORY_S3_ACCESS_KEY_ID = $s3AccessKey
+$env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = $s3SecretKey
 $env:FRAMEFACTORY_S3_ADDRESSING_STYLE = "path"
 $env:FRAMEFACTORY_S3_VERIFY_TLS = "false"
 $env:FRAMEFACTORY_S3_CREATE_BUCKET = "true"

@@ -1,36 +1,22 @@
-# FrameFactory database
+# Vistora 数据库迁移
 
-`migrations/0001_initial.sql` is the PostgreSQL 15+ schema migration. Apply it with
-`psql -v ON_ERROR_STOP=1 -f db/migrations/0001_initial.sql`.
+`db/migrations/` 保存 Control API 的 PostgreSQL 前向迁移；`services/worker/migrations/` 保存 Worker 运行时表迁移。当前根迁移从 `0001_initial.sql` 连续到 `0019_skill_draft_content_hash.sql`，Worker 另有 `0001_runtime_state.sql`。实际文件列表是唯一顺序来源。
 
-`seeds/official-seed.example.json` defines the neutral import envelope for
-official resources. It intentionally contains no user, account, credential,
-business-specific resource, or fixed UUID. Importers must resolve the target
-system workspace by configuration and allocate identifiers at import time.
+不要逐个手工执行某一个 SQL 文件。统一迁移入口会按文件名排序执行两组迁移、在 `schema_migrations` 记录 SHA-256，并使用 PostgreSQL advisory lock 串行化部署：
 
-The seed resource arrays use stable slugs plus positive version numbers as
-in-file references. Importers allocate UUIDs, resolve those natural references,
-validate each version against `packages/contracts`, and import the entire
-manifest in one transaction. Official and user resources use the same tables;
-system ownership is represented by `workspaces.kind = 'system'`.
-
-The current runtime deliberately operates in one configured personal workspace.
-`workspace_id` remains mandatory on business resources as a forward-compatible
-ownership boundary, but the initial release does not enable PostgreSQL RLS,
-workspace switching, membership management, or cross-workspace administration.
-
-The control API resolves its configured workspace through a context provider.
-Future multi-workspace deployments can set transaction context without changing
-resource contracts:
-
-```sql
-SET LOCAL app.user_id = '<authenticated user UUID>';
-SET LOCAL app.workspace_id = '<authorized workspace UUID>';
+```powershell
+$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55432/vistora"
+.\.venv\Scripts\python.exe -m framefactory_api.migrate --project-root .
 ```
 
-`app.system_actor` is reserved for trusted internal transactions and must never
-be exposed as a client-controlled setting. RLS, membership authorization, and
-workspace selection require a later opt-in migration and must not be inferred
-from the presence of `workspace_id` alone. Queue consumers claim
-`run_steps`/`outbox_events` with `FOR UPDATE SKIP LOCKED` and write a lease token
-and expiry in the same transaction.
+本地 `start.ps1` 会自动运行同一入口。生产 Compose 使用一次性 `migrate` 服务，并要求迁移成功后才启动 API 和 Worker。
+
+## 不可变规则
+
+- 已登记的 SQL 不得修改；校验和漂移会阻止启动。变更 Schema 必须新增迁移。
+- 迁移是前向的；数据库回滚依赖经过验证的备份恢复，不依赖反向 SQL。
+- `workspace_id` 当前是单默认工作区的数据边界，不代表已启用工作区切换、成员权限或完整 RLS。
+- `app.system_actor` 只供可信内部事务使用，不得成为客户端可控参数。
+- 队列消费者通过事务、租约和 `FOR UPDATE SKIP LOCKED` 领取工作。
+
+官方 Skill 和 Pipeline 的运行种子位于 `packages/seeds/official-skills/v1/`，不在 `db/` 内复制媒体、用户数据、运行产物或密钥。`db/seeds/official-seed.example.json` 仅是中性导入信封示例；正式资源由 manifest、契约和迁移共同约束。

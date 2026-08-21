@@ -1,43 +1,23 @@
-# FrameFactory seed packages
+# Vistora 官方 Seed
 
-Seed packages are curated, declarative bootstrap data. They are not Worker
-plugins and they never receive executable privileges.
+Seed 是经过审查的声明式启动数据，不是 Worker 插件，也不会获得执行代码权限。
 
-`official-skills/v1` contains the first-party starting points migrated from a
-small, representative subset of the legacy `src/ip-skills` library. Official
-status is data only: each `skill.json` uses `ownership_type=system` and
-`publisher_type=system`; the corresponding `version.json` still conforms to
-the same `SkillVersion` contract used by user-created versions.
+`official-skills/v1/` 保存官方 Skill 起点和共享的 `standard-production` PipelineVersion。官方与用户资源使用相同契约、Repository、API 和执行路径；`ownership_type=system` 与 `publisher_type=system` 只是数据属性，运行时代码不得按固定业务 ID 分支。
 
-Every official SkillVersion references the same packaged `standard-production`
-PipelineVersion. Its declarative graph runs research, writing, audio and media
-selection, rendering, then quality evaluation with a human review gate. It is
-validated like any other Pipeline and grants no executable privileges.
-The Pipeline hash covers `nodes` and `capability_requirements` after the same
-RFC 8785 JCS canonicalization used by SkillVersion hashes.
+标准 Pipeline 组织研究、写作、配音、素材选择、渲染、质量检查和人工审核。Seed 只声明能力要求；实际能力是否可用由 Worker 部署配置决定。缺少 Provider 时步骤 fail closed，不会因为资源是“官方”而绕过。
 
-Important boundaries:
+## 边界
 
-- `_research`, raw corpora, `corpus_ref`, generated runs, and media are not seed
-  inputs and must never be copied into this directory.
-- Writing guidance is a short, manually curated method summary. The legacy
-  formula and usage documents remain migration evidence, not production seed
-  payloads.
-- Legacy paths and business IDs live only in
-  `../tools/migrate-v1/legacy-sources.json`; they are deliberately absent from
-  this production seed package.
-- IDs are UUIDv5 values derived from the namespace and key format declared in
-  the package manifest. No runtime code may branch on these IDs.
-- `content_hash` is SHA-256 over the exact immutable fields named by the
-  `SkillVersion` contract after RFC 8785 JCS canonicalization. This package
-  intentionally uses the integer-only numeric subset so the bundled validator
-  can reproduce JCS without a third-party canonicalizer.
+- 不复制 `_research`、原始语料、用户媒体、运行产物、密钥或旧账号目录。
+- 写作指导只保留人工整理的方法摘要，旧公式和案例文档属于迁移证据。
+- UUIDv5 按 manifest 声明的 namespace/key 规则生成；代码不得依赖具体 UUID。
+- `content_hash` 按契约规定的 RFC 8785 JCS 域计算。
+- manifest 是打包和导入入口；缺失时不能启用隐藏内置 Skill。
 
-Validate and print an idempotent database import plan (dry-run only):
+只生成幂等导入计划：
 
 ```powershell
-python ../tools/migrate-v1/skill_seed_plan.py
+.\.venv\Scripts\python.exe tools/migrate-v1/skill_seed_plan.py
 ```
 
-Use `--output <path>` only when a persisted review artifact is required. The
-tool has no database driver, no apply mode, and never moves legacy files.
+使用 `--output <path>` 只会保存供审核的计划文件。工具没有数据库 apply 模式，也不会移动旧文件。生产导入由 API 启动/迁移路径在契约校验后完成。

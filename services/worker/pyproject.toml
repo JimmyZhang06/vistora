@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "framefactory-worker"
 version = "0.1.0"
 description = "FrameFactory worker execution kernel"
+license = "PolyForm-Noncommercial-1.0.0"
 requires-python = ">=3.11"
 dependencies = [
   "boto3>=1.35,<2",

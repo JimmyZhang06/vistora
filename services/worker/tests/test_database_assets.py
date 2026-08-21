@@ -328,6 +328,21 @@ class DatabaseAssetCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(_matches_visual_anchor("张继科在训练中发球", other_athlete))
 
+    def test_citation_doi_year_is_not_treated_as_footage_year(self) -> None:
+        current_b_roll = replace(
+            match("current-b-roll", "training", b"image"),
+            title="樊振东乒乓球比赛",
+            description="运动员在比赛中挥拍击球",
+            labels=("樊振东", "乒乓球", "比赛", "击球"),
+        )
+
+        self.assertTrue(
+            _matches_visual_anchor(
+                "显示研究来源 DOI: 10.1080/17461391.2018.1534993",
+                current_b_roll,
+            )
+        )
+
     async def test_selects_one_verified_segment_per_scene(self) -> None:
         files = {"one": b"first video", "two": b"second video"}
         matches = {

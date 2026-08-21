@@ -1,79 +1,60 @@
-# 素材管理与分析发布验收矩阵
+# Vistora 素材发布验收矩阵
 
-本门禁采用 fail-closed 语义：`PASSED=0`、`FAILED=1`、`BLOCKED=2`。缺少并行实现、测试环境或夹具时不得视为通过。受保护门禁把 E2E、load 与 1247 审计拆成三个 workspace：前两者必须通过 `/v1/context` 精确匹配 ID 和 `ff-assets-*` 一次性 scope；load 的每条记录还必须匹配固定 fixture ID/ID 集合哈希。1247 workspace 只执行读操作。任何上下文或清单不一致都会在首次写入前阻塞。
+本文件定义发布要求，不保存会迅速过期的“当前通过”截图。每次发布的真实状态以同一提交上生成的机器可读 Gate 报告为准。
 
-## 当前结论
+所有门禁使用 fail-closed 退出语义：`PASSED=0`、`FAILED=1`、`BLOCKED=2`。缺少专用环境、fixture、权限或外部能力必须是 `BLOCKED`，不能降级为内存 Repository、跳过或视为通过。
 
-截至 2026-08-17，素材链路不满足发布条件。`asset_contract_gate.py` 的机器可读结果是权威阻塞清单；当前主要阻塞为：
+## 当前实现基线
 
-- 完成上传直接写入 `scan_status=clean`、`asset.status=ready` 和 metadata-only completed analysis，绕过真实扫描、分析及人工审核。
-- 没有素材明细分页/筛选、批量操作、素材审核、分析任务查询 API，也没有并发审核 revision/CAS 契约。
-- 数据库缺少素材审核日志、Run 素材不可变快照、代表帧哈希/大小，以及防止 unknown/restricted/未审核素材进入 ready 的数据库级约束。
-- 素材相关 RLS 在迁移中被显式关闭。
-- Worker 虽过滤 workspace、ready、clean、completed analysis 和版权 allowlist，但忽略 Run 指定的素材库；manifest 也缺少完整来源/审核快照。
-- Web 尚无素材列表筛选、审核、批量操作与软删除控制面。
-- 现有 S3 审计只覆盖 Run artifacts；新增只读审计在上述 schema 合并前会正确失败。
+仓库现已具备预签名上传、素材分页/筛选、批量审核/标签/重分析、分析任务查询、revision/CAS 审核、软删除/恢复、来源/许可记录、代表帧与预览描述、Run 素材使用快照、数据库素材库范围选择和 Web 素材控制面。
+
+这只说明功能入口存在，不等于生产发布通过。RLS/工作区隔离、队列背压、并发规模、恶意文件、对象一致性、恢复、全量哈希、外部 Provider 和真实媒体 E2E 仍必须由目标环境 Gate 证明。
 
 ## 验收矩阵
 
-| 链路/边界 | PR 契约门禁 | 临时服务 1k | Nightly/Release 5k | 受保护 E2E | 当前状态 |
-|---|---|---|---|---|---|
-| 建库→签名→PUT→完成 | OpenAPI、幂等键、大小/hash/MIME 契约 | PostgreSQL+MinIO 实传图片/视频 | 并发重复上传、孤儿对象 | 两种媒体全链路 | 部分实现；完成上传错误地直接 ready |
-| 扫描→分析→人工审核→ready | 状态枚举、审核表、revision/CAS | 损坏/截断/polyglot、分析失败 | 32 路重复审核 | 恰一条批准记录、其余 409 | 阻塞：无真实状态机/审核 API |
-| 未知版权与 1247 隔离集合 | DB 约束及固定清单契约 | 精确 1247 sentinel，eligible=0 | 批量/重试后仍精确 1247 | Worker/Run 不得命中任一 sentinel | 阻塞：无数据库级不可放行约束 |
-| 跨 workspace/素材库 | RLS、全部 library ID 校验契约 | 实际 SQL 与对象读取返回 0/403/404 | 交错 5k 数据 | Run 仅命中指定库 | 阻塞：RLS 关闭，Worker 忽略 library IDs |
-| 分页、筛选、批量 | 必需参数和异步 bulk job 契约 | 1k，100/页，ID 无重/无漏 | 5k，组合筛选、并发插删、5k bulk | 发布数据抽查 | 阻塞：素材 list/filter/bulk API 缺失 |
-| 队列背压 | high/low watermark、429+Retry-After 契约 | high=1000/low=750 | 5k、8 consumer、lease recovery | 发布队列探针 | 阻塞：无素材分析队列背压 |
-| Worker 场景检索 | SQL 安全条件与库范围契约 | 真 PostgreSQL 查询而非 stub | 5k 优先级与相关性 | 场景命中后产出 manifest | 部分实现；缺 library scope/快照 |
-| Run 快照/软删除历史 | `run_asset_snapshots` 与 artifact content 契约 | 删除源后旧 Run/制品 hash 可读 | 5k 历史引用检查 | E2E 删除后再次下载 | 阻塞：缺不可变素材证据快照 |
-| DB/MinIO locator/hash | schema、前缀、metadata 契约 | active asset files + artifacts | 加代表帧、全量下载复算 SHA-256 | 全量只读审计 | 阻塞：代表帧无 hash/size，审计会失败 |
-| 超大文件 | 500 MiB 上限与签名长度绑定契约 | 伪报 1B/上传超大对象 | 并发资源消耗探针 | 声明 >500 MiB 必须拒绝 | 部分实现；业务模型拒绝声明，签名 PUT 未绑定大小 |
+| 链路 | 必须证明 | 主要 Gate |
+| --- | --- | --- |
+| 创建→签名→PUT→完成 | 大小/hash/MIME、幂等、孤儿对象、图片和视频真实上传 | contract + asset E2E |
+| 扫描→分析→审核→ready | 失败隔离、clean 扫描、完整分析、revision/CAS、唯一审核记录 | API/Worker tests + asset E2E |
+| 版权与安全 | unknown/restricted、恶意文件、水印/嵌字/安全 review 不得自动泄漏 | contract + integrity audit |
+| 工作区与素材库 | 所有查询、对象、批量操作和 Run 选择严格限制到上下文与绑定库 | protected E2E |
+| 分页/筛选/批量 | 1k/5k 遍历无重漏，游标不可跨筛选复用，批量计数可核对 | asset load gate |
+| 队列与恢复 | 高低水位、429/Retry-After、独立重试、租约恢复和幂等恢复 | load + recovery gate |
+| Scene 检索 | 只使用 eligible 候选，保留评分/来源/审核快照，零覆盖 fail closed | Worker integration + video E2E |
+| 软删除与历史 | 删除源素材后旧 Run 证据和 Artifact 仍按策略可追溯 | asset E2E + integrity audit |
+| DB/Object 一致性 | object key、workspace 前缀、metadata、代表帧和内容哈希一致 | S3 + asset integrity audit |
+| 大文件与资源限制 | 声明/实传超限拒绝，转码/分析不会绕过预算或拖垮队列 | contract + load gate |
 
-## 规模与背压硬断言
+## 规模硬断言
 
-- 1k：每页最多 100；20×50 或 10×100 全量遍历后 ID 集合与独立总数完全一致；游标不得循环、跨 workspace 或跨筛选条件复用。
-- 5k：50×100 遍历无重复/遗漏；5k bulk 必须返回异步 job，最终 `processed_count=5000`、`failed_count=0`。
-- 队列：high=1000、low=750；深度不得超过 high；过载仅返回 429 且带 `Retry-After`；降到 low 后恢复接纳；不得以 5xx 表示背压。
-- 1247 sentinel：数量以及固定 asset ID/file ID/content hash 清单必须精确一致；production Worker eligibility=0、Run snapshot 引用=0。用一条新隔离记录替换一条被放行记录也必须失败。任何一条泄漏均为 P0 发布失败。
+- 1k/5k 分页必须遍历出与独立数据库计数相同的 ID 集合，游标不得循环。
+- Bulk 操作必须报告总数、成功数和失败数；重复请求保持幂等。
+- 背压阈值和并发数由 Gate fixture 固定，过载只允许契约规定的 429，不允许以 5xx 冒充。
+- 隔离 sentinel 的数量和固定 ID/hash 集合必须精确一致；任何一个进入 Worker eligible 或 Run snapshot 都是发布失败。
 
-## 可执行命令
+不要在文档中硬编码生产 sentinel 数量；具体清单由受保护环境的 fixture manifest 和报告保存。
 
-快速框架与规模夹具（不访问用户数据）：
+## 命令
 
-```text
-python -m pytest tools/tests/test_asset_release_gate.py
+```powershell
+# 静态契约与测试夹具
+.\.venv\Scripts\python.exe -m pytest tools/tests/test_asset_release_gate.py
+.\.venv\Scripts\python.exe tools/release/asset_contract_gate.py `
+  --report artifacts/release/asset-contract-gate.json
+
+# 专用环境真实链路
+.\.venv\Scripts\python.exe tools/release/asset_e2e_gate.py
+.\.venv\Scripts\python.exe tools/release/asset_load_gate.py
+.\.venv\Scripts\python.exe tools/release/asset_integrity_audit.py `
+  --rehash-all --report artifacts/release/asset-integrity-audit.json
 ```
 
-静态 API/DB/Worker/Web scaffold 契约加 FastAPI 实际路由检查（当前预期返回 1，并生成真实阻塞报告；它不是 live gate 的替代品）：
+Live Gate 的环境变量、workspace scope、fixture manifest 和只读/静默要求以各脚本 `--help` 及源码为准。完整性审计期间必须冻结目标写入，避免数据库和对象存储跨查询竞态。
 
-```text
-python tools/release/asset_contract_gate.py --report artifacts/release/asset-contract-gate.json
-```
+## 发布判定
 
-专用 workspace 的真实素材 E2E：
-
-```text
-python tools/release/asset_e2e_gate.py
-```
-
-预置可重复 1k/5k 数据后的分页、bulk 与背压：
-
-```text
-python tools/release/asset_load_gate.py
-```
-
-生产发布前只读 PostgreSQL/MinIO 全量审计（默认精确要求 1247 个隔离素材）：
-
-```text
-python tools/release/asset_integrity_audit.py --rehash-all --report artifacts/release/asset-integrity-audit.json
-```
-
-所有 live 命令缺少专用环境变量/夹具时返回 `BLOCKED`，不会降级为内存仓库或跳过。1247 审计还要求操作员先将该 workspace 置为只读并显式设置 `FF_RELEASE_ASSET_AUDIT_QUIESCED=1`，避免 DB/S3 跨查询竞态。CI 在 PR 上运行 scaffold/API/Worker/Web/contract 门禁，在 `main` push 上强制进入受保护 live job；环境未配置时发布保持非绿。
-
-## 推荐合并顺序
-
-1. 数据库状态机、审核日志、Run snapshot、代表帧 hash/size、RLS 与 ready 约束。
-2. API 扫描/分析任务、审核 CAS、list/filter/bulk/soft-delete 及全部 workspace/library 校验。
-3. Worker 按 Run library snapshot 检索并写完整 immutable manifest。
-4. Web 对齐 OpenAPI 的审核、筛选、批量与删除控制面。
-5. 本门禁分支；先让静态契约转绿，再启用临时 PostgreSQL/Redis/MinIO 1k，最后启用 5k 和受保护全量审计。
+1. 单元、契约、Web 和 Worker 集成测试通过。
+2. 同一候选提交的静态报告为 `PASSED`。
+3. 专用 PostgreSQL/Redis/MinIO 环境的 E2E、负载、恢复和完整性 Gate 全部为 `PASSED`。
+4. Provider、备份恢复、监控和安全边界均有独立证据。
+5. 任一 `FAILED` 或 `BLOCKED` 都阻止发布；不得用人工文字覆盖机器报告。

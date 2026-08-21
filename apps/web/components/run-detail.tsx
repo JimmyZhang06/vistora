@@ -395,7 +395,16 @@ export function RunDetail({ runId }: { runId: string }) {
       <div className="run-live-region" aria-live="polite" aria-atomic="true">
         {loadError ? <p className="alert alert--error">状态刷新失败，当前保留上次成功读取的数据：{loadError}</p> : null}
         {actionError ? <p className="alert alert--error">{actionError}</p> : null}
-        {notice ? <p className="alert alert--success">{notice}</p> : null}
+        {notice ? (
+          <div className="alert alert--success run-action-notice" role="status">
+            <span className="run-action-notice__icon" aria-hidden="true">✓</span>
+            <span className="run-action-notice__copy">
+              <strong>操作已受理</strong>
+              <small>{notice}</small>
+            </span>
+            <span className="run-action-notice__sync" aria-hidden="true"><i /><i /><i /></span>
+          </div>
+        ) : null}
       </div>
 
       <section className="run-overview" aria-label="项目执行概览">

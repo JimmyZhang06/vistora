@@ -745,8 +745,13 @@ class LocalAssetStageProcessor:
             if cancelled():
                 raise AssetPipelineError("batch_cancelled", "batch cancellation requested", retryable=False)
             frame = directory / f"frame-{ordinal:03d}.jpg"
+            # A still image is a one-frame input. Seeking it before decoding can
+            # make ffmpeg consume the only frame without producing an output
+            # (observed with ffmpeg 8 on Windows), even when the timestamp is 0.
+            # Video inputs still seek before decoding to keep extraction fast.
+            seek_args = () if is_image else ("-ss", f"{timestamp_ms / 1000:.3f}")
             result = subprocess.run(
-                (self.ffmpeg, "-v", "error", "-ss", f"{timestamp_ms / 1000:.3f}", "-i", str(source),
+                (self.ffmpeg, "-v", "error", *seek_args, "-i", str(source),
                  "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "3", "-y", str(frame)),
                 capture_output=True,
                 check=False,

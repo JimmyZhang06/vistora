@@ -170,7 +170,8 @@ class PostgresAssetCatalog:
                           s.cut_safe,s.semantic_complete,
                           s.people || s.locations || s.keywords ||
                           ARRAY_REMOVE(ARRAY[s.scene_type,s.action,s.era,s.mood,
-                                             s.visual_style,s.shot_type],NULL) AS labels,
+                                             s.visual_style,s.shot_type],NULL) ||
+                          COALESCE(asset_labels.labels,ARRAY[]::text[]) AS labels,
                           similarity(s.search_text, %s)
                             + LEAST(0.64, label_hits.count * 0.32)
                             + CASE WHEN s.cut_safe THEN 0.08 ELSE 0 END
@@ -188,12 +189,20 @@ class PostgresAssetCatalog:
                           AND af.deleted_at IS NULL AND af.scan_status='clean'
                         ORDER BY af.created_at LIMIT 1
                      ) f ON true
+                     LEFT JOIN LATERAL (
+                       SELECT array_agg(t.name ORDER BY t.name) AS labels
+                         FROM asset_tags at
+                         JOIN tags t
+                           ON t.workspace_id=at.workspace_id AND t.id=at.tag_id
+                        WHERE at.workspace_id=a.workspace_id AND at.asset_id=a.id
+                     ) asset_labels ON true
                      CROSS JOIN LATERAL (
                        SELECT count(DISTINCT lower(label))::double precision AS count
                          FROM unnest(
                            s.people || s.locations || s.keywords ||
                            ARRAY_REMOVE(ARRAY[s.scene_type,s.action,s.era,s.mood,
-                                              s.visual_style,s.shot_type],NULL)
+                                              s.visual_style,s.shot_type],NULL) ||
+                           COALESCE(asset_labels.labels,ARRAY[]::text[])
                          ) label
                         WHERE char_length(label) >= 2
                           AND %s ILIKE '%%' || label || '%%'
@@ -213,7 +222,12 @@ class PostgresAssetCatalog:
                           AND s.cut_safe AND s.semantic_complete
                         )
                       )
-                      AND s.end_ms - s.start_ms >= 3000
+                      -- Video segments must contain enough real motion to
+                      -- cover a normal beat. A still image is intentionally a
+                      -- one-frame source whose display duration is assigned by
+                      -- the timeline planner, so applying the same three-second
+                      -- source-duration gate would exclude every image.
+                      AND (a.kind='image' OR s.end_ms - s.start_ms >= 3000)
                       AND a.kind IN ('image','video')
                       AND a.status='ready'
                       AND a.copyright_status IN ('owned','licensed','public_domain')
@@ -701,14 +715,20 @@ def _matches_visual_anchor(scene: str, match: AssetMatch) -> bool:
     ).casefold()
     identity_haystack = f"{match.title.casefold()} {segment_haystack}"
 
+    # DOI suffixes often contain a publication year, but a citation overlay is
+    # an editorial instruction rather than evidence that the B-roll itself was
+    # captured in that year. Remove identifiers before applying visual year
+    # constraints while preserving real years authored in shot descriptions.
+    visual_scene = _DOI_IDENTIFIER.sub("", scene)
+
     # A named subject and explicit year are domain-neutral identity constraints.
     subject = re.match(
         r"(?P<subject>[\u3400-\u9fff]{2,6})(?=在|进行|参加|出席|获得|赢得|夺得)",
-        scene,
+        visual_scene,
     )
     if subject and subject.group("subject").casefold() not in identity_haystack:
         return False
-    for year in set(re.findall(r"(?:19|20)\d{2}", scene)):
+    for year in set(re.findall(r"(?:19|20)\d{2}", visual_scene)):
         if year not in identity_haystack:
             return False
     # The database query already applies a calibrated score threshold. Generic
@@ -741,6 +761,8 @@ _TIMING_MARKER = re.compile(
     r"\s*[-–—~至]\s*"
     r"(?:(?:\d{1,2}:)?\d{1,2}(?::|\.)\d{2}(?:\.\d{1,3})?)"
 )
+
+_DOI_IDENTIFIER = re.compile(r"\b10\.\d{4,9}/\S+", re.IGNORECASE)
 
 _TIMING_PREFIX = re.compile(
     r"^\s*(?:(?:\d{1,2}:)?\d{1,2}(?::|\.)\d{2}(?:\.\d{1,3})?)"

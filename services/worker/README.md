@@ -1,92 +1,54 @@
-# FrameFactory Worker
+# Vistora Worker
 
-The worker consumes API run wake-ups from the shared Redis `runs` queue,
-materializes the immutable PostgreSQL pipeline graph into durable `run_steps`,
-then executes the `run-steps` queue with compare-and-swap state transitions.
+Worker 从 Redis `runs` 队列接收唤醒，将不可变 Pipeline 图物化为 PostgreSQL `run_steps`，再通过 `run-steps` 队列执行。PostgreSQL 扫描会恢复漏发唤醒和过期租约；状态转换使用 revision/CAS 和租约 fencing，支持重试、取消、人工审核与重启恢复。
 
-Apply `migrations/0001_runtime_state.sql` after the root database migrations,
-install this package, and configure the variables shown in `.env.example`.
+Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前缀。完整本地环境由根目录 `start.ps1` 配置；单独命令为：
 
-```shell
-python -m framefactory.worker healthcheck
-python -m framefactory.worker run
+```powershell
+.\.venv\Scripts\python.exe -m framefactory.worker healthcheck
+.\.venv\Scripts\python.exe -m framefactory.worker run
 ```
 
-Production mode fails closed unless PostgreSQL and Redis use TLS, or
-`FRAMEFACTORY_ALLOW_INSECURE_TRANSPORT=true` is explicitly set for a trusted
-private network. Missing research, model, speech, media, render, and delivery
-providers are persisted as permanent capability errors. The worker never emits
-a placeholder artifact or reports a fabricated video success.
+## 当前 Provider
 
-## Execution providers
+| 操作 | 当前实现 | 启用条件 |
+| --- | --- | --- |
+| `research.collect` | OpenAI-compatible 结构化研究 | 文本 Provider 三个模型及对象存储完整配置 |
+| `writing.compose` | OpenAI-compatible 结构化脚本 | 同上 |
+| `audio.synthesize` | Edge TTS | `FRAMEFACTORY_LEGACY_MEDIA_ENABLED=true` |
+| `media.select` | PostgreSQL 素材库与可选自动补采 | `FRAMEFACTORY_ASSET_LIBRARY_ENABLED=true` |
+| `render.compose` | FFmpeg 时间线与字幕渲染 | 本地媒体桥与 FFmpeg/ffprobe 可用 |
+| `quality.evaluate` | FFmpeg 解码级流、时长、黑屏和静音检查 | 本地媒体桥可用；否则可用文本质量 Provider |
+| 素材视觉分析 | OpenAI-compatible vision | `FRAMEFACTORY_ASSET_VISION_*` |
+| 素材转写 | OpenAI-compatible ASR | `FRAMEFACTORY_ASR_*`，可选 |
 
-`research.collect`, `writing.compose`, and metadata-only `quality.evaluate` can
-use any configured OpenAI-compatible `/chat/completions` endpoint with strict
-JSON-schema responses. Provider URL, model names, and key come only from
-environment variables; no account or vendor ID is embedded in a Skill or step.
-Secrets support `FRAMEFACTORY_OPENAI_API_KEY_FILE`,
-`FRAMEFACTORY_S3_ACCESS_KEY_ID_FILE`, and
-`FRAMEFACTORY_S3_SECRET_ACCESS_KEY_FILE` for Docker/Kubernetes secret mounts.
-Direct and `_FILE` values are mutually exclusive, and empty secret files stop
-startup.
-Timeout/network failures, 408/409/425/429, and 5xx responses are retryable.
-Provider rejection and malformed structured output are permanent failures. Error
-messages never include request bodies, response bodies, credentials, or URLs.
+未配置的操作由 `UnsupportedCapability` 明确失败，不产生占位 Artifact。`media.generate`、独立 `timeline.align`、`research.verify` 和交付打包等操作仍需要对应部署实现；不能仅凭操作名存在就宣称可用。
 
-Text outputs are content-addressed, conditionally uploaded to the configured
-S3/R2-compatible bucket, recorded in the `artifacts` table, and then referenced
-from the durable step. A retry verifies the existing object hash. The worker
-will not call a model when durable artifact storage is missing.
+根启动器检测 Edge TTS 和 FFmpeg 后启用本地媒体桥，默认启用数据库素材库；只有 `var/secrets/worker-provider.env` 中允许的文本、视觉和 ASR 字段会进入 Worker 环境。
 
-Run materialization joins the immutable published SkillVersion and captures its
-research/writing/visual/asset/QC policies plus the composition snapshot under
-`_framefactory` in every step input. This prevents provider execution from
-silently ignoring the published Skill configuration.
+## 事实与产物边界
 
-TTS, asset acquisition/generation, and rendering use the explicit
-`SpeechProvider`, `AssetProvider`, and `RenderProvider` plugin boundaries in
-`framefactory.worker.providers`. No production plugins are bundled yet, so
-`audio.synthesize`, `media.select`, `media.generate`, `timeline.align`, and
-`render.compose` fail closed with `CapabilityUnavailable`. Consequently this
-release can persist provider-produced research-brief and script artifacts but cannot claim a
-finished video. Metadata-only QC always requests human review and can run only
-when a real video artifact was produced by a future render plugin.
+研究能力只引用不可变 Run 输入中明确出现的 HTTPS URL，不自行编造来源。来源少于 Skill 最低要求或确定性校验失败时进入人工审核。写作读取研究 Artifact，并检查直接引语、禁止词、未支持数量和镜头断言。
 
-Redis is the low-latency wake-up path. Startup and periodic PostgreSQL scans also
-materialize queued runs with no steps, so a process crash between API commit and
-Redis publish cannot lose work. Duplicate jobs and recovered leases remain safe
-through Redis lease fencing and PostgreSQL `worker_revision` CAS writes.
+Artifact 内容寻址后写入 S3/R2/MinIO并记录数据库。重试会核对既有对象哈希。没有持久对象存储时，不调用会产生 Artifact 的 Provider。
 
-Control integrations can call `WorkerService.cancel_run(...)` and
-`WorkerService.review_step(...)`. Cancellation writes `runs.cancel_requested_at`
-and is observed at step checkpoints. Review decisions transition the durable
-step, append `review_actions`, and enqueue downstream/retry work as appropriate.
+## 素材分析与选择
 
-## Quarantined asset analysis
+上传完成后，素材分析管线依次执行文件识别、恶意软件扫描、FFprobe、SHA-256、预览、关键帧、视觉分析、时间片段、标签标准化和发布。静态图片按单帧处理；视频使用代表帧和场景边界。每个阶段保存 checkpoint，同一不可变源哈希在重启后跳过已完成阶段。
 
-Apply root migration `0010_asset_analysis_pipeline.sql` before using the asset
-job tool. The pipeline leases each asset independently and checkpoints file
-detection, malware scanning, ffprobe validation, SHA-256 verification,
-keyframes, configured visual analysis, shot segmentation, normalized tags, and
-the source/license gate. A process restart skips checkpoints already committed
-for the same immutable source hash. Failed items retry independently and do not
-stop their batch.
+自动进入 `ready` 仍需同时满足版权 allowlist、干净扫描、完整分析、质量和审核门。嵌字、水印、安全问题、未知版权或其他 review reason 会停在 `awaiting_review`。人工批准记录 actor、revision、理由和证据哈希。
 
-Candidate selection is read-only and defaults to a 10-item canary (hard maximum
-100):
+`media.select` 只读取 Run 绑定素材库中 `ready + clean + completed analysis + allowed rights` 的候选，并保存来源/许可/分析/审核快照。脚本场景与现有图片或视频语义不匹配时会以 `asset_coverage` 请求审核；人工审核不能把零覆盖伪装成可用 manifest，应补素材、改标签或退回脚本。
 
-```shell
-python tools/asset_jobs.py --database-url postgresql://... plan \
-  --workspace-id 00000000-0000-0000-0000-000000000000
+## 生产安全
+
+生产模式要求 PostgreSQL/Redis 使用 TLS 或在可信私网显式允许不安全传输。Provider 超时、网络错误、408/409/425/429 和 5xx 可重试；拒绝或无效结构化输出永久失败。错误日志不得包含请求/响应正文、凭据或私密 URL。
+
+## 验证
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest services/worker/tests
+.\.venv\Scripts\python.exe -m ruff check services/worker
 ```
 
-Mutating commands in this release are intentionally locked to database names
-containing `test` and require `--confirm-test-data`. They never fetch media from
-internet URLs; media must already exist in the configured object store. Running
-a canary also requires FFmpeg/ffprobe, an externally managed malware scanner
-(ClamAV by default), and an explicitly authorized visual-analysis command using
-JSON over stdio. Successful analysis always ends at `awaiting_review`;
-`auto_ready` is false. Approval still fails closed until copyright is one of
-`owned`, `licensed`, or `public_domain`, the scan is clean, and a completed
-analysis exists. Unknown copyright can never be approved without first
-resolving its provenance and copyright record.
+素材 CLI 的修改命令仅允许隔离测试库并要求明确确认。生产素材操作应通过 Control API 和发布门禁，不直接改数据库状态。

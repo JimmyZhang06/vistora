@@ -1,39 +1,20 @@
-# FrameFactory contracts
+# Vistora 数据契约
 
-Contract version `1.0.0` is defined with JSON Schema 2020-12 in `schemas/v1` and
-OpenAPI 3.1 in `openapi/v1.yaml`.
+契约版本 `1.0.0` 使用 `schemas/v1/` 下的 JSON Schema 2020-12 和 `openapi/v1.yaml` 下的 OpenAPI 3.1。Schema 的规范 `$id` 仍位于 `https://schemas.framefactory.dev/v1/`，这是兼容标识，变更它会破坏已发布消费者。
 
-Persisted resource schemas and client command schemas are separate. In particular,
-`skill-create`, `skill-version-create`, `skill-version-patch`, `channel-write`, `run-create`, and
-`skill-test-execution-create` omit all server-generated identity, ownership, lifecycle, revision,
-hash, and timestamp fields. The canonical OpenAPI uses those command schemas for request bodies and
-the resource schemas for responses.
+持久资源 Schema 与客户端 Command Schema 分离。创建/更新请求不会接收服务端拥有的 ID、工作区、生命周期、revision、哈希和时间戳；OpenAPI 对请求使用 Command Schema，对响应使用资源 Schema。
 
-Every business resource keeps a workspace ownership field, while the current
-runtime resolves one configured personal workspace and does not expose workspace
-switching or membership management. `X-Workspace-Id` is therefore optional and
-reserved for a future mode. Official and user-published skills use the same
-`Skill` and `SkillVersion` schemas and the same `/v1/skills` API;
-`ownership_type` and `publisher_type` are data, not execution branches.
+当前运行时解析一个默认个人工作区。业务资源仍保留 `workspace_id`，但 `X-Workspace-Id` 只是未来模式的预留契约，不代表已提供工作区切换或成员权限。
 
-Worker steps persist an immutable, content-addressed `input_snapshot` before
-delivery. Retries and restart recovery reuse that snapshot and the step
-`idempotency_key`; outputs are referenced as `Artifact` resources rather than
-embedded mutable paths. The worker-facing Queue, RunStore, and ObjectStore ports
-are intentionally infrastructure-neutral so production adapters can target
-Redis, PostgreSQL, and S3 while tests use deterministic in-memory implementations.
+## 不可变快照
 
-`SkillVersion` is deliberately non-executable. Its closed schema supports only
-declarative input, research, writing, visual, asset, quality, capability, and
-output policies. It has no command, module, handler, script, callback, or local
-path field. External research references are HTTPS URLs and stored assets are
-referenced by UUID.
+Worker 在投递前保存内容寻址的 `input_snapshot`；重试和崩溃恢复复用同一快照和幂等键。输出通过 Artifact 引用，而不是写入可变本地路径。Run 的组合快照包含实际 SkillVersion、PipelineVersion、素材库、声音、渲染预设与生产设置来源。
 
-## SkillVersion content hash
+`SkillVersion` 是声明式数据，不允许命令、模块、脚本、回调或本地路径。外部研究证据必须是 HTTPS URL，素材通过 UUID 和持久使用快照引用。
 
-`content_hash` is the lowercase hexadecimal SHA-256 digest of the UTF-8 bytes of
-an [RFC 8785 JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785)
-object containing exactly these nine keys and their values:
+## 内容哈希
+
+`SkillVersion.content_hash` 是九个不可变策略字段组成对象的 RFC 8785 JCS UTF-8 字节 SHA-256：
 
 1. `input_schema`
 2. `research_policy`
@@ -45,14 +26,12 @@ object containing exactly these nine keys and their values:
 8. `output_contract`
 9. `default_pipeline_version_id`
 
-The hash domain excludes identity and lifecycle metadata, including
-`schema_version`, `id`, `workspace_id`, `ownership_type`, `skill_id`, `version`,
-`state`, `execution_kind`, `content_hash` itself, `created_by`, `created_at`, and
-`published_at`. The server computes the digest once when persisting an immutable
-version; clients and workers may recompute it to verify the snapshot.
+以下元数据明确排除（excluded）在哈希域之外：`id`、`workspace_id`、`skill_id`、`version`、`state`、`created_at`、`published_at`，以及 `content_hash` 自身。PipelineVersion 对其声明式节点和能力要求使用同一规范化原则。服务端在发布不可变版本时计算哈希；客户端和 Worker 可以复算验证，但不得自行覆盖。
 
-All schemas have stable canonical `$id` values rooted at
-`https://schemas.framefactory.dev/v1/`. Consumers should register the files in
-`schemas/v1` under those identifiers before validation. Each resource schema
-contains at least one valid example fixture; examples are illustrative contract
-data, not production seed data.
+## 验证
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/contract
+```
+
+消费者应按每个 Schema 的规范 `$id` 注册整个 `schemas/v1` 集合。示例 fixture 只用于契约说明和测试，不是生产 Seed 或用户数据。
