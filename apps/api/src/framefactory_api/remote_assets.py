@@ -11,6 +11,7 @@ import socket
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
@@ -47,6 +48,10 @@ _MUTUALLY_EXCLUSIVE_EVENT_ENTITIES = (
     "全运会",
 )
 _SEARCH_YEAR = re.compile(r"(?:19|20)\d{2}")
+_LATIN_OR_NUMERIC_QUERY_TERM = re.compile(
+    r"[A-Za-z][A-Za-z0-9-]{1,40}|[0-9]{1,10}"
+)
+_ALPHA_NUMERIC_ENTITY = re.compile(r"\b([a-z]{2,40})\s+([0-9]{1,10})\b")
 
 
 class RemoteAssetError(RuntimeError):
@@ -73,6 +78,9 @@ class DownloadedAsset:
     sha256: str
     duration_seconds: float | None
     subtitle_languages: tuple[str, ...] = ()
+    rights_evidence_type: str | None = None
+    rights_evidence_locator: str | None = None
+    rights_verified_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,13 +248,7 @@ class RemoteAssetGateway:
             if not isinstance(info, Mapping):
                 continue
             metadata = info.get("extmetadata", {})
-            license_value = _metadata_value(metadata, "LicenseShortName").casefold()
-            copyrighted = _metadata_value(metadata, "Copyrighted").casefold()
-            if not (
-                "public domain" in license_value
-                or license_value in {"cc0", "pdm"}
-                or copyrighted == "false"
-            ):
+            if not _wikimedia_declares_public_domain(metadata):
                 continue
             duration = _optional_number(info.get("duration"))
             source_url, media_type, byte_size = _wikimedia_derivative(info, duration)
@@ -282,6 +284,7 @@ class RemoteAssetGateway:
         return tuple(item for score, item in ranked if score >= 0.34)[:limit]
 
     def _download_wikimedia(self, source_url: str, destination: Path) -> DownloadedAsset:
+        evidence = self._verify_wikimedia_public_domain(source_url)
         filename = _safe_filename(unquote(Path(urlparse(source_url).path).name))
         path = destination / filename
         final_url, content_type = self._stream_download(source_url, path)
@@ -291,11 +294,65 @@ class RemoteAssetGateway:
             source_url=source_url,
             metadata={
                 "id": hashlib.sha256(source_url.encode()).hexdigest()[:20],
-                "title": Path(filename).stem.replace("_", " "),
-                "webpage_url": final_url,
-                "license": "Public domain",
+                "title": evidence["title"],
+                "webpage_url": evidence["locator"],
+                "url": final_url,
+                "uploader": evidence["attribution"],
+                "license": evidence["license"],
                 "content_type": content_type,
+                "rights_evidence_type": "verified_public_domain",
+                "rights_evidence_locator": evidence["locator"],
+                "rights_verified_at": evidence["verified_at"],
             },
+        )
+
+    def _verify_wikimedia_public_domain(self, source_url: str) -> dict[str, str]:
+        """Re-verify the exact Commons file before assigning trusted rights."""
+
+        filename = _wikimedia_original_filename(source_url)
+        parameters = urlencode(
+            {
+                "action": "query",
+                "titles": f"File:{filename}",
+                "prop": "imageinfo",
+                "iiprop": "url|extmetadata",
+                "format": "json",
+                "origin": "*",
+            }
+        )
+        request = Request(
+            f"https://commons.wikimedia.org/w/api.php?{parameters}",
+            headers={"User-Agent": "Vistora/1.0 (public-domain rights verification)"},
+        )
+        try:
+            with build_opener(_PublicRedirectHandler()).open(
+                request, timeout=30
+            ) as response:
+                body = response.read(4_194_305)
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            raise RemoteAssetError(
+                "REMOTE_RIGHTS_VERIFICATION_UNAVAILABLE",
+                "Wikimedia rights metadata could not be verified",
+                retryable=True,
+            ) from exc
+        if len(body) > 4_194_304:
+            raise RemoteAssetError(
+                "REMOTE_RIGHTS_VERIFICATION_UNAVAILABLE",
+                "Wikimedia rights metadata response is too large",
+                retryable=True,
+            )
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RemoteAssetError(
+                "REMOTE_RIGHTS_VERIFICATION_UNAVAILABLE",
+                "Wikimedia rights metadata response is invalid",
+                retryable=True,
+            ) from exc
+        return _wikimedia_public_domain_evidence(
+            payload,
+            expected_filename=filename,
+            verified_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
 
     async def _download_with_ytdlp(
@@ -488,6 +545,13 @@ class RemoteAssetGateway:
             sha256=digest,
             duration_seconds=duration,
             subtitle_languages=_subtitle_languages(metadata),
+            rights_evidence_type=_optional_text(
+                metadata.get("rights_evidence_type")
+            ),
+            rights_evidence_locator=_optional_text(
+                metadata.get("rights_evidence_locator")
+            ),
+            rights_verified_at=_optional_text(metadata.get("rights_verified_at")),
         )
 
 
@@ -686,7 +750,25 @@ def _query_relevance(query: str, title: str) -> float:
     title_years = set(_SEARCH_YEAR.findall(title))
     if query_years and title_years and query_years.isdisjoint(title_years):
         return 0.0
+    query_identifiers = _alpha_numeric_entities(query)
+    title_identifiers = _alpha_numeric_entities(title)
+    if any(
+        title_numbers and query_numbers.isdisjoint(title_numbers)
+        for entity, query_numbers in query_identifiers.items()
+        if (title_numbers := title_identifiers.get(entity))
+    ):
+        return 0.0
     return sum(1 for term in query_terms if term in title_value) / len(query_terms)
+
+
+def _alpha_numeric_entities(value: str) -> dict[str, frozenset[str]]:
+    """Return generic named identifiers such as ``apollo 11`` or ``boeing 747``."""
+
+    identifiers: dict[str, set[str]] = {}
+    normalized = _normalized_search_text(value)
+    for entity, number in _ALPHA_NUMERIC_ENTITY.findall(normalized):
+        identifiers.setdefault(entity, set()).add(str(int(number)))
+    return {entity: frozenset(numbers) for entity, numbers in identifiers.items()}
 
 
 def _search_terms(value: str) -> tuple[str, ...]:
@@ -738,17 +820,139 @@ def _metadata_value(metadata: object, name: str) -> str:
     return str(value.get("value") or "").strip() if isinstance(value, Mapping) else ""
 
 
+def _wikimedia_declares_public_domain(metadata: object) -> bool:
+    license_value = _metadata_value(metadata, "LicenseShortName").casefold()
+    copyrighted = _metadata_value(metadata, "Copyrighted").casefold()
+    if "not public domain" in license_value:
+        return False
+    return (
+        license_value
+        in {
+            "public domain",
+            "public domain mark",
+            "public domain mark 1.0",
+            "cc0",
+            "cc0 1.0",
+            "pdm",
+            "pdm 1.0",
+        }
+        or copyrighted == "false"
+    )
+
+
+def _wikimedia_original_filename(source_url: str) -> str:
+    parsed = urlparse(source_url)
+    if parsed.scheme != "https" or parsed.hostname != "upload.wikimedia.org":
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia rights can only be verified for an official upload URL",
+        )
+    parts = [unquote(part) for part in Path(parsed.path).parts if part not in {"/", "\\"}]
+    try:
+        transcode_index = parts.index("transcoded")
+    except ValueError:
+        filename = parts[-1] if parts else ""
+    else:
+        original_index = transcode_index + 3
+        filename = parts[original_index] if original_index < len(parts) else ""
+    if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia source does not identify an original Commons file",
+        )
+    return filename
+
+
+def _wikimedia_public_domain_evidence(
+    payload: object,
+    *,
+    expected_filename: str,
+    verified_at: str,
+) -> dict[str, str]:
+    """Validate a Commons API response and return auditable trusted evidence."""
+
+    try:
+        pages = payload.get("query", {}).get("pages", {})  # type: ignore[union-attr]
+    except AttributeError as exc:
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_VERIFICATION_UNAVAILABLE",
+            "Wikimedia rights metadata response is invalid",
+            retryable=True,
+        ) from exc
+    page = next(
+        (item for item in pages.values() if isinstance(item, Mapping)),
+        None,
+    ) if isinstance(pages, Mapping) else None
+    image_info = page.get("imageinfo") if isinstance(page, Mapping) else None
+    info = image_info[0] if isinstance(image_info, list) and image_info else None
+    if not isinstance(page, Mapping) or not isinstance(info, Mapping):
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia file has no verifiable rights metadata",
+        )
+    actual_title = str(page.get("title") or "").removeprefix("File:")
+    normalize = lambda value: " ".join(  # noqa: E731 - compact canonical comparison
+        unquote(str(value)).replace("_", " ").casefold().split()
+    )
+    if normalize(actual_title) != normalize(expected_filename):
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia rights metadata does not match the downloaded file",
+        )
+    original_url = str(info.get("url") or "")
+    try:
+        original_filename = _wikimedia_original_filename(original_url)
+    except RemoteAssetError as exc:
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia metadata does not identify an official source file",
+        ) from exc
+    if normalize(original_filename) != normalize(expected_filename):
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia metadata source does not match the downloaded file",
+        )
+    metadata = info.get("extmetadata", {})
+    if not _wikimedia_declares_public_domain(metadata):
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia file is not verified as public domain or CC0",
+        )
+    locator = str(info.get("descriptionurl") or "").strip()
+    parsed_locator = urlparse(locator)
+    if (
+        parsed_locator.scheme != "https"
+        or parsed_locator.hostname != "commons.wikimedia.org"
+        or parsed_locator.username
+        or parsed_locator.password
+    ):
+        raise RemoteAssetError(
+            "REMOTE_RIGHTS_UNVERIFIED",
+            "Wikimedia rights metadata has no canonical Commons evidence page",
+        )
+    license_name = _metadata_value(metadata, "LicenseShortName") or "Public domain"
+    attribution = _metadata_value(metadata, "Artist") or "Wikimedia Commons"
+    return {
+        "title": actual_title[:300] or expected_filename[:300],
+        "locator": locator[:2048],
+        "license": license_name[:500],
+        "attribution": attribution[:500],
+        "verified_at": verified_at,
+    }
+
+
 def _wikimedia_search_query(value: str) -> str:
     """Do not make an English Commons query impossible with CJK scene directions."""
 
     generic = {"public", "domain", "footage", "video", "clip", "material", "media"}
     terms = [
         item
-        for item in re.findall(r"[A-Za-z][A-Za-z0-9-]{1,40}", value)
+        for item in _LATIN_OR_NUMERIC_QUERY_TERM.findall(value)
         if item.casefold() not in generic
     ]
     latin = " ".join(terms)
-    return latin[:300] if len(terms) >= 2 else value[:300]
+    has_alpha = any(item[0].isalpha() for item in terms)
+    return latin[:300] if len(terms) >= 2 and has_alpha else value[:300]
 
 
 def _wikimedia_derivative(

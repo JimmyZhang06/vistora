@@ -4,6 +4,7 @@ import json
 import unicodedata
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from framefactory.skills import (
     SkillValidationError,
@@ -17,6 +18,40 @@ from tests._fixtures import official_seed_payload, skill_payload
 
 
 class SkillVersionModelTests(unittest.TestCase):
+    def test_batch_skill_declares_v3_inventory_without_making_v2_require_it(self) -> None:
+        repository_root = Path(__file__).resolve().parents[3]
+        package = repository_root / "packages" / "seeds" / "official-skills" / "v1"
+        skill_version = json.loads(
+            (package / "general-topic-explainer" / "1.2.0.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        pipeline = json.loads(
+            (package / "pipelines" / "standard-production" / "3.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        inventory = next(
+            artifact
+            for artifact in skill_version["output_contract"]["artifacts"]
+            if artifact["kind"] == "inventory"
+        )
+        self.assertEqual("material-inventory", inventory["name"])
+        self.assertFalse(inventory["required"])
+        self.assertIn(
+            "media.inventory", {node["operation"] for node in pipeline["nodes"]}
+        )
+        self.assertNotIn(
+            "research.web_acquisition", pipeline["capability_requirements"]
+        )
+        web_research = next(
+            requirement
+            for requirement in skill_version["capability_requirements"]
+            if requirement["name"] == "research.web_acquisition"
+        )
+        self.assertEqual("optional", web_research["level"])
+
     def test_blank_user_skill_loads_and_compiles_all_stages(self) -> None:
         version = parse_skill_version(skill_payload())
 

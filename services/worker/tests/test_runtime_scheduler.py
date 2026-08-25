@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import unittest
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+from framefactory.ports import QueueMessage
 from framefactory.runtime import (
     ExecutionState,
     Lease,
+    PermanentStepError,
     RetryableStepError,
     RetryPolicy,
     ReviewDecision,
@@ -49,6 +51,18 @@ class _CancellingStep:
         return StepResult()
 
 
+@dataclass
+class _ApprovalRecordingStep:
+    step_type: str
+    approved_dependency_step_ids: tuple[str, ...] = ()
+    approved_dependency_reviews: object | None = None
+
+    async def execute(self, context: StepContext) -> StepResult:
+        self.approved_dependency_step_ids = context.approved_dependency_step_ids
+        self.approved_dependency_reviews = context.approved_dependency_reviews
+        return StepResult()
+
+
 class _RejectingRecoveryQueue(InMemoryQueue):
     def enqueue(self, message, available_at):
         del message, available_at
@@ -57,20 +71,24 @@ class _RejectingRecoveryQueue(InMemoryQueue):
 
 class SchedulerEndToEndTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.clock = ManualClock(datetime(2026, 8, 15, tzinfo=timezone.utc))
+        self.clock = ManualClock(datetime(2026, 8, 15, tzinfo=UTC))
         self.store = InMemoryRunStore()
         self.queue = InMemoryQueue()
         self.scheduler = Scheduler(store=self.store, queue=self.queue, clock=self.clock)
 
     def run_worker(self, worker: WorkerRuntime, queue_name: str = "run-steps") -> bool:
-        return asyncio.run(worker.process_one(queue_name=queue_name, worker_id="worker-1"))
+        return asyncio.run(
+            worker.process_one(queue_name=queue_name, worker_id="worker-1")
+        )
 
     def test_create_process_review_dependency_and_duplicate_delivery(self) -> None:
         draft = _ScriptedStep(
             "writing.compose",
             [StepResult(output_summary={"draft": "ready"}, requires_review=True)],
         )
-        render = _ScriptedStep("render.compose", [StepResult(output_summary={"video": "ok"})])
+        render = _ScriptedStep(
+            "render.compose", [StepResult(output_summary={"video": "ok"})]
+        )
         runtime = WorkerRuntime(
             scheduler=self.scheduler,
             steps=StepRegistry((draft, render)),
@@ -142,6 +160,117 @@ class SchedulerEndToEndTests(unittest.TestCase):
         keys = [event["deduplication_key"] for event in self.store.events]
         self.assertEqual(len(keys), len(set(keys)))
 
+    def test_cross_queue_injection_is_acked_without_claiming_durable_step(self) -> None:
+        step = _ScriptedStep("writing.compose", [StepResult()])
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler,
+            steps=StepRegistry((step,)),
+        )
+        self.scheduler.create_run(
+            workspace_id="workspace",
+            run_id="cross-queue",
+            input_snapshot={},
+            steps=(
+                RunStep(
+                    key="write",
+                    step_type="writing.compose",
+                    input_snapshot={},
+                    queue_name="run-steps",
+                ),
+            ),
+        )
+        self.queue.enqueue(
+            QueueMessage(
+                workspace_id="workspace",
+                run_id="cross-queue",
+                step_id="cross-queue:write",
+                queue_name="browser-capture",
+            ),
+            self.clock.now(),
+        )
+        self.assertTrue(self.run_worker(runtime, "browser-capture"))
+        record = self.store.get_step("workspace", "cross-queue:write")
+        self.assertEqual(ExecutionState.QUEUED, record.status)
+        self.assertEqual(0, step.calls)
+        self.assertEqual(0, self.queue.pending_count("browser-capture"))
+
+    def test_recovery_queue_filter_never_publishes_other_queue(self) -> None:
+        self.scheduler.create_run(
+            workspace_id="workspace",
+            run_id="filtered-recovery",
+            input_snapshot={},
+            steps=(
+                RunStep(
+                    key="capture",
+                    step_type="web.capture.validate",
+                    input_snapshot={},
+                    queue_name="browser-capture",
+                ),
+                RunStep(
+                    key="write",
+                    step_type="writing.compose",
+                    input_snapshot={},
+                    queue_name="run-steps",
+                ),
+            ),
+        )
+        for queue_name in ("browser-capture", "run-steps"):
+            delivery = self.queue.reserve(queue_name, "drain", self.clock.now())
+            assert delivery is not None
+            self.queue.ack(delivery)
+        self.scheduler.recover(queue_name="browser-capture")
+        self.assertEqual(1, self.queue.pending_count("browser-capture"))
+        self.assertEqual(0, self.queue.pending_count("run-steps"))
+
+    def test_approved_review_provenance_is_passed_to_direct_dependency(self) -> None:
+        screenshot = _ScriptedStep(
+            "web.capture.screenshot", [StepResult(requires_review=True)]
+        )
+        materialize = _ApprovalRecordingStep("web.materialize")
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler,
+            steps=StepRegistry((screenshot, materialize)),
+        )
+        self.scheduler.create_run(
+            workspace_id="workspace",
+            run_id="approved-provenance",
+            input_snapshot={},
+            steps=(
+                RunStep(
+                    key="screenshot",
+                    step_type="web.capture.screenshot",
+                    input_snapshot={},
+                    queue_name="browser-capture",
+                ),
+                RunStep(
+                    key="materialize",
+                    step_type="web.materialize",
+                    input_snapshot={},
+                    dependencies=("screenshot",),
+                    queue_name="run-steps",
+                ),
+            ),
+        )
+        self.assertTrue(self.run_worker(runtime, "browser-capture"))
+        self.scheduler.review(
+            workspace_id="workspace",
+            step_id="approved-provenance:screenshot",
+            decision=ReviewDecision.APPROVE,
+            actor_id="reviewer",
+            metadata={"kind": "scope_selection", "selected_page_ids": ["page-01"]},
+        )
+        self.assertTrue(self.run_worker(runtime, "run-steps"))
+        self.assertEqual(
+            ("approved-provenance:screenshot",),
+            materialize.approved_dependency_step_ids,
+        )
+        self.assertEqual(
+            "scope_selection",
+            materialize.approved_dependency_reviews["approved-provenance:screenshot"][
+                "kind"
+            ],
+        )
+
     def test_retry_release_and_eventual_success(self) -> None:
         flaky = _ScriptedStep(
             "research.collect",
@@ -203,7 +332,46 @@ class SchedulerEndToEndTests(unittest.TestCase):
         self.assertTrue(self.run_worker(runtime))
         retrying = self.store.get_step("workspace", "run-provider-backoff:research")
         self.assertEqual(ExecutionState.RETRYING, retrying.status)
-        self.assertEqual(self.clock.now() + timedelta(seconds=30), retrying.available_at)
+        self.assertEqual(
+            self.clock.now() + timedelta(seconds=30), retrying.available_at
+        )
+
+    def test_typed_permanent_error_code_and_details_are_persisted(self) -> None:
+        operation = _ScriptedStep(
+            "media.inventory",
+            [
+                PermanentStepError(
+                    "snapshot has no coverage",
+                    code="asset_coverage_insufficient",
+                    details={
+                        "catalog_snapshot_id": "snapshot-1",
+                        "missing_concepts": ["launch"],
+                    },
+                )
+            ],
+        )
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler, steps=StepRegistry((operation,))
+        )
+        self.scheduler.create_run(
+            workspace_id="workspace",
+            run_id="run-inventory-error",
+            input_snapshot={},
+            steps=(
+                RunStep(
+                    key="inventory",
+                    step_type="media.inventory",
+                    input_snapshot={},
+                    queue_name="run-steps",
+                ),
+            ),
+        )
+
+        self.assertTrue(self.run_worker(runtime))
+        failed = self.store.get_step("workspace", "run-inventory-error:inventory")
+        self.assertEqual(ExecutionState.FAILED, failed.status)
+        self.assertEqual("asset_coverage_insufficient", failed.error.code)
+        self.assertEqual("snapshot-1", failed.error.details["catalog_snapshot_id"])
 
     def test_dynamic_review_requirement_clears_after_successful_revision(self) -> None:
         media = _ScriptedStep(
@@ -246,8 +414,12 @@ class SchedulerEndToEndTests(unittest.TestCase):
         self.assertFalse(step.review_required)
 
     def test_expired_lease_recovery_requeues_without_reusing_claim(self) -> None:
-        operation = _ScriptedStep("media.select", [StepResult(output_summary={"assets": 2})])
-        runtime = WorkerRuntime(scheduler=self.scheduler, steps=StepRegistry((operation,)))
+        operation = _ScriptedStep(
+            "media.select", [StepResult(output_summary={"assets": 2})]
+        )
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler, steps=StepRegistry((operation,))
+        )
         self.scheduler.create_run(
             workspace_id="workspace",
             run_id="run-recover",
@@ -294,7 +466,9 @@ class SchedulerEndToEndTests(unittest.TestCase):
         while self.run_worker(runtime):
             pass
         self.assertEqual(1, operation.calls)
-        self.assertEqual(2, self.store.get_step("workspace", "run-recover:media").attempt_count)
+        self.assertEqual(
+            2, self.store.get_step("workspace", "run-recover:media").attempt_count
+        )
 
     def test_recovery_isolates_a_stale_queue_idempotency_conflict(self) -> None:
         self.scheduler.create_run(
@@ -334,9 +508,13 @@ class SchedulerEndToEndTests(unittest.TestCase):
         step = self.store.get_step("workspace", "run-stale-queue:media")
         self.assertEqual(ExecutionState.RETRYING, step.status)
 
-    def test_cancel_marks_unstarted_graph_terminal_and_drains_stale_messages(self) -> None:
+    def test_cancel_marks_unstarted_graph_terminal_and_drains_stale_messages(
+        self,
+    ) -> None:
         operation = _ScriptedStep("quality.evaluate", [StepResult()])
-        runtime = WorkerRuntime(scheduler=self.scheduler, steps=StepRegistry((operation,)))
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler, steps=StepRegistry((operation,))
+        )
         self.scheduler.create_run(
             workspace_id="workspace",
             run_id="run-cancel",
@@ -359,7 +537,9 @@ class SchedulerEndToEndTests(unittest.TestCase):
 
     def test_running_cancellation_is_observed_at_a_worker_checkpoint(self) -> None:
         operation = _CancellingStep("audio.synthesize", self.scheduler)
-        runtime = WorkerRuntime(scheduler=self.scheduler, steps=StepRegistry((operation,)))
+        runtime = WorkerRuntime(
+            scheduler=self.scheduler, steps=StepRegistry((operation,))
+        )
         self.scheduler.create_run(
             workspace_id="workspace",
             run_id="run-running-cancel",

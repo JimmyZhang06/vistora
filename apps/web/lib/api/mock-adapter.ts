@@ -36,6 +36,21 @@ import type {
   GenerationBatchItem,
   GenerationBatchItemPage,
   GenerationBatchItemQuery,
+  LibraryBuildJob,
+  LibraryBuildJobCreateRequest,
+  FullAiEstimate,
+  FullAiOptions,
+  FullAiRun,
+  FullAiRunCreateRequest,
+  FullAiSpec,
+  WebpageVideoCapture,
+  WebpageVideoOptions,
+  WebpageVideoReviewRequest,
+  WebpageVideoScopeReviewRequest,
+  WebpageVideoSitePlan,
+  WebpageVideoStoryboardReviewRequest,
+  WebpageVideoRun,
+  WebpageVideoRunCreateRequest,
   Run,
   RunDraft,
   RunEstimate,
@@ -115,6 +130,8 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
   private readonly generationBatches: GenerationBatch[] = [];
   private readonly generationBatchItems: GenerationBatchItem[] = [];
   private readonly idempotentBatches = new Map<string, string>();
+  private readonly libraryBuildJobs = new Map<string, LibraryBuildJob>();
+  private readonly idempotentLibraryBuildJobs = new Map<string, string>();
   private sequence = 1;
   private profileRevision = 1;
   private preferencesRevision = 1;
@@ -729,7 +746,8 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
     return this.execute(() => {
       this.findWorkspace(workspaceId);
       const accessibleSkills = this.data.skills.filter(
-        (skill) => skill.workspaceId === workspaceId || skill.publisher.type === "system",
+        (skill) => (skill.workspaceId === workspaceId || skill.publisher.type === "system")
+          && skill.status === "published",
       );
       const skills = accessibleSkills.flatMap((skill) => {
         const versionId = skill.currentVersionId ?? skill.draftVersionId;
@@ -758,6 +776,147 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
         pipelines: this.data.pipelines.filter((item) => item.workspaceId === workspaceId),
       };
     });
+  }
+
+  getFullAiOptions(): Promise<ApiResult<FullAiOptions>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      mode: "generated_only",
+      status: "blocked",
+      pipeline: { slug: "full-ai-production", version: 2, visualSourceMode: "generated_only" },
+      provider: {
+        status: "unconfigured",
+        supportsReconciliation: false,
+        submitUnknownPolicy: "manual_only",
+        continuityModes: ["prompt_pack", "none"],
+      },
+      limits: {
+        briefMaxLength: 1600,
+        durationSeconds: [15, 30, 45, 60],
+        crawlMaxPagesDefault: 8,
+        crawlMaxPagesLimit: 12,
+        crawlMaxDepthDefault: 1,
+        crawlMaxDepthLimit: 2,
+        aspectRatios: ["9:16", "16:9"],
+        directions: ["cinematic", "graphic", "illustrated"],
+        variantsPerScene: [1, 2, 3],
+        clipSeconds: 5,
+      },
+      blockers: [{ code: "FULL_AI_PROVIDER_UNAVAILABLE", message: "模拟环境未配置生成 Provider。", retryable: false }],
+    }));
+  }
+
+  estimateFullAiRun(spec: FullAiSpec): Promise<ApiResult<FullAiEstimate>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      status: "blocked",
+      requestFingerprint: "",
+      plan: {
+        sceneCount: Math.ceil(spec.durationSeconds / 5),
+        clipSeconds: 5,
+        candidateCount: Math.ceil(spec.durationSeconds / 5) * spec.variantsPerScene,
+        billableSeconds: spec.durationSeconds * spec.variantsPerScene,
+      },
+      blockers: [{ code: "FULL_AI_PROVIDER_UNAVAILABLE", message: "模拟环境未配置生成 Provider。", retryable: false }],
+    }));
+  }
+
+  createFullAiRun(
+    request: FullAiRunCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<FullAiRun>> {
+    void request;
+    void idempotencyKey;
+    return this.execute(() => this.fail("FULL_AI_PROVIDER_UNAVAILABLE", "模拟环境未配置生成 Provider。"));
+  }
+
+  getFullAiRun(runId: string): Promise<ApiResult<FullAiRun>> {
+    void runId;
+    return this.execute(() => this.fail("full_ai_run_not_found", "全 AI 任务不存在。"));
+  }
+
+  getWebpageVideoOptions(): Promise<ApiResult<WebpageVideoOptions>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      status: "blocked",
+      pipeline: { slug: "webpage-capture-video", version: 1 },
+      limits: {
+        urlMaxLength: 2048,
+        topicMaxLength: 1600,
+        aspectRatios: ["16:9", "9:16", "1:1", "4:3"],
+        durationSeconds: [15, 30, 45, 60],
+      },
+      voices: [],
+      subtitles: { supported: false, defaultEnabled: false },
+      blockers: [{
+        code: "WEBPAGE_VIDEO_UNAVAILABLE",
+        message: "模拟环境未运行隔离网页截图服务。",
+        retryable: false,
+      }],
+    }));
+  }
+
+  createWebpageVideoRun(
+    request: WebpageVideoRunCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<WebpageVideoRun>> {
+    void request;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境未运行隔离网页截图服务。"));
+  }
+
+  getWebpageVideoRun(runId: string): Promise<ApiResult<WebpageVideoRun>> {
+    void runId;
+    return this.execute(() => this.fail("webpage_video_run_not_found", "网页截图成片任务不存在。"));
+  }
+
+  getWebpageVideoCapture(runId: string): Promise<ApiResult<WebpageVideoCapture>> {
+    void runId;
+    return this.execute(() => this.fail("capture_not_ready", "截图尚未生成。"));
+  }
+
+  getWebpageVideoSite(runId: string): Promise<ApiResult<WebpageVideoSitePlan>> {
+    void runId;
+    return this.execute(() => this.fail("site_plan_not_ready", "多页面解析结果尚未生成。"));
+  }
+
+  reviewWebpageVideoRun(
+    runId: string,
+    review: WebpageVideoReviewRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<void>> {
+    void runId;
+    void review;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持网页截图审核。"));
+  }
+
+  reviewWebpageVideoScope(
+    runId: string,
+    review: WebpageVideoScopeReviewRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<void>> {
+    void runId;
+    void review;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持页面范围审核。"));
+  }
+
+  reviewWebpageVideoStoryboard(
+    runId: string,
+    review: WebpageVideoStoryboardReviewRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<void>> {
+    void runId;
+    void review;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持镜头板审核。"));
+  }
+
+  cancelWebpageVideoRun(runId: string, idempotencyKey: string): Promise<ApiResult<void>> {
+    void runId;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持取消网页截图成片任务。"));
   }
 
   private calculateEstimate(draft: RunDraft): RunEstimate {
@@ -910,6 +1069,67 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
     });
   }
 
+  createLibraryBuildJob(
+    request: LibraryBuildJobCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<LibraryBuildJob>> {
+    return this.execute(() => {
+      const existingId = this.idempotentLibraryBuildJobs.get(idempotencyKey);
+      const existing = existingId ? this.libraryBuildJobs.get(existingId) : undefined;
+      if (existing) return existing;
+      const library = this.data.assetLibraries.find((item) => item.id === request.libraryId);
+      if (!library) this.fail("ASSET_LIBRARY_NOT_FOUND", "素材库不存在", "libraryId");
+      const now = new Date().toISOString();
+      const job: LibraryBuildJob = {
+        schemaVersion: "1.0.0",
+        id: this.nextId("library_build_job"),
+        workspaceId: this.data.session.activeWorkspaceId,
+        libraryId: request.libraryId,
+        status: "queued",
+        stage: "discover",
+        spec: {
+          topic: request.topic.trim(),
+          queries: [...(request.queries ?? [])],
+          sources: [...request.sources],
+          maxAssets: request.maxAssets,
+          copyrightStatus: request.copyrightStatus,
+          rightsConfirmed: true,
+        },
+        progress: { assetIds: [], discovered: 0, transferred: 0, analyzed: 0, indexed: 0, failed: 0 },
+        revision: 1,
+        createdBy: this.data.session.user.id,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.libraryBuildJobs.set(job.id, job);
+      this.idempotentLibraryBuildJobs.set(idempotencyKey, job.id);
+      return job;
+    });
+  }
+
+  getLibraryBuildJob(jobId: string): Promise<ApiResult<LibraryBuildJob>> {
+    return this.execute(() => {
+      const job = this.libraryBuildJobs.get(jobId);
+      if (!job) this.fail("LIBRARY_BUILD_JOB_NOT_FOUND", "素材建库任务不存在", "jobId");
+      return job;
+    });
+  }
+
+  cancelLibraryBuildJob(jobId: string, revision: number): Promise<ApiResult<LibraryBuildJob>> {
+    return this.execute(() => {
+      const job = this.libraryBuildJobs.get(jobId);
+      if (!job) this.fail("LIBRARY_BUILD_JOB_NOT_FOUND", "素材建库任务不存在", "jobId");
+      if (job.revision !== revision) this.fail("REVISION_CONFLICT", "建库任务已更新，请刷新后重试。", "If-Match", 412);
+      if (["queued", "running"].includes(job.status)) {
+        job.status = "cancelled";
+        job.revision += 1;
+        job.updatedAt = new Date().toISOString();
+        job.completedAt = job.updatedAt;
+      }
+      return job;
+    });
+  }
+
   uploadAsset(request: AssetUploadRequest): Promise<ApiResult<void>> {
     return this.execute(() => {
       const library = this.data.assetLibraries.find((item) => item.id === request.libraryId);
@@ -1057,7 +1277,7 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
         const runId = this.nextId("run");
         this.generationBatchItems.push({
           id: this.nextId("batch_item"), workspaceId: request.workspaceId, batchId, runId,
-          ordinal, label: item.topic, input: { ...(item.inputs ?? {}), topic: item.topic },
+          ordinal, label: item.topic, input: { ...(item.inputs ?? {}), topic: item.topic, research_mode: request.researchMode },
           status: "queued", createdAt: now, updatedAt: now,
         });
       });

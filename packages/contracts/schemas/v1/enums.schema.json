@@ -24,7 +24,10 @@
     },
     "ArtifactKind": {
       "type": "string",
-      "enum": ["research", "script", "image", "video", "audio", "subtitle", "manifest", "qc_report", "log_archive"]
+      "enum": [
+        "research", "script", "image", "video", "audio", "subtitle", "manifest", "qc_report", "log_archive",
+        "asset", "inventory", "narration_timing", "candidate_manifest", "generated_material_manifest", "material_selection", "timeline"
+      ]
     },
     "EventType": {
       "type": "string",

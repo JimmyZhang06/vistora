@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from framefactory.runtime import PermanentStepError
 from framefactory.steps import ArtifactRef, StepContext
 from framefactory.worker.adapters.legacy_media import (
     _VIDEO_SUFFIXES,
@@ -23,6 +24,7 @@ from framefactory.worker.adapters.legacy_media import (
     _build_ass,
     _media_filter,
     _render_profile,
+    _segment_command,
 )
 from framefactory.worker.config import LegacyMediaSettings, WorkerSettings
 from framefactory.worker.providers import ProviderArtifact
@@ -75,6 +77,47 @@ class LegacyMediaAdapterTests(unittest.TestCase):
     def test_matroska_sources_are_normalized_by_the_render_pipeline(self) -> None:
         self.assertIn(".mkv", _VIDEO_SUFFIXES)
 
+    def test_ass_uses_redistributable_noto_cjk_font(self) -> None:
+        document = _build_ass(
+            {"narration": "中文字幕。"},
+            3.0,
+            width=1920,
+            height=1080,
+            layout="full_frame",
+            subtitle_enabled=True,
+            subtitle_position="bottom",
+            subtitle_size="medium",
+            max_lines=2,
+        )
+        self.assertIn("Noto Sans CJK SC", document)
+        self.assertNotIn("Microsoft YaHei", document)
+
+    def test_ass_uses_native_narration_word_boundaries(self) -> None:
+        narration = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉"
+        words = [
+            {
+                "text": character,
+                "start_seconds": float(index),
+                "end_seconds": float(index + 1),
+                "estimated": False,
+            }
+            for index, character in enumerate(narration)
+        ]
+        document = _build_ass(
+            {"narration": narration},
+            20.0,
+            timing={"words": words, "estimated": False},
+            width=320,
+            height=180,
+            subtitle_enabled=True,
+            max_lines=1,
+        )
+        dialogue = [
+            line for line in document.splitlines() if ",Default," in line
+        ]
+        self.assertGreater(len(dialogue), 1)
+        self.assertIn("0:00:08.00", dialogue[1])
+
     def test_edge_tts_publishes_real_provider_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -115,6 +158,149 @@ class LegacyMediaAdapterTests(unittest.TestCase):
             self.assertEqual("audio", result.artifacts[0].kind)
             self.assertEqual("edge-tts", result.summary_dict()["provider"])
             self.assertEqual(2.1, result.summary_dict()["duration_seconds"])
+
+    def test_webpage_tts_missing_native_words_fails_instead_of_awaiting_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "index.json"
+            catalog.write_text("[]", encoding="utf-8")
+            settings = LegacyMediaSettings(root, (catalog,))
+            storage = MemoryStorage()
+            seed = context()
+            script = storage.publish(
+                seed,
+                ProviderArtifact(
+                    "script",
+                    "script.json",
+                    "application/json",
+                    json.dumps({"narration": "网页旁白", "scenes": ["唯一画面"]}).encode(),
+                ),
+            )
+
+            async def synthesize(
+                _text: str, output: Path, _voice: str, _rate: str
+            ) -> None:
+                output.write_bytes(b"ID3" + b"a" * 2048)
+
+            async def duration_probe(_path: Path, _context: StepContext) -> float:
+                return 15.0
+
+            snapshot = {
+                "webpage_video_run_id": "33333333-3333-4333-8333-333333333333",
+                "duration_seconds": 15,
+            }
+            with self.assertRaisesRegex(PermanentStepError, "native WordBoundary"):
+                asyncio.run(
+                    EdgeSpeechCapability(
+                        settings,
+                        storage,
+                        synthesizer=synthesize,
+                        duration_probe=duration_probe,
+                    ).execute(context(script, input_snapshot=snapshot))
+                )
+            self.assertEqual(1, len(storage.values), "failed webpage TTS must publish no audio")
+
+    def test_webpage_tts_duration_mismatch_fails_instead_of_awaiting_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "index.json"
+            catalog.write_text("[]", encoding="utf-8")
+            settings = LegacyMediaSettings(root, (catalog,))
+            storage = MemoryStorage()
+            seed = context()
+            script = storage.publish(
+                seed,
+                ProviderArtifact(
+                    "script",
+                    "script.json",
+                    "application/json",
+                    json.dumps({"narration": "网页旁白", "scenes": ["唯一画面"]}).encode(),
+                ),
+            )
+
+            async def synthesize(
+                text: str, output: Path, _voice: str, _rate: str
+            ) -> tuple[dict[str, object], ...]:
+                output.write_bytes(b"ID3" + b"a" * 2048)
+                return ({"text": text, "start_seconds": 0.0, "end_seconds": 100.0},)
+
+            async def duration_probe(_path: Path, _context: StepContext) -> float:
+                return 100.0
+
+            snapshot = {
+                "webpage_video_run_id": "33333333-3333-4333-8333-333333333333",
+                "duration_seconds": 15,
+            }
+            with self.assertRaisesRegex(PermanentStepError, "requested duration"):
+                asyncio.run(
+                    EdgeSpeechCapability(
+                        settings,
+                        storage,
+                        synthesizer=synthesize,
+                        duration_probe=duration_probe,
+                    ).execute(context(script, input_snapshot=snapshot))
+                )
+            self.assertEqual(1, len(storage.values), "failed webpage TTS must publish no audio")
+
+    def test_webpage_tts_accepts_native_words_with_proportional_sentence_alignment(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "index.json"
+            catalog.write_text("[]", encoding="utf-8")
+            settings = LegacyMediaSettings(root, (catalog,))
+            storage = MemoryStorage()
+            seed = context()
+            script = storage.publish(
+                seed,
+                ProviderArtifact(
+                    "script",
+                    "script.json",
+                    "application/json",
+                    json.dumps(
+                        {"narration": "第一段。第二段。", "scenes": ["甲", "乙"]},
+                        ensure_ascii=False,
+                    ).encode(),
+                ),
+            )
+
+            async def synthesize(
+                _text: str, output: Path, _voice: str, _rate: str
+            ) -> tuple[dict[str, object], ...]:
+                output.write_bytes(b"ID3" + b"a" * 2048)
+                # Provider tokens intentionally omit authored punctuation, so
+                # sentence grouping cannot use exact token aggregation.
+                return (
+                    {"text": "第一", "start_seconds": 0.0, "end_seconds": 6.5},
+                    {"text": "第二段", "start_seconds": 7.0, "end_seconds": 14.5},
+                )
+
+            async def duration_probe(_path: Path, _context: StepContext) -> float:
+                return 15.0
+
+            snapshot = {
+                "webpage_video_run_id": "33333333-3333-4333-8333-333333333333",
+                "duration_seconds": 15,
+            }
+            result = asyncio.run(
+                EdgeSpeechCapability(
+                    settings,
+                    storage,
+                    synthesizer=synthesize,
+                    duration_probe=duration_probe,
+                ).execute(context(script, input_snapshot=snapshot))
+            )
+            timing = storage.read_json(result.artifacts[1])
+
+            self.assertFalse(result.requires_review)
+            self.assertTrue(timing["estimated"])
+            self.assertFalse(timing["word_timing_estimated"])
+            self.assertEqual(
+                "word_boundary_proportional_estimate",
+                timing["segments"][0]["alignment_source"],
+            )
+            self.assertTrue(all(not word["estimated"] for word in timing["words"]))
 
     def test_edge_tts_adjusts_rate_once_against_run_duration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -161,7 +347,8 @@ class LegacyMediaAdapterTests(unittest.TestCase):
 
             self.assertEqual(["+25%", "-17%"], rates)
             self.assertTrue(result.summary_dict()["duration_fit"])
-            self.assertFalse(result.requires_review)
+            self.assertTrue(result.requires_review)
+            self.assertTrue(result.summary_dict()["timing_estimated"])
 
     def test_edge_tts_uses_measured_feedback_when_first_rate_correction_misses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -524,6 +711,26 @@ class LegacyMediaAdapterTests(unittest.TestCase):
 
         self.assertEqual({"sea"}, {item["artifact_id"] for item in timeline})
 
+    def test_timeline_keeps_slow_zoom_continuous_across_internal_holds(self) -> None:
+        timeline = plan_edit_timeline(
+            {"narration": "一段需要持续展示并缓慢放大的网页重点区域。"},
+            [
+                {
+                    "artifact_id": "web-region",
+                    "selected_for_scene": "shot-01",
+                    "selected_for_narration": "一段需要持续展示并缓慢放大的网页重点区域。",
+                    "motion": "zoom_in",
+                    "motion_focus": {"x": 0.3, "y": 0.6},
+                }
+            ],
+            10.0,
+        )
+
+        self.assertEqual(1, len(timeline))
+        self.assertEqual(10.0, timeline[0]["duration_seconds"])
+        self.assertEqual("zoom_in", timeline[0]["motion"])
+        self.assertEqual({"x": 0.3, "y": 0.6}, timeline[0]["motion_focus"])
+
     def test_catalog_selection_publishes_assets_and_truthful_rights_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -659,6 +866,22 @@ class LegacyMediaAdapterTests(unittest.TestCase):
         self.assertEqual("contain", profile.media_fit)
         self.assertEqual(3, profile.subtitle_max_lines)
 
+    def test_webpage_render_profile_preserves_page_over_blurred_fill(self) -> None:
+        fallback = LegacyMediaSettings(width=1080, height=1920, frame_rate=30)
+        profile = _render_profile(
+            {
+                "webpage_video_run_id": "web-run-01",
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "production_settings": {"media_fit": "contain"}
+                    }
+                },
+            },
+            fallback,
+        )
+
+        self.assertEqual("blurred_contain", profile.media_fit)
+
     def test_media_filter_supports_generic_layouts_and_fit_modes(self) -> None:
         cover = _media_filter(
             1080, 1920, 30, layout="full_frame", media_fit="cover", background_color="101218"
@@ -666,9 +889,72 @@ class LegacyMediaAdapterTests(unittest.TestCase):
         contain = _media_filter(
             1080, 1080, 30, layout="editorial", media_fit="contain", background_color="101218"
         )
+        blurred = _media_filter(
+            1080,
+            1920,
+            30,
+            layout="full_frame",
+            media_fit="blurred_contain",
+            background_color="101218",
+        )
         self.assertIn("crop=1080:1920", cover)
         self.assertIn("force_original_aspect_ratio=decrease", contain)
         self.assertIn("pad=1080:1080", contain)
+        self.assertIn("split=2[bg][fg]", blurred)
+        self.assertIn("gblur=sigma=28", blurred)
+        self.assertIn("overlay=(W-w)/2:(H-h)/2", blurred)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg required")
+    def test_image_segment_applies_continuous_slow_zoom_toward_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            output = root / "zoom.mp4"
+            generated = subprocess.run(
+                (
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=320x180",
+                    "-frames:v",
+                    "1",
+                    "-y",
+                    str(source),
+                ),
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(0, generated.returncode, generated.stderr.decode(errors="replace"))
+            command = _segment_command(
+                "ffmpeg",
+                source,
+                output,
+                1.2,
+                width=320,
+                height=180,
+                frame_rate=24,
+                media_fit="blurred_contain",
+                image_motion="zoom_in",
+                motion_focus={"x": 0.75, "y": 0.4},
+            )
+            video_filter = command[command.index("-vf") + 1]
+            self.assertIn("zoompan=", video_filter)
+            self.assertIn("gblur=sigma=28", video_filter)
+            self.assertIn("cos(PI*", video_filter)
+            self.assertIn("0.750000*iw", video_filter)
+            rendered = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(0, rendered.returncode, rendered.stderr.decode(errors="replace"))
+            self.assertGreater(output.stat().st_size, 2_000)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_renderer_executes_variable_timeline_and_publishes_edit_plan(self) -> None:

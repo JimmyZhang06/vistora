@@ -19,6 +19,8 @@ Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前�
 | `media.select` | PostgreSQL 素材库与可选自动补采 | `FRAMEFACTORY_ASSET_LIBRARY_ENABLED=true` |
 | `render.compose` | FFmpeg 时间线与字幕渲染 | 本地媒体桥与 FFmpeg/ffprobe 可用 |
 | `quality.evaluate` | FFmpeg 解码级流、时长、黑屏和静音检查 | 本地媒体桥可用；否则可用文本质量 Provider |
+| `web.capture.validate` / `web.capture.screenshot` | Playwright Chromium 公开网页校验与定尺寸 PNG | 仅独立 `browser-capture` Worker，且外部 egress 策略已断言 |
+| `writing.compose.webpage` / `web.materialize` | 不可信页面引用写稿与已批准截图的精确字节物化 | 普通 Worker 的文本 Provider与对象存储可用 |
 | 素材视觉分析 | OpenAI-compatible vision | `FRAMEFACTORY_ASSET_VISION_*` |
 | 素材转写 | OpenAI-compatible ASR | `FRAMEFACTORY_ASR_*`，可选 |
 
@@ -43,6 +45,10 @@ Artifact 内容寻址后写入 S3/R2/MinIO并记录数据库。重试会核对�
 ## 生产安全
 
 生产模式要求 PostgreSQL/Redis 使用 TLS 或在可信私网显式允许不安全传输。Provider 超时、网络错误、408/409/425/429 和 5xx 可重试；拒绝或无效结构化输出永久失败。错误日志不得包含请求/响应正文、凭据或私密 URL。
+
+浏览器能力使用独立 `browser-capture` 队列和进程；普通 Worker 固定消费 `run-steps`。capture-only 配置拒绝文本模型、Runway、本地媒体、素材库、素材分析和研究 Provider，避免浏览器进程持有无关凭据。应用层会校验每次导航、重定向和子资源的公开 HTTPS DNS 答案，但这不能消除 DNS rebinding 的检查/连接竞态。生产必须由连接路径上的代理或防火墙拒绝私网、loopback、link-local、Unix socket 和云 metadata 地址，并仅在真实策略生效后设置 `FRAMEFACTORY_BROWSER_EGRESS_POLICY_ENFORCED=true`。
+
+`Content-Length` 预检、CDP 传输计数和资源数是纵深限制，不是对 chunked 或伪造长度响应的硬字节配额。硬边界由强制 egress proxy、容器 memory/pids、只读文件系统、受限 tmpfs 和全作业 timeout 共同提供。每个任务创建全新的 Chromium context，并在结束时关闭整个 browser。
 
 ## 验证
 

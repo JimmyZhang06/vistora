@@ -133,11 +133,17 @@ class FakeControlApiAcquirer(ControlApiAssetAcquirer):
     def __init__(self) -> None:
         super().__init__("http://127.0.0.1:8200", timeout_seconds=5)
         self.request = None
+        self.requests = []
 
     def _send(self, request):
         self.request = request
+        self.requests.append(request)
         return json.dumps({
             "imported_count": 2,
+            "imported_assets": [
+                {"id": "11111111-1111-4111-8111-111111111111"},
+                {"id": "22222222-2222-4222-8222-222222222222"},
+            ],
             "unresolved_queries": ["缺少的片尾"],
             "provider_errors": [],
         }, ensure_ascii=False).encode()
@@ -249,12 +255,78 @@ class DatabaseAssetCapabilityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(2, result.imported_count)
+        self.assertEqual(
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+            ),
+            result.asset_ids,
+        )
         self.assertEqual(("缺少的片尾",), result.unresolved_queries)
         self.assertEqual("workspace-one", acquirer.request.get_header("X-workspace-id"))
         payload = json.loads(acquirer.request.data)
         self.assertTrue(payload["rights_confirmed"])
         self.assertEqual(["许昕 直板"], payload["queries"])
         self.assertEqual(["bilibili"], payload["sources"])
+
+        await acquirer.acquire(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="assets",
+            library_id="library-one",
+            queries=("许昕 直板",),
+            sources=("bilibili",),
+            max_assets=2,
+            copyright_status="licensed",
+        )
+        self.assertEqual(
+            acquirer.requests[0].get_header("Idempotency-key"),
+            acquirer.requests[1].get_header("Idempotency-key"),
+        )
+
+        await acquirer.acquire(
+            workspace_id="workspace-one",
+            run_id=None,
+            step_id=None,
+            library_id="library-one",
+            queries=("素材库主题",),
+            sources=("wikimedia",),
+            max_assets=1,
+            copyright_status="public_domain",
+        )
+        unscoped_payload = json.loads(acquirer.requests[-1].data)
+        self.assertNotIn("run_id", unscoped_payload)
+        self.assertNotIn("step_id", unscoped_payload)
+
+        async def scoped(scope: str) -> tuple[str, dict[str, Any]]:
+            await acquirer.acquire(
+                workspace_id="workspace-one",
+                run_id=None,
+                step_id=None,
+                library_id="library-one",
+                queries=("素材库主题",),
+                sources=("wikimedia",),
+                max_assets=1,
+                copyright_status="public_domain",
+                idempotency_scope=scope,
+            )
+            request = acquirer.requests[-1]
+            return request.get_header("Idempotency-key"), json.loads(request.data)
+
+        first_key, first_payload = await scoped(
+            "11111111-1111-4111-8111-111111111111"
+        )
+        retry_key, retry_payload = await scoped(
+            "11111111-1111-4111-8111-111111111111"
+        )
+        other_job_key, other_payload = await scoped(
+            "22222222-2222-4222-8222-222222222222"
+        )
+        self.assertEqual(first_key, retry_key)
+        self.assertNotEqual(first_key, other_job_key)
+        self.assertEqual(first_payload, retry_payload)
+        self.assertEqual(first_payload, other_payload)
+        self.assertNotIn("idempotency_scope", first_payload)
 
     def test_catalog_sql_enforces_scope_safety_and_complete_segment_labels(self) -> None:
         source = inspect.getsource(PostgresAssetCatalog.search)

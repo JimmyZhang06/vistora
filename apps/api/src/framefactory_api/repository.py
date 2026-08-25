@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import hashlib
+import json
+from collections.abc import Awaitable, Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,6 +15,42 @@ from .asset_policy import normalized_tags, validate_asset_transition
 from .errors import ConflictError, NotFoundError, PreconditionFailedError
 
 Resource = dict[str, Any]
+
+
+def _catalog_snapshot_content_hash(
+    library_ids: Sequence[str], items: Sequence[Resource]
+) -> str:
+    """Hash only frozen catalog identity, using a stable order and encoding."""
+
+    normalized_library_ids = sorted({str(value) for value in library_ids})
+    normalized_items = sorted(
+        (
+            {
+                "library_id": str(item["library_id"]),
+                "asset_id": str(item["asset_id"]),
+                "asset_file_id": str(item["asset_file_id"]),
+                "analysis_id": str(item["analysis_id"]),
+                "content_hash": str(item["content_hash"]),
+            }
+            for item in items
+        ),
+        key=lambda item: (
+            item["library_id"],
+            item["asset_id"],
+            item["asset_file_id"],
+            item["analysis_id"],
+            item["content_hash"],
+        ),
+    )
+    payload = {
+        "schema_version": "1.0.0",
+        "library_ids": normalized_library_ids,
+        "items": normalized_items,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class SkillRepository(Protocol):
@@ -145,6 +183,7 @@ class RunRepository(Protocol):
         expected_revision: int | None,
         operation_key: str,
         request_fingerprint: str,
+        review_metadata: Resource | None = None,
     ) -> tuple[Resource, bool]: ...
 
     async def list_artifacts(self, workspace_id: UUID, run_id: UUID) -> list[Resource]: ...
@@ -161,6 +200,51 @@ class RunRepository(Protocol):
     ) -> list[Resource]: ...
 
     async def get_event(self, workspace_id: UUID, event_id: UUID) -> Resource: ...
+
+
+class FullAiRepository(Protocol):
+    async def find_full_ai_run_by_idempotency_key(
+        self, workspace_id: UUID, idempotency_key: str
+    ) -> Resource | None: ...
+
+    async def create_full_ai_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
+
+    async def get_full_ai_run(
+        self, workspace_id: UUID, full_ai_run_id: UUID
+    ) -> Resource: ...
+
+
+class WebpageVideoRepository(Protocol):
+    async def create_webpage_video_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+        active_run_limit: int,
+    ) -> tuple[Resource, bool]: ...
+
+    async def count_active_webpage_video_runs(self, workspace_id: UUID) -> int: ...
+
+    async def get_webpage_video_run(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource: ...
+
+    async def append_webpage_capture_attempt(
+        self, resource: Resource
+    ) -> tuple[Resource, bool]: ...
+
+    async def list_webpage_capture_attempts(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> list[Resource]: ...
 
 
 class GenerationBatchRepository(Protocol):
@@ -190,6 +274,40 @@ class GenerationBatchRepository(Protocol):
         operation_key: str,
         request_fingerprint: str,
     ) -> tuple[Resource, bool]: ...
+
+
+class CatalogRepository(Protocol):
+    async def create_or_reuse_catalog_snapshot(
+        self,
+        workspace_id: UUID,
+        library_ids: Sequence[UUID],
+        *,
+        created_by: UUID | None = None,
+    ) -> Resource: ...
+
+    async def get_catalog_snapshot(
+        self, workspace_id: UUID, snapshot_id: UUID
+    ) -> Resource: ...
+
+    async def create_library_build_job_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
+
+    async def get_library_build_job(
+        self, workspace_id: UUID, job_id: UUID
+    ) -> Resource: ...
+
+    async def cancel_library_build_job(
+        self,
+        workspace_id: UUID,
+        job_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> Resource: ...
 
 
 class AssetRepository(Protocol):
@@ -292,7 +410,10 @@ class ControlRepository(
     SkillRepository,
     ChannelRepository,
     RunRepository,
+    FullAiRepository,
+    WebpageVideoRepository,
     GenerationBatchRepository,
+    CatalogRepository,
     AssetRepository,
     SkillTestExecutionRepository,
     AccountRepository,
@@ -330,6 +451,8 @@ class InMemoryControlRepository:
         generation_batch_items: list[Resource] | None = None,
         asset_libraries: list[Resource] | None = None,
         assets: list[Resource] | None = None,
+        catalog_snapshots: list[Resource] | None = None,
+        library_build_jobs: list[Resource] | None = None,
     ) -> None:
         # Official catalog entries and user resources share one model and one repository path.
         self._channels: dict[str, Resource] = {
@@ -350,6 +473,10 @@ class InMemoryControlRepository:
         self._runs: dict[str, Resource] = {
             resource["id"]: deepcopy(resource) for resource in (runs or [])
         }
+        self._full_ai_runs: dict[str, Resource] = {}
+        self._full_ai_paid_operations: dict[str, Resource] = {}
+        self._webpage_video_runs: dict[str, Resource] = {}
+        self._webpage_capture_attempts: dict[str, Resource] = {}
         self._run_steps: dict[str, Resource] = {
             resource["id"]: deepcopy(resource) for resource in (run_steps or [])
         }
@@ -377,6 +504,16 @@ class InMemoryControlRepository:
             asset.setdefault("analysis_status", "pending")
             asset.setdefault("deleted_at", None)
             asset.setdefault("tags", normalized_tags(asset))
+        self._catalog_snapshots: dict[str, Resource] = {
+            resource["id"]: deepcopy(resource) for resource in (catalog_snapshots or [])
+        }
+        self._catalog_snapshots_by_hash: dict[tuple[str, str], str] = {
+            (resource["workspace_id"], resource["content_hash"]): resource["id"]
+            for resource in self._catalog_snapshots.values()
+        }
+        self._library_build_jobs: dict[str, Resource] = {
+            resource["id"]: deepcopy(resource) for resource in (library_build_jobs or [])
+        }
         self._asset_analysis_jobs: dict[str, Resource] = {}
         self._asset_audit_events: dict[str, Resource] = {}
         self._test_executions: dict[str, Resource] = {}
@@ -991,6 +1128,217 @@ class InMemoryControlRepository:
             )
             return deepcopy(persisted), True
 
+    async def create_full_ai_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        """Atomically bind the dedicated Full-AI record to one scheduler Run."""
+
+        async with self._lock:
+            previous = self._idempotency.get(operation_key)
+            if previous is not None:
+                if previous.request_fingerprint != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return deepcopy(previous.response), False
+
+            persisted_scheduler = deepcopy(scheduler_run)
+            persisted_scheduler.setdefault("cancellation_requested_at", None)
+            self._runs[scheduler_run["id"]] = persisted_scheduler
+            self._append_event(
+                persisted_scheduler,
+                event_type="run.created",
+                deduplication_key="api:full-ai-run-created",
+                actor_type="user",
+                actor_id=persisted_scheduler.get("created_by"),
+                payload={
+                    "status": persisted_scheduler["status"],
+                    "full_ai_run_id": resource["id"],
+                    "visual_source_mode": "generated_only",
+                },
+            )
+            persisted = deepcopy(resource)
+            self._full_ai_runs[resource["id"]] = persisted
+            self._idempotency[operation_key] = _IdempotentRecord(
+                request_fingerprint=request_fingerprint,
+                response=deepcopy(persisted),
+            )
+            return deepcopy(persisted), True
+
+    async def find_full_ai_run_by_idempotency_key(
+        self, workspace_id: UUID, idempotency_key: str
+    ) -> Resource | None:
+        for resource in self._full_ai_runs.values():
+            if (
+                resource["workspace_id"] == str(workspace_id)
+                and resource["idempotency_key"] == idempotency_key
+            ):
+                result = deepcopy(resource)
+                scheduler = self._runs.get(resource["underlying_run_id"])
+                if scheduler is not None:
+                    result["status"] = self._full_ai_status(resource, scheduler)
+                    result["updated_at"] = max(
+                        result["updated_at"], scheduler["updated_at"]
+                    )
+                return result
+        return None
+
+    async def get_full_ai_run(
+        self, workspace_id: UUID, full_ai_run_id: UUID
+    ) -> Resource:
+        resource = self._full_ai_runs.get(str(full_ai_run_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            raise NotFoundError("full_ai_run", str(full_ai_run_id))
+        public = self._public_full_ai_run(resource)
+        scheduler = self._runs.get(resource["underlying_run_id"])
+        if scheduler is not None:
+            public["status"] = self._full_ai_status(resource, scheduler)
+            public["updated_at"] = max(public["updated_at"], scheduler["updated_at"])
+        return public
+
+    async def create_webpage_video_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+        active_run_limit: int,
+    ) -> tuple[Resource, bool]:
+        """Atomically bind the webpage control-plane record to one scheduler Run."""
+
+        async with self._lock:
+            previous = self._idempotency.get(operation_key)
+            if previous is not None:
+                if previous.request_fingerprint != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return deepcopy(previous.response), False
+
+            active_count = sum(
+                1
+                for wrapper in self._webpage_video_runs.values()
+                if wrapper["workspace_id"] == resource["workspace_id"]
+                and self._runs.get(wrapper["underlying_run_id"], {}).get("status")
+                in {"queued", "running", "awaiting_review"}
+            )
+            if active_count >= active_run_limit:
+                raise ConflictError(
+                    "WEBPAGE_VIDEO_ACTIVE_RUN_LIMIT_REACHED",
+                    "The workspace has reached its concurrent webpage-video Run limit",
+                    active_runs=active_count,
+                    max_active_runs=active_run_limit,
+                )
+
+            persisted_scheduler = deepcopy(scheduler_run)
+            persisted_scheduler.setdefault("cancellation_requested_at", None)
+            self._runs[scheduler_run["id"]] = persisted_scheduler
+            self._append_event(
+                persisted_scheduler,
+                event_type="run.created",
+                deduplication_key="api:webpage-video-run-created",
+                actor_type="user",
+                actor_id=persisted_scheduler.get("created_by"),
+                payload={
+                    "status": persisted_scheduler["status"],
+                    "webpage_video_run_id": resource["id"],
+                    "capture_mode": "viewport",
+                },
+            )
+            persisted = deepcopy(resource)
+            self._webpage_video_runs[resource["id"]] = persisted
+            self._idempotency[operation_key] = _IdempotentRecord(
+                request_fingerprint=request_fingerprint,
+                response=deepcopy(persisted),
+            )
+            return deepcopy(persisted), True
+
+    async def count_active_webpage_video_runs(self, workspace_id: UUID) -> int:
+        return sum(
+            1
+            for wrapper in self._webpage_video_runs.values()
+            if wrapper["workspace_id"] == str(workspace_id)
+            and self._runs.get(wrapper["underlying_run_id"], {}).get("status")
+            in {"queued", "running", "awaiting_review"}
+        )
+
+    async def get_webpage_video_run(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource:
+        resource = self._webpage_video_runs.get(str(webpage_video_run_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            raise NotFoundError("webpage_video_run", str(webpage_video_run_id))
+        result = deepcopy(resource)
+        scheduler = self._runs.get(resource["underlying_run_id"])
+        if scheduler is not None:
+            result["scheduler_status"] = scheduler["status"]
+            result["scheduler_updated_at"] = scheduler["updated_at"]
+            result["cancellation_requested_at"] = scheduler.get(
+                "cancellation_requested_at"
+            )
+        return result
+
+    async def append_webpage_capture_attempt(
+        self, resource: Resource
+    ) -> tuple[Resource, bool]:
+        async with self._lock:
+            run = self._webpage_video_runs.get(resource["webpage_video_run_id"])
+            if (
+                run is None
+                or run["workspace_id"] != resource["workspace_id"]
+                or run["underlying_run_id"] != resource["underlying_run_id"]
+            ):
+                raise NotFoundError(
+                    "webpage_video_run", resource["webpage_video_run_id"]
+                )
+            for existing in self._webpage_capture_attempts.values():
+                same_attempt = (
+                    existing["workspace_id"] == resource["workspace_id"]
+                    and existing["webpage_video_run_id"]
+                    == resource["webpage_video_run_id"]
+                    and int(existing["attempt_number"])
+                    == int(resource["attempt_number"])
+                )
+                same_artifact = (
+                    resource.get("artifact_id") is not None
+                    and existing.get("artifact_id") == resource.get("artifact_id")
+                )
+                if not same_attempt and not same_artifact:
+                    continue
+                if existing != resource:
+                    raise ConflictError(
+                        "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
+                        "A capture attempt was replayed with different immutable evidence",
+                        attempt_number=resource["attempt_number"],
+                    )
+                return deepcopy(existing), False
+            persisted = deepcopy(resource)
+            self._webpage_capture_attempts[resource["id"]] = persisted
+            return deepcopy(persisted), True
+
+    async def list_webpage_capture_attempts(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> list[Resource]:
+        await self.get_webpage_video_run(workspace_id, webpage_video_run_id)
+        attempts = [
+            deepcopy(resource)
+            for resource in self._webpage_capture_attempts.values()
+            if resource["workspace_id"] == str(workspace_id)
+            and resource["webpage_video_run_id"] == str(webpage_video_run_id)
+        ]
+        return sorted(
+            attempts,
+            key=lambda item: (int(item["attempt_number"]), item["created_at"]),
+        )
+
     async def cancel_run_idempotently(
         self,
         workspace_id: UUID,
@@ -1175,6 +1523,7 @@ class InMemoryControlRepository:
         expected_revision: int | None,
         operation_key: str,
         request_fingerprint: str,
+        review_metadata: Resource | None = None,
     ) -> tuple[Resource, bool]:
         async with self._lock:
             replay = self._idempotent_replay(operation_key, request_fingerprint)
@@ -1183,6 +1532,20 @@ class InMemoryControlRepository:
             step = self._run_steps.get(step_id)
             if step is None or step["workspace_id"] != str(workspace_id):
                 raise NotFoundError("run_step", step_id)
+            run = self._runs.get(step["run_id"])
+            if run is None:  # pragma: no cover - protected by persistence constraints
+                raise NotFoundError("run", step["run_id"])
+            if run.get("cancellation_requested_at") is not None or run.get("status") in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                raise ConflictError(
+                    "RUN_NOT_ACCEPTING_REVIEW",
+                    "A step cannot be reviewed after its Run stopped accepting work",
+                    step_id=step_id,
+                    status=run.get("status"),
+                )
             if not step.get("review_required") or step["status"] != "awaiting_review":
                 raise ConflictError(
                     "STEP_NOT_AWAITING_REVIEW",
@@ -1227,6 +1590,7 @@ class InMemoryControlRepository:
                 "actor_id": str(actor_id),
                 "comment": comment,
                 "issue_codes": list(issue_codes),
+                "metadata": deepcopy(review_metadata) if review_metadata else None,
                 "evidence": [
                     {
                         "id": item.get("id"),
@@ -1253,9 +1617,6 @@ class InMemoryControlRepository:
             step["finished_at"] = now if status in {"succeeded", "failed"} else None
             step["updated_at"] = now
             step["revision"] = int(step.get("revision", 0)) + 1
-            run = self._runs.get(step["run_id"])
-            if run is None:  # pragma: no cover - protected by persistence constraints
-                raise NotFoundError("run", step["run_id"])
             self._synchronize_memory_run(run, now)
             self._append_event(
                 run,
@@ -1269,11 +1630,209 @@ class InMemoryControlRepository:
                     "status": status,
                     "issue_codes": list(issue_codes),
                     "reviewed_revision": current_revision,
+                    "metadata": deepcopy(review_metadata) if review_metadata else None,
                 },
             )
             response = deepcopy(step)
             self._record_idempotent(operation_key, request_fingerprint, response)
             return response, True
+
+    async def create_or_reuse_catalog_snapshot(
+        self,
+        workspace_id: UUID,
+        library_ids: Sequence[UUID],
+        *,
+        created_by: UUID | None = None,
+    ) -> Resource:
+        normalized_library_ids = tuple(sorted({str(value) for value in library_ids}))
+        if not normalized_library_ids:
+            raise ConflictError(
+                "CATALOG_SNAPSHOT_LIBRARIES_REQUIRED",
+                "A catalog snapshot requires at least one asset library",
+            )
+        for library_id in normalized_library_ids:
+            library = await self.get_asset_library(workspace_id, UUID(library_id))
+            if library.get("status") != "active":
+                raise NotFoundError("asset_library", library_id)
+
+        items: list[Resource] = []
+        for asset in self._assets.values():
+            if (
+                asset.get("workspace_id") != str(workspace_id)
+                or asset.get("library_id") not in normalized_library_ids
+                or asset.get("kind") not in {"image", "video"}
+                or asset.get("status") != "ready"
+                or asset.get("analysis_status") != "completed"
+                or asset.get("copyright_status")
+                not in {"owned", "licensed", "public_domain"}
+            ):
+                continue
+            file = asset.get("file") or {}
+            if (
+                file.get("scan_status") != "clean"
+                or not file.get("id")
+                or not file.get("content_hash")
+            ):
+                continue
+            analyses = asset.get("analyses") or (
+                [asset["analysis"]] if asset.get("analysis") else []
+            )
+            completed_analyses = [
+                value
+                for value in analyses
+                if value.get("id") and value.get("status", "completed") == "completed"
+            ]
+            if completed_analyses:
+                analysis = max(
+                    completed_analyses,
+                    key=lambda value: (
+                        int(value.get("analysis_version", 0)),
+                        str(value["id"]),
+                    ),
+                )
+                analysis_id = str(analysis["id"])
+            else:
+                analysis_id = str(asset.get("analysis_id") or "")
+            if not analysis_id:
+                continue
+            items.append(
+                {
+                    "library_id": str(asset["library_id"]),
+                    "asset_id": str(asset["id"]),
+                    "asset_file_id": str(file["id"]),
+                    "analysis_id": analysis_id,
+                    "content_hash": str(file["content_hash"]),
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                item["library_id"],
+                item["asset_id"],
+                item["asset_file_id"],
+                item["analysis_id"],
+            )
+        )
+        content_hash = _catalog_snapshot_content_hash(normalized_library_ids, items)
+        async with self._lock:
+            existing_id = self._catalog_snapshots_by_hash.get(
+                (str(workspace_id), content_hash)
+            )
+            if existing_id is not None:
+                return deepcopy(self._catalog_snapshots[existing_id])
+            snapshot_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"framefactory-catalog-snapshot:{workspace_id}:{content_hash}",
+                )
+            )
+            snapshot = {
+                "schema_version": "1.0.0",
+                "id": snapshot_id,
+                "workspace_id": str(workspace_id),
+                "library_ids": list(normalized_library_ids),
+                "content_hash": content_hash,
+                "item_count": len(items),
+                "items": deepcopy(items),
+                "created_by": str(created_by) if created_by is not None else None,
+                "created_at": self._now(),
+            }
+            self._catalog_snapshots[snapshot_id] = deepcopy(snapshot)
+            self._catalog_snapshots_by_hash[(str(workspace_id), content_hash)] = snapshot_id
+            return deepcopy(snapshot)
+
+    async def get_catalog_snapshot(
+        self, workspace_id: UUID, snapshot_id: UUID
+    ) -> Resource:
+        snapshot = self._catalog_snapshots.get(str(snapshot_id))
+        if snapshot is None or snapshot["workspace_id"] != str(workspace_id):
+            raise NotFoundError("catalog_snapshot", str(snapshot_id))
+        return deepcopy(snapshot)
+
+    async def create_library_build_job_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        async with self._lock:
+            replay = self._idempotent_replay(operation_key, request_fingerprint)
+            if replay is not None:
+                return replay, False
+            library = await self.get_asset_library(
+                UUID(resource["workspace_id"]), UUID(resource["library_id"])
+            )
+            if library.get("status") != "active":
+                raise NotFoundError("asset_library", resource["library_id"])
+            if resource["id"] in self._library_build_jobs:
+                raise ConflictError(
+                    "LIBRARY_BUILD_JOB_EXISTS",
+                    "A library build job with this id already exists",
+                    job_id=resource["id"],
+                )
+            now = self._now()
+            persisted = deepcopy(resource)
+            persisted.setdefault("schema_version", "1.0.0")
+            persisted["status"] = "queued"
+            persisted["stage"] = "discover"
+            persisted.setdefault("spec", {})
+            persisted.setdefault(
+                "progress",
+                {
+                    "discovered": 0,
+                    "transferred": 0,
+                    "analyzed": 0,
+                    "indexed": 0,
+                    "failed": 0,
+                    "asset_ids": [],
+                },
+            )
+            persisted["error"] = None
+            persisted["revision"] = 1
+            persisted.setdefault("created_at", now)
+            persisted["started_at"] = None
+            persisted["completed_at"] = None
+            persisted["updated_at"] = persisted["created_at"]
+            persisted["idempotency_key"] = operation_key
+            persisted["request_hash"] = request_fingerprint
+            self._library_build_jobs[persisted["id"]] = deepcopy(persisted)
+            public = self._public_library_build_job(persisted)
+            self._record_idempotent(operation_key, request_fingerprint, public)
+            return public, True
+
+    async def get_library_build_job(
+        self, workspace_id: UUID, job_id: UUID
+    ) -> Resource:
+        resource = self._library_build_jobs.get(str(job_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            raise NotFoundError("library_build_job", str(job_id))
+        return self._public_library_build_job(resource)
+
+    async def cancel_library_build_job(
+        self,
+        workspace_id: UUID,
+        job_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> Resource:
+        async with self._lock:
+            resource = self._library_build_jobs.get(str(job_id))
+            if resource is None or resource["workspace_id"] != str(workspace_id):
+                raise NotFoundError("library_build_job", str(job_id))
+            self._check_revision(resource, expected_revision)
+            if resource["status"] in {
+                "completed",
+                "completed_with_errors",
+                "failed",
+                "cancelled",
+            }:
+                return self._public_library_build_job(resource)
+            now = self._now()
+            resource["status"] = "cancelled"
+            resource["completed_at"] = now
+            resource["updated_at"] = now
+            resource["revision"] = int(resource.get("revision", 1)) + 1
+            return self._public_library_build_job(resource)
 
     async def list_asset_libraries(self, workspace_id: UUID) -> list[Resource]:
         libraries: list[Resource] = []
@@ -1785,6 +2344,39 @@ class InMemoryControlRepository:
         result.setdefault("cancellation_requested_at", None)
         return result
 
+    @staticmethod
+    def _public_full_ai_run(resource: Resource) -> Resource:
+        result = deepcopy(resource)
+        result["project_run_id"] = result["underlying_run_id"]
+        for internal in (
+            "underlying_run_id",
+            "idempotency_key",
+            "request_hash",
+            "estimate_fingerprint",
+            "plan",
+            "created_by",
+        ):
+            result.pop(internal, None)
+        return result
+
+    @staticmethod
+    def _full_ai_status(resource: Resource, scheduler_run: Resource) -> str:
+        if resource["billing"]["requires_reconciliation"]:
+            return "reconciliation_required"
+        scheduler_status = scheduler_run["status"]
+        if scheduler_status in {"succeeded", "failed", "cancelled"}:
+            return scheduler_status
+        if scheduler_status == "awaiting_review":
+            return "quality_check"
+        if resource["status"] in {
+            "planning",
+            "generating",
+            "assembling",
+            "quality_check",
+        }:
+            return resource["status"]
+        return "generating" if scheduler_status in {"running", "retrying"} else "queued"
+
     def _public_generation_batch(self, batch: Resource) -> Resource:
         counts = {
             state: 0
@@ -1823,6 +2415,13 @@ class InMemoryControlRepository:
             "status_counts": counts,
             "updated_at": updated_at,
         }
+
+    @staticmethod
+    def _public_library_build_job(resource: Resource) -> Resource:
+        public = deepcopy(resource)
+        public.pop("idempotency_key", None)
+        public.pop("request_hash", None)
+        return public
 
     @staticmethod
     def _public_generation_batch_item(item: Resource, run: Resource) -> Resource:

@@ -41,6 +41,18 @@ class Settings:
     object_storage_enabled: bool = False
     s3_create_bucket: bool = False
     worker_capabilities: tuple[str, ...] | None = None
+    full_ai_provider_name: str | None = None
+    full_ai_model_id: str | None = None
+    full_ai_cost_per_second_minor: int | None = None
+    full_ai_credit_unit_minor: int | None = None
+    full_ai_terms_reference: str | None = None
+    full_ai_terms_content_hash: str | None = None
+    full_ai_terms_captured_at: str | None = None
+    full_ai_pricing_reference: str | None = None
+    full_ai_pricing_content_hash: str | None = None
+    full_ai_pricing_captured_at: str | None = None
+    full_ai_output_rights_confirmed: bool = False
+    full_ai_output_rights_license_basis: str | None = None
     cors_allow_origins: tuple[str, ...] = DEVELOPMENT_CORS_ORIGINS
     cors_allow_origin_regex: str | None = r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$"
 
@@ -72,6 +84,16 @@ class Settings:
             raise ValueError(
                 "PostgreSQL maximum pool size must be greater than or equal to the minimum"
             )
+        if (
+            self.full_ai_cost_per_second_minor is not None
+            and self.full_ai_cost_per_second_minor <= 0
+        ):
+            raise ValueError("FRAMEFACTORY_FULL_AI_COST_PER_SECOND_MINOR must be positive")
+        if (
+            self.full_ai_credit_unit_minor is not None
+            and self.full_ai_credit_unit_minor <= 0
+        ):
+            raise ValueError("FRAMEFACTORY_FULL_AI_CREDIT_UNIT_MINOR must be positive")
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -139,6 +161,42 @@ class Settings:
                 if configured_worker_capabilities is not None
                 else (() if environment in {"production", "prod"} else None)
             ),
+            full_ai_provider_name=(
+                os.getenv("FRAMEFACTORY_FULL_AI_PROVIDER_NAME", "").strip() or None
+            ),
+            full_ai_model_id=(
+                os.getenv("FRAMEFACTORY_FULL_AI_MODEL_ID", "").strip() or None
+            ),
+            full_ai_cost_per_second_minor=_optional_environment_int(
+                "FRAMEFACTORY_FULL_AI_COST_PER_SECOND_MINOR"
+            ),
+            full_ai_credit_unit_minor=_optional_environment_int(
+                "FRAMEFACTORY_FULL_AI_CREDIT_UNIT_MINOR"
+            ),
+            full_ai_terms_reference=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_TERMS_REFERENCE"
+            ),
+            full_ai_terms_content_hash=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_TERMS_CONTENT_HASH"
+            ),
+            full_ai_terms_captured_at=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_TERMS_CAPTURED_AT"
+            ),
+            full_ai_pricing_reference=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_PRICING_REFERENCE"
+            ),
+            full_ai_pricing_content_hash=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_PRICING_CONTENT_HASH"
+            ),
+            full_ai_pricing_captured_at=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_PRICING_CAPTURED_AT"
+            ),
+            full_ai_output_rights_confirmed=_environment_bool(
+                "FRAMEFACTORY_FULL_AI_OUTPUT_RIGHTS_CONFIRMED", default=False
+            ),
+            full_ai_output_rights_license_basis=_optional_environment_text(
+                "FRAMEFACTORY_FULL_AI_OUTPUT_RIGHTS_LICENSE_BASIS"
+            ),
             cors_allow_origins=(
                 tuple(origin.strip() for origin in configured_origins.split(",") if origin.strip())
                 if configured_origins is not None
@@ -175,3 +233,18 @@ def _environment_int(name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _optional_environment_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _optional_environment_text(name: str) -> str | None:
+    value = os.getenv(name)
+    return value.strip() if value is not None and value.strip() else None

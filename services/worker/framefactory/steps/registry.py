@@ -127,17 +127,75 @@ class StepRegistry:
 DEFAULT_STEPS = (
     DeclarativeRunStep("research.collect", "research.collect", required_inputs=("topic",)),
     DeclarativeRunStep("writing.compose", "writing.compose", required_artifact_kinds=("research",)),
+    DeclarativeRunStep(
+        "writing.compose.webpage",
+        "writing.compose.webpage",
+        required_inputs=("duration_seconds",),
+        required_artifact_kinds=("image", "manifest", "research"),
+    ),
+    DeclarativeRunStep(
+        "web.capture.validate",
+        "web.capture.validate",
+        required_inputs=(
+            "target_url",
+            "public_page_confirmed",
+            "rights_confirmed",
+            "webpage_video_run_id",
+        ),
+    ),
+    DeclarativeRunStep(
+        "web.capture.screenshot",
+        "web.capture.screenshot",
+        required_inputs=(
+            "target_url",
+            "aspect_ratio",
+            "public_page_confirmed",
+            "rights_confirmed",
+            "webpage_video_run_id",
+        ),
+        required_artifact_kinds=("manifest",),
+    ),
+    DeclarativeRunStep(
+        "web.materialize",
+        "web.materialize",
+        required_artifact_kinds=("image", "manifest", "script"),
+    ),
     DeclarativeRunStep("audio.synthesize", "audio.synthesize", required_artifact_kinds=("script",)),
     DeclarativeRunStep("media.select", "media.select", required_artifact_kinds=("script",)),
+    DeclarativeRunStep("media.inventory", "media.inventory"),
+    DeclarativeRunStep("media.retrieve", "media.retrieve", required_artifact_kinds=("script",)),
+    DeclarativeRunStep(
+        "timeline.align",
+        "timeline.align",
+        required_artifact_kinds=(
+            "script",
+            "audio",
+            "narration_timing",
+            "candidate_manifest",
+            "asset",
+        ),
+    ),
     DeclarativeRunStep(
         "render.compose", "render.compose", required_artifact_kinds=("script", "audio", "manifest")
+    ),
+    DeclarativeRunStep(
+        "render.edl",
+        "render.edl",
+        required_artifact_kinds=(
+            "audio",
+            "narration_timing",
+            "candidate_manifest",
+            "material_selection",
+            "timeline",
+            "asset",
+        ),
     ),
     DeclarativeRunStep("quality.evaluate", "quality.evaluate", required_artifact_kinds=("video",)),
 )
 
 
 def default_step_registry() -> StepRegistry:
-    """Return the six contract operations used by the default production graph."""
+    """Return the legacy and timing-driven operations used by production graphs."""
 
     return StepRegistry(DEFAULT_STEPS).freeze()
 

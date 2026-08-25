@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, TypeVar
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .asset_policy import normalized_tags, validate_asset_transition
 from .errors import ConflictError, NotFoundError, PreconditionFailedError
-from .repository import Resource
+from .repository import Resource, _catalog_snapshot_content_hash
 
 T = TypeVar("T")
 
@@ -83,6 +84,43 @@ idempotency_key, input_snapshot, composition_snapshot, requested_by, created_at,
 completed_at, updated_at, cancel_requested_at, schema_version
 """
 
+FULL_AI_RUN_COLUMNS = """
+far.id, far.workspace_id, far.underlying_run_id, far.status,
+far.provider_name, far.model_id, far.spec, far.plan, far.quote, far.billing_status,
+far.authorized_amount_minor, far.incurred_amount_minor, far.requires_reconciliation,
+far.idempotency_key, far.request_hash, far.estimate_fingerprint, far.created_by,
+far.created_at, far.updated_at, r.status::text AS scheduler_status,
+r.updated_at AS scheduler_updated_at
+"""
+
+FULL_AI_RUN_RETURNING_COLUMNS = """
+id, workspace_id, underlying_run_id, status, provider_name, model_id, spec, plan, quote,
+billing_status, authorized_amount_minor, incurred_amount_minor, requires_reconciliation,
+idempotency_key, request_hash, estimate_fingerprint, created_by, created_at, updated_at,
+NULL::text AS scheduler_status, NULL::timestamptz AS scheduler_updated_at
+"""
+
+WEBPAGE_VIDEO_RUN_COLUMNS = """
+wvr.id, wvr.workspace_id, wvr.underlying_run_id, wvr.status, wvr.requested_url,
+wvr.normalized_url, wvr.spec, wvr.revision, wvr.idempotency_key, wvr.request_hash,
+wvr.created_by, wvr.created_at, wvr.updated_at, r.status::text AS scheduler_status,
+r.updated_at AS scheduler_updated_at, r.cancel_requested_at
+"""
+
+WEBPAGE_VIDEO_RUN_RETURNING_COLUMNS = """
+id, workspace_id, underlying_run_id, status, requested_url, normalized_url, spec,
+revision, idempotency_key, request_hash, created_by, created_at, updated_at,
+NULL::text AS scheduler_status, NULL::timestamptz AS scheduler_updated_at,
+NULL::timestamptz AS cancel_requested_at
+"""
+
+WEBPAGE_CAPTURE_ATTEMPT_COLUMNS = """
+id, workspace_id, webpage_video_run_id, underlying_run_id, screenshot_step_id,
+attempt_number, capture_revision, outcome, requested_url, final_url, viewport_width,
+viewport_height, full_page, artifact_id, sha256, media_type, metadata, error,
+captured_at, created_at
+"""
+
 TEST_EXECUTION_COLUMNS = """
 id, workspace_id, ownership_type::text AS ownership_type, skill_id, left_version_id,
 right_version_id, topic, inputs, status, evaluator, result, error, created_by, created_at,
@@ -146,6 +184,15 @@ COALESCE((SELECT jsonb_agg(t.name ORDER BY t.name)
   FROM asset_tags at JOIN tags t
     ON t.workspace_id=at.workspace_id AND t.id=at.tag_id
   WHERE at.workspace_id=a.workspace_id AND at.asset_id=a.id), '[]'::jsonb) AS tags
+"""
+
+CATALOG_SNAPSHOT_COLUMNS = """
+id, workspace_id, library_ids, content_hash, item_count, created_by, created_at
+"""
+
+LIBRARY_BUILD_JOB_COLUMNS = """
+id, workspace_id, library_id, status, stage, spec, progress, error, idempotency_key,
+request_hash, revision, created_by, created_at, started_at, completed_at, updated_at
 """
 
 
@@ -214,6 +261,52 @@ def _asset_from_row(row: Mapping[str, Any]) -> Resource:
             "height": row["height"],
             "duration_ms": row["duration_ms"],
         },
+    }
+
+
+def _catalog_snapshot_from_rows(
+    row: Mapping[str, Any], item_rows: Sequence[Mapping[str, Any]]
+) -> Resource:
+    items = [
+        {
+            "library_id": str(item["library_id"]),
+            "asset_id": str(item["asset_id"]),
+            "asset_file_id": str(item["asset_file_id"]),
+            "analysis_id": str(item["analysis_id"]),
+            "content_hash": item["content_hash"],
+        }
+        for item in item_rows
+    ]
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "library_ids": [str(value) for value in row["library_ids"]],
+        "content_hash": row["content_hash"],
+        "item_count": int(row["item_count"]),
+        "items": items,
+        "created_by": _uuid(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+    }
+
+
+def _library_build_job_from_row(row: Mapping[str, Any]) -> Resource:
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "library_id": str(row["library_id"]),
+        "status": row["status"],
+        "stage": row["stage"],
+        "spec": _json_value(row["spec"]),
+        "progress": _json_value(row["progress"]),
+        "error": _json_value(row["error"]),
+        "revision": int(row["revision"]),
+        "created_by": _uuid(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+        "started_at": _timestamp(row["started_at"]),
+        "completed_at": _timestamp(row["completed_at"]),
+        "updated_at": _timestamp(row["updated_at"]),
     }
 
 
@@ -327,6 +420,105 @@ def _run_from_row(row: Mapping[str, Any]) -> Resource:
     }
 
 
+def _full_ai_run_from_row(row: Mapping[str, Any]) -> Resource:
+    scheduler_status = row.get("scheduler_status")
+    status = row["status"]
+    if row["requires_reconciliation"]:
+        status = "reconciliation_required"
+    elif scheduler_status is not None:
+        scheduler_status = str(scheduler_status)
+        if scheduler_status in {"succeeded", "failed", "cancelled"}:
+            status = scheduler_status
+        elif scheduler_status == "awaiting_review":
+            status = "quality_check"
+        elif status not in {"planning", "generating", "assembling", "quality_check"}:
+            status = "generating" if scheduler_status in {"running", "retrying"} else "queued"
+    updated_at = row["updated_at"]
+    scheduler_updated_at = row.get("scheduler_updated_at")
+    if scheduler_updated_at is not None and scheduler_updated_at > updated_at:
+        updated_at = scheduler_updated_at
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "project_run_id": str(row["underlying_run_id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "underlying_run_id": str(row["underlying_run_id"]),
+        "status": status,
+        "mode": "generated_only",
+        "provider": {
+            "name": row["provider_name"],
+            "model_id": row["model_id"],
+        },
+        "spec": _json_value(row["spec"]),
+        "plan": _json_value(row["plan"]),
+        "quote": _json_value(row["quote"]),
+        "billing": {
+            "status": row["billing_status"],
+            "authorized_amount_minor": int(row["authorized_amount_minor"]),
+            "incurred_amount_minor": int(row["incurred_amount_minor"]),
+            "requires_reconciliation": bool(row["requires_reconciliation"]),
+        },
+        "idempotency_key": row["idempotency_key"],
+        "request_hash": row["request_hash"],
+        "estimate_fingerprint": row["estimate_fingerprint"],
+        "created_by": str(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+        "updated_at": _timestamp(updated_at),
+    }
+
+
+def _webpage_video_run_from_row(row: Mapping[str, Any]) -> Resource:
+    updated_at = row["updated_at"]
+    scheduler_updated_at = row.get("scheduler_updated_at")
+    if scheduler_updated_at is not None and scheduler_updated_at > updated_at:
+        updated_at = scheduler_updated_at
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "underlying_run_id": str(row["underlying_run_id"]),
+        "status": row["status"],
+        "requested_url": row["requested_url"],
+        "normalized_url": row["normalized_url"],
+        "spec": _json_value(row["spec"]),
+        "revision": int(row["revision"]),
+        "idempotency_key": row["idempotency_key"],
+        "request_hash": row["request_hash"],
+        "created_by": str(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+        "updated_at": _timestamp(updated_at),
+        "scheduler_status": row.get("scheduler_status"),
+        "scheduler_updated_at": _timestamp(scheduler_updated_at),
+        "cancellation_requested_at": _timestamp(row.get("cancel_requested_at")),
+    }
+
+
+def _webpage_capture_attempt_from_row(row: Mapping[str, Any]) -> Resource:
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "webpage_video_run_id": str(row["webpage_video_run_id"]),
+        "underlying_run_id": str(row["underlying_run_id"]),
+        "screenshot_step_id": str(row["screenshot_step_id"]),
+        "attempt_number": int(row["attempt_number"]),
+        "capture_revision": int(row["capture_revision"]),
+        "outcome": row["outcome"],
+        "requested_url": row["requested_url"],
+        "final_url": row["final_url"],
+        "viewport_width": int(row["viewport_width"]),
+        "viewport_height": int(row["viewport_height"]),
+        "full_page": bool(row["full_page"]),
+        "artifact_id": _uuid(row["artifact_id"]),
+        "sha256": row["sha256"],
+        "media_type": row["media_type"],
+        "metadata": _json_value(row["metadata"]) or {},
+        "error": _json_value(row["error"]),
+        "captured_at": _timestamp(row["captured_at"]),
+        "created_at": _timestamp(row["created_at"]),
+    }
+
+
 def _test_execution_from_row(row: Mapping[str, Any]) -> Resource:
     return {
         "schema_version": row["schema_version"],
@@ -380,6 +572,7 @@ def _generation_batch_from_row(row: Mapping[str, Any]) -> Resource:
         "total_count": total,
         "status_counts": counts,
         "composition_snapshot": _json_value(row["composition_snapshot"]),
+        "catalog_snapshot_id": _uuid(row.get("catalog_snapshot_id")),
         "created_by": str(row["requested_by"]),
         "created_at": _timestamp(row["created_at"]),
         "updated_at": _timestamp(row["aggregate_updated_at"]),
@@ -387,7 +580,8 @@ def _generation_batch_from_row(row: Mapping[str, Any]) -> Resource:
 
 
 _BATCH_AGGREGATE_COLUMNS = """
-b.id, b.workspace_id, b.name, b.composition_snapshot, b.requested_by,
+b.id, b.workspace_id, b.name, b.composition_snapshot, b.catalog_snapshot_id,
+b.requested_by,
 b.created_at,
 GREATEST(b.updated_at, COALESCE(MAX(r.updated_at), b.updated_at)) AS aggregate_updated_at,
 COUNT(i.id)::integer AS total_count,
@@ -1516,13 +1710,14 @@ class PostgreSQLControlRepository:
             async def create() -> Resource:
                 await connection.execute(
                     """INSERT INTO generation_batches (
-                      id, workspace_id, name, composition_snapshot, requested_by,
-                      created_at, updated_at
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7)""",
+                      id, workspace_id, name, composition_snapshot, catalog_snapshot_id,
+                      requested_by, created_at, updated_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
                     UUID(batch["id"]),
                     UUID(batch["workspace_id"]),
                     batch["name"],
                     batch["composition_snapshot"],
+                    self._optional_uuid(batch.get("catalog_snapshot_id")),
                     UUID(batch["created_by"]),
                     _datetime_value(batch["created_at"]),
                     _datetime_value(batch["updated_at"]),
@@ -1581,6 +1776,331 @@ class PostgreSQLControlRepository:
                 response_type="run",
                 create=lambda: self._insert_run(connection, resource),
             )
+
+    async def create_full_ai_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        async with self._transaction() as connection:
+            async def create() -> Resource:
+                await self._insert_run(connection, scheduler_run)
+                row = await connection.fetchrow(
+                    f"""INSERT INTO full_ai_runs (
+                      id, workspace_id, underlying_run_id, status, provider_name,
+                      model_id, spec, plan, quote, billing_status, authorized_amount_minor,
+                      incurred_amount_minor, requires_reconciliation, idempotency_key,
+                      request_hash, estimate_fingerprint, created_by, created_at, updated_at
+                    ) VALUES (
+                      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                      $14, $15, $16, $17, $18, $19
+                    ) RETURNING {FULL_AI_RUN_RETURNING_COLUMNS}""",
+                    UUID(resource["id"]),
+                    UUID(resource["workspace_id"]),
+                    UUID(resource["underlying_run_id"]),
+                    resource["status"],
+                    resource["provider"]["name"],
+                    resource["provider"]["model_id"],
+                    resource["spec"],
+                    resource["plan"],
+                    resource["quote"],
+                    resource["billing"]["status"],
+                    resource["billing"]["authorized_amount_minor"],
+                    resource["billing"]["incurred_amount_minor"],
+                    resource["billing"]["requires_reconciliation"],
+                    resource["idempotency_key"],
+                    resource["request_hash"],
+                    resource["estimate_fingerprint"],
+                    UUID(resource["created_by"]),
+                    _datetime_value(resource["created_at"]),
+                    _datetime_value(resource["updated_at"]),
+                )
+                if row is None:  # pragma: no cover - INSERT RETURNING contract
+                    raise RuntimeError("Full-AI Run insert returned no row")
+                return _full_ai_run_from_row(row)
+
+            return await self._idempotent(
+                connection,
+                workspace_id=UUID(resource["workspace_id"]),
+                operation_key=operation_key,
+                request_fingerprint=request_fingerprint,
+                request_path="/v1/full-ai/runs",
+                response_type="full_ai_run",
+                create=create,
+            )
+
+    async def find_full_ai_run_by_idempotency_key(
+        self, workspace_id: UUID, idempotency_key: str
+    ) -> Resource | None:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {FULL_AI_RUN_COLUMNS}
+                FROM full_ai_runs far
+                JOIN runs r
+                  ON r.workspace_id = far.workspace_id
+                 AND r.id = far.underlying_run_id
+                WHERE far.workspace_id = $1 AND far.idempotency_key = $2""",
+                workspace_id,
+                idempotency_key,
+            )
+        return None if row is None else _full_ai_run_from_row(row)
+
+    async def get_full_ai_run(
+        self, workspace_id: UUID, full_ai_run_id: UUID
+    ) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {FULL_AI_RUN_COLUMNS}
+                FROM full_ai_runs far
+                JOIN runs r
+                  ON r.workspace_id = far.workspace_id
+                 AND r.id = far.underlying_run_id
+                WHERE far.workspace_id = $1 AND far.id = $2""",
+                workspace_id,
+                full_ai_run_id,
+            )
+        if row is None:
+            raise NotFoundError("full_ai_run", str(full_ai_run_id))
+        return _full_ai_run_from_row(row)
+
+    async def create_webpage_video_run_idempotently(
+        self,
+        resource: Resource,
+        scheduler_run: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+        active_run_limit: int,
+    ) -> tuple[Resource, bool]:
+        async with self._transaction() as connection:
+            async def create() -> Resource:
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 90521))",
+                    resource["workspace_id"],
+                )
+                active_count = int(
+                    await connection.fetchval(
+                        """SELECT count(*)
+                        FROM webpage_video_runs wvr
+                        JOIN runs r
+                          ON r.workspace_id = wvr.workspace_id
+                         AND r.id = wvr.underlying_run_id
+                        WHERE wvr.workspace_id = $1
+                          AND r.status IN ('queued', 'running', 'awaiting_review')""",
+                        UUID(resource["workspace_id"]),
+                    )
+                    or 0
+                )
+                if active_count >= active_run_limit:
+                    raise ConflictError(
+                        "WEBPAGE_VIDEO_ACTIVE_RUN_LIMIT_REACHED",
+                        (
+                            "The workspace has reached its concurrent "
+                            "webpage-video Run limit"
+                        ),
+                        active_runs=active_count,
+                        max_active_runs=active_run_limit,
+                    )
+                await self._insert_run(connection, scheduler_run)
+                try:
+                    row = await connection.fetchrow(
+                        f"""INSERT INTO webpage_video_runs (
+                          id, workspace_id, underlying_run_id, status, requested_url,
+                          normalized_url, spec, revision, idempotency_key, request_hash,
+                          created_by, created_at, updated_at
+                        ) VALUES (
+                          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                        ) RETURNING {WEBPAGE_VIDEO_RUN_RETURNING_COLUMNS}""",
+                        UUID(resource["id"]),
+                        UUID(resource["workspace_id"]),
+                        UUID(resource["underlying_run_id"]),
+                        resource["status"],
+                        resource["requested_url"],
+                        resource["normalized_url"],
+                        resource["spec"],
+                        int(resource.get("revision", 1)),
+                        resource["idempotency_key"],
+                        resource["request_hash"],
+                        UUID(resource["created_by"]),
+                        _datetime_value(resource["created_at"]),
+                        _datetime_value(resource["updated_at"]),
+                    )
+                except Exception as exc:
+                    self._raise_database_error(exc, "webpage_video_run", resource)
+                    raise  # pragma: no cover - _raise_database_error always raises
+                if row is None:  # pragma: no cover - INSERT RETURNING contract
+                    raise RuntimeError("Webpage-video Run insert returned no row")
+                return _webpage_video_run_from_row(row)
+
+            return await self._idempotent(
+                connection,
+                workspace_id=UUID(resource["workspace_id"]),
+                operation_key=operation_key,
+                request_fingerprint=request_fingerprint,
+                request_path="/v1/webpage-video/runs",
+                response_type="webpage_video_run",
+                create=create,
+            )
+
+    async def count_active_webpage_video_runs(self, workspace_id: UUID) -> int:
+        async with self._pool.acquire() as connection:
+            value = await connection.fetchval(
+                """SELECT count(*)
+                FROM webpage_video_runs wvr
+                JOIN runs r
+                  ON r.workspace_id = wvr.workspace_id
+                 AND r.id = wvr.underlying_run_id
+                WHERE wvr.workspace_id = $1
+                  AND r.status IN ('queued', 'running', 'awaiting_review')""",
+                workspace_id,
+            )
+        return int(value or 0)
+
+    async def get_webpage_video_run(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {WEBPAGE_VIDEO_RUN_COLUMNS}
+                FROM webpage_video_runs wvr
+                JOIN runs r
+                  ON r.workspace_id = wvr.workspace_id
+                 AND r.id = wvr.underlying_run_id
+                WHERE wvr.workspace_id = $1 AND wvr.id = $2""",
+                workspace_id,
+                webpage_video_run_id,
+            )
+        if row is None:
+            raise NotFoundError("webpage_video_run", str(webpage_video_run_id))
+        return _webpage_video_run_from_row(row)
+
+    async def append_webpage_capture_attempt(
+        self, resource: Resource
+    ) -> tuple[Resource, bool]:
+        async with self._transaction() as connection:
+            try:
+                row = await connection.fetchrow(
+                    f"""INSERT INTO webpage_capture_attempts (
+                      id, workspace_id, webpage_video_run_id, underlying_run_id,
+                      screenshot_step_id, attempt_number, capture_revision, outcome,
+                      requested_url, final_url, viewport_width, viewport_height, full_page,
+                      artifact_id, sha256, media_type, metadata, error, captured_at, created_at
+                    ) VALUES (
+                      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                      $14, $15, $16, $17, $18, $19, $20
+                    ) ON CONFLICT DO NOTHING
+                    RETURNING {WEBPAGE_CAPTURE_ATTEMPT_COLUMNS}""",
+                    UUID(resource["id"]),
+                    UUID(resource["workspace_id"]),
+                    UUID(resource["webpage_video_run_id"]),
+                    UUID(resource["underlying_run_id"]),
+                    UUID(resource["screenshot_step_id"]),
+                    int(resource["attempt_number"]),
+                    int(resource["capture_revision"]),
+                    resource["outcome"],
+                    resource["requested_url"],
+                    resource.get("final_url"),
+                    int(resource["viewport_width"]),
+                    int(resource["viewport_height"]),
+                    bool(resource.get("full_page", False)),
+                    self._optional_uuid(resource.get("artifact_id")),
+                    resource.get("sha256"),
+                    resource.get("media_type"),
+                    resource.get("metadata", {}),
+                    resource.get("error"),
+                    _datetime_value(resource.get("captured_at")),
+                    _datetime_value(resource["created_at"]),
+                )
+            except Exception as exc:
+                self._raise_database_error(exc, "webpage_capture_attempt", resource)
+                raise  # pragma: no cover - _raise_database_error always raises
+            if row is not None:
+                return _webpage_capture_attempt_from_row(row), True
+
+            existing_row = await connection.fetchrow(
+                f"""SELECT {WEBPAGE_CAPTURE_ATTEMPT_COLUMNS}
+                FROM webpage_capture_attempts
+                WHERE workspace_id = $1 AND webpage_video_run_id = $2
+                  AND (
+                    attempt_number = $3
+                    OR ($4::uuid IS NOT NULL AND artifact_id = $4::uuid)
+                  )
+                ORDER BY attempt_number DESC
+                LIMIT 1""",
+                UUID(resource["workspace_id"]),
+                UUID(resource["webpage_video_run_id"]),
+                int(resource["attempt_number"]),
+                self._optional_uuid(resource.get("artifact_id")),
+            )
+            if existing_row is None:  # pragma: no cover - unique conflict contract
+                raise ConflictError(
+                    "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
+                    "The immutable capture attempt conflicted with another record",
+                )
+            existing = _webpage_capture_attempt_from_row(existing_row)
+            comparable_keys = (
+                "workspace_id",
+                "webpage_video_run_id",
+                "underlying_run_id",
+                "screenshot_step_id",
+                "attempt_number",
+                "capture_revision",
+                "outcome",
+                "requested_url",
+                "final_url",
+                "viewport_width",
+                "viewport_height",
+                "full_page",
+                "artifact_id",
+                "sha256",
+                "media_type",
+                "metadata",
+                "error",
+                "captured_at",
+            )
+            expected = {
+                **resource,
+                "workspace_id": str(resource["workspace_id"]),
+                "webpage_video_run_id": str(resource["webpage_video_run_id"]),
+                "underlying_run_id": str(resource["underlying_run_id"]),
+                "screenshot_step_id": str(resource["screenshot_step_id"]),
+                "artifact_id": (
+                    str(resource["artifact_id"])
+                    if resource.get("artifact_id") is not None
+                    else None
+                ),
+                "full_page": bool(resource.get("full_page", False)),
+                "metadata": resource.get("metadata", {}),
+                "error": resource.get("error"),
+                "captured_at": _timestamp(
+                    _datetime_value(resource.get("captured_at"))
+                ),
+            }
+            if any(existing.get(key) != expected.get(key) for key in comparable_keys):
+                raise ConflictError(
+                    "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
+                    "A capture attempt was replayed with different immutable evidence",
+                    attempt_number=resource["attempt_number"],
+                )
+            return existing, False
+
+    async def list_webpage_capture_attempts(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> list[Resource]:
+        await self.get_webpage_video_run(workspace_id, webpage_video_run_id)
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""SELECT {WEBPAGE_CAPTURE_ATTEMPT_COLUMNS}
+                FROM webpage_capture_attempts
+                WHERE workspace_id = $1 AND webpage_video_run_id = $2
+                ORDER BY attempt_number, created_at, id""",
+                workspace_id,
+                webpage_video_run_id,
+            )
+        return [_webpage_capture_attempt_from_row(row) for row in rows]
 
     async def cancel_run_idempotently(
         self,
@@ -1844,6 +2364,7 @@ class PostgreSQLControlRepository:
         expected_revision: int | None,
         operation_key: str,
         request_fingerprint: str,
+        review_metadata: Resource | None = None,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
             async def review() -> Resource:
@@ -1855,6 +2376,25 @@ class PostgreSQLControlRepository:
                 )
                 if current is None:
                     raise NotFoundError("run_step", step_id)
+                run = await connection.fetchrow(
+                    """SELECT status::text AS status, cancel_requested_at FROM runs
+                    WHERE workspace_id = $1 AND id = $2 FOR UPDATE""",
+                    workspace_id,
+                    current["run_id"],
+                )
+                if run is None:  # pragma: no cover - protected by the foreign key
+                    raise NotFoundError("run", str(current["run_id"]))
+                if run["cancel_requested_at"] is not None or run["status"] in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    raise ConflictError(
+                        "RUN_NOT_ACCEPTING_REVIEW",
+                        "A step cannot be reviewed after its Run stopped accepting work",
+                        step_id=step_id,
+                        status=run["status"],
+                    )
                 if not current["review_required"] or current["status"] != "awaiting_review":
                     raise ConflictError(
                         "STEP_NOT_AWAITING_REVIEW",
@@ -1904,6 +2444,7 @@ class PostgreSQLControlRepository:
                     "actor_id": str(actor_id),
                     "comment": comment,
                     "issue_codes": list(issue_codes),
+                    "metadata": dict(review_metadata) if review_metadata else None,
                     "evidence": [
                         {
                             "id": item.get("id"),
@@ -1971,6 +2512,7 @@ class PostgreSQLControlRepository:
                         "issue_codes": list(issue_codes),
                         "reviewed_revision": current_revision,
                         "evidence": review_value["evidence"],
+                        "metadata": review_value["metadata"],
                     },
                     actor_id,
                 )
@@ -1988,6 +2530,7 @@ class PostgreSQLControlRepository:
                         "status": target,
                         "issue_codes": list(issue_codes),
                         "reviewed_revision": current_revision,
+                        "metadata": review_value["metadata"],
                     },
                     occurred_at=now,
                 )
@@ -2009,6 +2552,282 @@ class PostgreSQLControlRepository:
                 response_status=202,
                 create=review,
             )
+
+    async def create_or_reuse_catalog_snapshot(
+        self,
+        workspace_id: UUID,
+        library_ids: Sequence[UUID],
+        *,
+        created_by: UUID | None = None,
+    ) -> Resource:
+        normalized_library_ids = tuple(sorted(set(library_ids), key=str))
+        if not normalized_library_ids:
+            raise ConflictError(
+                "CATALOG_SNAPSHOT_LIBRARIES_REQUIRED",
+                "A catalog snapshot requires at least one asset library",
+            )
+        async with self._transaction() as connection:
+            library_rows = await connection.fetch(
+                """SELECT id FROM asset_libraries
+                WHERE workspace_id=$1 AND id=ANY($2::uuid[]) AND status='active'
+                ORDER BY id FOR SHARE""",
+                workspace_id,
+                list(normalized_library_ids),
+            )
+            visible_ids = {UUID(str(row["id"])) for row in library_rows}
+            missing = next(
+                (value for value in normalized_library_ids if value not in visible_ids),
+                None,
+            )
+            if missing is not None:
+                raise NotFoundError("asset_library", str(missing))
+
+            item_rows = await connection.fetch(
+                """SELECT a.library_id, a.id AS asset_id,
+                  af.id AS asset_file_id, aa.id AS analysis_id, af.content_hash
+                FROM assets a
+                JOIN LATERAL (
+                  SELECT f.id, f.content_hash
+                  FROM asset_files f
+                  WHERE f.workspace_id=a.workspace_id AND f.asset_id=a.id
+                    AND f.deleted_at IS NULL AND f.scan_status='clean'
+                  ORDER BY f.created_at, f.id LIMIT 1
+                ) af ON true
+                JOIN LATERAL (
+                  SELECT candidate.id
+                  FROM asset_analyses candidate
+                  WHERE candidate.workspace_id=a.workspace_id
+                    AND candidate.asset_id=a.id AND candidate.status='completed'
+                  ORDER BY candidate.analysis_version DESC, candidate.id DESC LIMIT 1
+                ) aa ON true
+                WHERE a.workspace_id=$1 AND a.library_id=ANY($2::uuid[])
+                  AND a.kind IN ('image','video')
+                  AND a.status='ready' AND a.analysis_status='completed'
+                  AND a.copyright_status IN ('owned','licensed','public_domain')
+                ORDER BY a.library_id, a.id, af.id, aa.id""",
+                workspace_id,
+                list(normalized_library_ids),
+            )
+            items = [
+                {
+                    "library_id": str(row["library_id"]),
+                    "asset_id": str(row["asset_id"]),
+                    "asset_file_id": str(row["asset_file_id"]),
+                    "analysis_id": str(row["analysis_id"]),
+                    "content_hash": row["content_hash"],
+                }
+                for row in item_rows
+            ]
+            normalized_strings = tuple(str(value) for value in normalized_library_ids)
+            content_hash = _catalog_snapshot_content_hash(normalized_strings, items)
+            snapshot_id = uuid5(
+                NAMESPACE_URL,
+                f"framefactory-catalog-snapshot:{workspace_id}:{content_hash}",
+            )
+            snapshot_row = await connection.fetchrow(
+                f"""INSERT INTO catalog_snapshots (
+                  id, workspace_id, library_ids, content_hash, item_count,
+                  created_by, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,now())
+                ON CONFLICT (workspace_id, content_hash) DO NOTHING
+                RETURNING {CATALOG_SNAPSHOT_COLUMNS}""",
+                snapshot_id,
+                workspace_id,
+                list(normalized_library_ids),
+                content_hash,
+                len(items),
+                created_by,
+            )
+            if snapshot_row is not None:
+                for ordinal, item in enumerate(items):
+                    await connection.execute(
+                        """INSERT INTO catalog_snapshot_items (
+                          snapshot_id, workspace_id, ordinal, library_id, asset_id,
+                          asset_file_id, analysis_id, content_hash
+                        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+                        snapshot_id,
+                        workspace_id,
+                        ordinal,
+                        UUID(item["library_id"]),
+                        UUID(item["asset_id"]),
+                        UUID(item["asset_file_id"]),
+                        UUID(item["analysis_id"]),
+                        item["content_hash"],
+                    )
+            else:
+                snapshot_row = await connection.fetchrow(
+                    f"""SELECT {CATALOG_SNAPSHOT_COLUMNS}
+                    FROM catalog_snapshots
+                    WHERE workspace_id=$1 AND content_hash=$2""",
+                    workspace_id,
+                    content_hash,
+                )
+                if snapshot_row is None:  # pragma: no cover - unique-key contract
+                    raise RuntimeError("Catalog snapshot disappeared during reuse")
+                snapshot_id = UUID(str(snapshot_row["id"]))
+            persisted_items = await connection.fetch(
+                """SELECT library_id, asset_id, asset_file_id, analysis_id, content_hash
+                FROM catalog_snapshot_items
+                WHERE workspace_id=$1 AND snapshot_id=$2 ORDER BY ordinal""",
+                workspace_id,
+                snapshot_id,
+            )
+        return _catalog_snapshot_from_rows(snapshot_row, persisted_items)
+
+    async def get_catalog_snapshot(
+        self, workspace_id: UUID, snapshot_id: UUID
+    ) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {CATALOG_SNAPSHOT_COLUMNS} FROM catalog_snapshots
+                WHERE workspace_id=$1 AND id=$2""",
+                workspace_id,
+                snapshot_id,
+            )
+            if row is None:
+                raise NotFoundError("catalog_snapshot", str(snapshot_id))
+            items = await connection.fetch(
+                """SELECT library_id, asset_id, asset_file_id, analysis_id, content_hash
+                FROM catalog_snapshot_items
+                WHERE workspace_id=$1 AND snapshot_id=$2 ORDER BY ordinal""",
+                workspace_id,
+                snapshot_id,
+            )
+        return _catalog_snapshot_from_rows(row, items)
+
+    async def create_library_build_job_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        workspace_id = UUID(resource["workspace_id"])
+        async with self._transaction() as connection:
+            library_exists = await connection.fetchval(
+                """SELECT EXISTS (SELECT 1 FROM asset_libraries
+                WHERE workspace_id=$1 AND id=$2 AND status='active')""",
+                workspace_id,
+                UUID(resource["library_id"]),
+            )
+            if not library_exists:
+                raise NotFoundError("asset_library", resource["library_id"])
+            existing = await connection.fetchrow(
+                f"""SELECT {LIBRARY_BUILD_JOB_COLUMNS} FROM library_build_jobs
+                WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE""",
+                workspace_id,
+                operation_key,
+            )
+            if existing is not None:
+                if existing["request_hash"] != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return _library_build_job_from_row(existing), False
+
+            now = _datetime_value(resource.get("created_at")) or datetime.now(UTC)
+            progress = resource.get("progress") or {
+                "discovered": 0,
+                "transferred": 0,
+                "analyzed": 0,
+                "indexed": 0,
+                "failed": 0,
+                "asset_ids": [],
+            }
+            saved = await connection.fetchrow(
+                f"""INSERT INTO library_build_jobs (
+                  id, workspace_id, library_id, status, stage, spec, progress, error,
+                  idempotency_key, request_hash, revision, created_by, created_at,
+                  started_at, completed_at, updated_at
+                ) VALUES (
+                  $1,$2,$3,'queued','discover',$4,$5,NULL,$6,$7,1,$8,$9,NULL,NULL,$9
+                ) ON CONFLICT DO NOTHING
+                RETURNING {LIBRARY_BUILD_JOB_COLUMNS}""",
+                UUID(resource["id"]),
+                workspace_id,
+                UUID(resource["library_id"]),
+                resource["spec"],
+                progress,
+                operation_key,
+                request_fingerprint,
+                self._optional_uuid(resource.get("created_by")),
+                now,
+            )
+            if saved is None:
+                saved = await connection.fetchrow(
+                    f"""SELECT {LIBRARY_BUILD_JOB_COLUMNS} FROM library_build_jobs
+                    WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE""",
+                    workspace_id,
+                    operation_key,
+                )
+                if saved is None:
+                    raise ConflictError(
+                        "LIBRARY_BUILD_JOB_EXISTS",
+                        "A library build job with this id already exists",
+                        job_id=resource["id"],
+                    )
+                if saved["request_hash"] != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return _library_build_job_from_row(saved), False
+        return _library_build_job_from_row(saved), True
+
+    async def get_library_build_job(
+        self, workspace_id: UUID, job_id: UUID
+    ) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {LIBRARY_BUILD_JOB_COLUMNS} FROM library_build_jobs
+                WHERE workspace_id=$1 AND id=$2""",
+                workspace_id,
+                job_id,
+            )
+        if row is None:
+            raise NotFoundError("library_build_job", str(job_id))
+        return _library_build_job_from_row(row)
+
+    async def cancel_library_build_job(
+        self,
+        workspace_id: UUID,
+        job_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> Resource:
+        async with self._transaction() as connection:
+            current = await connection.fetchrow(
+                f"""SELECT {LIBRARY_BUILD_JOB_COLUMNS} FROM library_build_jobs
+                WHERE workspace_id=$1 AND id=$2 FOR UPDATE""",
+                workspace_id,
+                job_id,
+            )
+            if current is None:
+                raise NotFoundError("library_build_job", str(job_id))
+            self._require_revision(int(current["revision"]), expected_revision)
+            if current["status"] in {
+                "completed",
+                "completed_with_errors",
+                "failed",
+                "cancelled",
+            }:
+                return _library_build_job_from_row(current)
+            saved = await connection.fetchrow(
+                f"""UPDATE library_build_jobs
+                SET status='cancelled', completed_at=now(), updated_at=now(),
+                    revision=revision+1
+                WHERE workspace_id=$1 AND id=$2 AND revision=$3
+                RETURNING {LIBRARY_BUILD_JOB_COLUMNS}""",
+                workspace_id,
+                job_id,
+                expected_revision,
+            )
+            if saved is None:  # pragma: no cover - row is locked above
+                raise PreconditionFailedError(
+                    int(current["revision"]) + 1, expected_revision
+                )
+        return _library_build_job_from_row(saved)
 
     async def list_asset_libraries(self, workspace_id: UUID) -> list[Resource]:
         async with self._pool.acquire() as connection:
@@ -2164,8 +2983,25 @@ class PostgreSQLControlRepository:
                         file["byte_size"],
                         file["content_hash"],
                     )
-                source = (_json_value(resource["metadata"]) or {}).get("source") or {}
+                resource_metadata = _json_value(resource["metadata"]) or {}
+                source = resource_metadata.get("source") or {}
+                evidence = resource_metadata.get("rights_evidence") or {}
+                evidence_locator = str(evidence.get("locator") or "").strip()
+                parsed_evidence_locator = urlsplit(evidence_locator)
+                trusted_public_domain_evidence = (
+                    resource["copyright_status"] == "public_domain"
+                    and evidence.get("evidence_type") == "verified_public_domain"
+                    and evidence.get("provider") == "wikimedia"
+                    and parsed_evidence_locator.scheme == "https"
+                    and parsed_evidence_locator.hostname == "commons.wikimedia.org"
+                    and bool(str(evidence.get("verified_at") or "").strip())
+                    and bool(str(evidence.get("license") or "").strip())
+                )
+                if not trusted_public_domain_evidence:
+                    evidence = {}
                 locator = source.get("source_url")
+                if evidence:
+                    locator = evidence["locator"]
                 source_id = uuid5(
                     NAMESPACE_URL,
                     f"framefactory-api-source:{workspace_id}:{saved_asset_id}:"
@@ -2174,17 +3010,23 @@ class PostgreSQLControlRepository:
                 await connection.execute(
                     """INSERT INTO asset_sources
                        (id,workspace_id,asset_id,source_type,locator,provider,attribution,
-                        license,evidence_type,captured_at,metadata)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'copyright',now(),$9)
+                        license,evidence_type,verified_at,captured_at,metadata)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11)
                        ON CONFLICT (workspace_id,id) DO NOTHING""",
                     source_id,
                     workspace_id,
                     saved_asset_id,
                     "website" if locator else "upload",
                     locator,
-                    source.get("platform") or "direct-upload",
-                    source.get("author"),
-                    source.get("license") or resource["copyright_status"],
+                    evidence.get("provider")
+                    or source.get("platform")
+                    or "direct-upload",
+                    evidence.get("attribution") or source.get("author"),
+                    evidence.get("license")
+                    or source.get("license")
+                    or resource["copyright_status"],
+                    evidence.get("evidence_type") or "copyright",
+                    _datetime_value(evidence.get("verified_at")),
                     source,
                 )
                 await self._replace_asset_tags(
@@ -3367,11 +4209,19 @@ class PostgreSQLControlRepository:
                 f"Official PipelineVersion {version['id']} conflicts with persisted content"
             )
         await connection.execute(
-            """UPDATE pipelines SET current_version_id = $2
+            """UPDATE pipelines SET current_version_id = $2,
+              name = $4,
+              description = $5,
+              status = $6,
+              updated_at = GREATEST(updated_at, $7)
             WHERE id = $1 AND workspace_id = $3 AND visibility = 'public_readonly'""",
             UUID(pipeline_id),
             UUID(version["id"]),
             UUID(version["workspace_id"]),
+            version["name"],
+            version["description"],
+            version["status"],
+            _datetime_value(version["published_at"]),
         )
 
     async def _insert_official_skill(
@@ -3518,7 +4368,15 @@ class PostgreSQLControlRepository:
                     "SKILL_VERSION_ALREADY_EXISTS",
                     "A skill version with this id already exists",
                 ),
-                "run": ("RUN_ALREADY_EXISTS", "A Run with this id already exists"),
+                 "run": ("RUN_ALREADY_EXISTS", "A Run with this id already exists"),
+                 "webpage_video_run": (
+                     "WEBPAGE_VIDEO_RUN_ALREADY_EXISTS",
+                     "A webpage-video Run with this id already exists",
+                 ),
+                 "webpage_capture_attempt": (
+                     "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
+                     "The immutable webpage capture attempt conflicts with persisted evidence",
+                 ),
                 "skill_test_execution": (
                     "SKILL_TEST_ALREADY_EXISTS",
                     "A Skill test execution with this id already exists",

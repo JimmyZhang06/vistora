@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/generated-material-manifest.schema.json",
+  "title": "GeneratedMaterialManifest",
+  "description": "Immutable Run-scoped paid-generation audit. It records provider jobs and accepted outputs but is not the downstream candidate-selection contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "operation", "generated_only", "provider", "provider_api_version",
+    "model_id", "source_script_artifact_id", "source_audio_artifact_id",
+    "source_narration_timing_artifact_id",
+    "plan", "continuity_mode", "terms_snapshot", "rights_snapshot",
+    "pricing_snapshot", "safety",
+    "total_cost", "jobs"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "operation": { "const": "media.generate" },
+    "generated_only": { "const": true },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "provider_api_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "source_script_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "source_audio_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "source_narration_timing_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "plan": { "$ref": "#/$defs/GenerationPlan" },
+    "continuity_mode": { "type": "string", "enum": ["none", "prompt_pack", "reference_frame"] },
+    "terms_snapshot": { "$ref": "#/$defs/SnapshotReference" },
+    "rights_snapshot": { "$ref": "#/$defs/RightsSnapshot" },
+    "pricing_snapshot": { "$ref": "#/$defs/PricingSnapshot" },
+    "safety": { "$ref": "#/$defs/SafetySummary" },
+    "total_cost": { "$ref": "#/$defs/TotalCost" },
+    "jobs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30000,
+      "items": { "$ref": "#/$defs/GenerationJob" }
+    }
+  },
+  "$defs": {
+    "GenerationPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_duration_seconds", "scene_count", "variants_per_beat",
+        "candidate_count", "clip_duration_seconds", "billable_seconds",
+        "max_cost_minor", "ratio"
+      ],
+      "properties": {
+        "target_duration_seconds": { "type": "integer", "minimum": 1 },
+        "scene_count": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "variants_per_beat": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "candidate_count": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "clip_duration_seconds": { "const": 5 },
+        "billable_seconds": { "type": "integer", "minimum": 5 },
+        "max_cost_minor": { "type": "integer", "minimum": 0 },
+        "ratio": { "type": "string", "enum": ["1280:720", "720:1280"] }
+      }
+    },
+    "SnapshotReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "content_hash", "captured_at"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "captured_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "PricingSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref", "content_hash", "captured_at", "currency", "credit_unit_minor",
+        "cost_per_second_minor"
+      ],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "captured_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "credit_unit_minor": { "type": "integer", "minimum": 1 },
+        "cost_per_second_minor": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "RightsSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "output_rights_confirmed", "output_rights_license_basis", "terms_content_hash"
+      ],
+      "properties": {
+        "output_rights_confirmed": { "const": true },
+        "output_rights_license_basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "terms_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" }
+      }
+    },
+    "SafetySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_moderation", "accepted_outputs", "rejected_outputs"],
+      "properties": {
+        "provider_moderation": { "const": "required" },
+        "accepted_outputs": { "type": "integer", "minimum": 0 },
+        "rejected_outputs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "TotalCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "estimated_credits", "incurred_credits", "incurred_amount_minor",
+        "authorized_amount_minor", "currency"
+      ],
+      "properties": {
+        "estimated_credits": { "type": "number", "minimum": 0 },
+        "incurred_credits": { "type": "number", "minimum": 0 },
+        "incurred_amount_minor": { "type": "integer", "minimum": 0 },
+        "authorized_amount_minor": { "type": "integer", "minimum": 0 },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "GenerationJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "beat_id", "beat_sequence", "variant", "paid_operation_id", "operation_key",
+        "request_hash", "provider_task_id", "status", "model_id", "seed", "prompt_hash",
+        "prompt_text", "prompt_template_version",
+        "reference_hashes", "output_artifact_id", "output_content_hash", "output_filename",
+        "output_media_type", "output_byte_size", "duration_seconds",
+        "estimated_cost_credits", "incurred_cost_credits", "verification_status",
+        "rejection_codes", "safety",
+        "visual_verification"
+      ],
+      "properties": {
+        "beat_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "beat_sequence": { "type": "integer", "minimum": 1 },
+        "variant": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "paid_operation_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "operation_key": { "type": "string", "minLength": 1, "maxLength": 320 },
+        "request_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "provider_task_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "status": { "const": "succeeded" },
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "prompt_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "prompt_text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "prompt_template_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "reference_hashes": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/Sha256" }
+        },
+        "output_artifact_id": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/Uuid" },
+            { "type": "null" }
+          ]
+        },
+        "output_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "output_filename": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "output_media_type": { "$ref": "common.schema.json#/$defs/MediaType" },
+        "output_byte_size": { "type": "integer", "minimum": 1 },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "estimated_cost_credits": { "type": "number", "minimum": 0 },
+        "incurred_cost_credits": { "type": "number", "minimum": 0 },
+        "verification_status": { "type": "string", "enum": ["accepted", "rejected"] },
+        "rejection_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "safety": { "$ref": "#/$defs/JobSafety" },
+        "visual_verification": { "$ref": "#/$defs/VisualVerification" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "verification_status": { "const": "accepted" } },
+            "required": ["verification_status"]
+          },
+          "then": {
+            "properties": {
+              "output_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+              "rejection_codes": { "maxItems": 0 },
+              "safety": {
+                "properties": {
+                  "status": { "const": "passed" },
+                  "failure_code": { "type": "null" }
+                }
+              },
+              "visual_verification": {
+                "properties": {
+                  "has_watermark": { "const": false },
+                  "has_embedded_text": { "const": false },
+                  "unsafe": { "const": false },
+                  "visual_description_matched": { "const": true },
+                  "adult": { "const": false },
+                  "violence": { "const": false },
+                  "self_harm": { "const": false },
+                  "hate_or_extremism": { "const": false },
+                  "illegal_activity": { "const": false },
+                  "recognizable_real_person_or_public_figure": { "const": false },
+                  "brand_or_logo": { "const": false },
+                  "protected_character": { "const": false },
+                  "quality_usable": { "const": true },
+                  "cut_safe": { "const": true },
+                  "semantic_complete": { "const": true }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "output_artifact_id": { "type": "null" },
+              "rejection_codes": { "minItems": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "JobSafety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "provider_moderation", "failure_code"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "rejected"] },
+        "provider_moderation": { "const": "not_rejected" },
+        "failure_code": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 160 }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+          "then": { "properties": { "failure_code": { "type": "null" } } },
+          "else": { "properties": { "failure_code": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    },
+    "VisualVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifier_provider", "verifier_model", "verifier_version", "frame_hashes",
+        "description", "labels", "confidence", "minimum_confidence",
+        "quality_score", "minimum_quality_score", "visual_description_matched",
+        "visual_description_evidence", "must_match", "must_not_match", "has_watermark",
+        "has_embedded_text", "unsafe", "adult", "violence", "self_harm",
+        "hate_or_extremism", "illegal_activity",
+        "recognizable_real_person_or_public_figure", "brand_or_logo",
+        "protected_character", "quality_usable", "cut_safe", "cut_safe_evidence",
+        "semantic_complete"
+      ],
+      "properties": {
+        "verifier_provider": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "verifier_model": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "verifier_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "frame_hashes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/Sha256" }
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "labels": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minimum_confidence": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "quality_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minimum_quality_score": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "visual_description_matched": { "type": "boolean" },
+        "visual_description_evidence": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "must_match": { "$ref": "#/$defs/ConstraintChecks" },
+        "must_not_match": { "$ref": "#/$defs/ConstraintChecks" },
+        "has_watermark": { "type": "boolean" },
+        "has_embedded_text": { "type": "boolean" },
+        "unsafe": { "type": "boolean" },
+        "adult": { "type": "boolean" },
+        "violence": { "type": "boolean" },
+        "self_harm": { "type": "boolean" },
+        "hate_or_extremism": { "type": "boolean" },
+        "illegal_activity": { "type": "boolean" },
+        "recognizable_real_person_or_public_figure": { "type": "boolean" },
+        "brand_or_logo": { "type": "boolean" },
+        "protected_character": { "type": "boolean" },
+        "quality_usable": { "type": "boolean" },
+        "cut_safe": { "type": "boolean" },
+        "cut_safe_evidence": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "semantic_complete": { "type": "boolean" }
+      }
+    },
+    "ConstraintChecks": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["term", "matched"],
+        "properties": {
+          "term": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "matched": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "operation": "media.generate",
+      "generated_only": true,
+      "provider": "runway",
+      "provider_api_version": "2024-11-06",
+      "model_id": "gen4.5",
+      "source_script_artifact_id": "11111111-1111-4111-8111-111111111111",
+      "source_audio_artifact_id": "66666666-6666-4666-8666-666666666666",
+      "source_narration_timing_artifact_id": "22222222-2222-4222-8222-222222222222",
+      "plan": {
+        "target_duration_seconds": 5,
+        "scene_count": 1,
+        "variants_per_beat": 1,
+        "candidate_count": 1,
+        "clip_duration_seconds": 5,
+        "billable_seconds": 5,
+        "max_cost_minor": 60,
+        "ratio": "1280:720"
+      },
+      "continuity_mode": "prompt_pack",
+      "terms_snapshot": {
+        "ref": "https://example.test/runway-terms-snapshot",
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "captured_at": "2026-08-23T10:00:00Z"
+      },
+      "rights_snapshot": {
+        "output_rights_confirmed": true,
+        "output_rights_license_basis": "operator-confirmed provider output terms",
+        "terms_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "pricing_snapshot": {
+        "ref": "https://example.test/runway-pricing-snapshot",
+        "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "captured_at": "2026-08-23T10:00:00Z",
+        "currency": "USD",
+        "credit_unit_minor": 1,
+        "cost_per_second_minor": 12
+      },
+      "safety": {
+        "provider_moderation": "required",
+        "accepted_outputs": 1,
+        "rejected_outputs": 0
+      },
+      "total_cost": {
+        "estimated_credits": 60,
+        "incurred_credits": 60,
+        "incurred_amount_minor": 60,
+        "authorized_amount_minor": 60,
+        "currency": "USD"
+      },
+      "jobs": [
+        {
+          "beat_id": "beat-001",
+          "beat_sequence": 1,
+          "variant": 1,
+          "paid_operation_id": "33333333-3333-4333-8333-333333333333",
+          "operation_key": "beat:beat-001:variant:1",
+          "request_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "provider_task_id": "44444444-4444-4444-8444-444444444444",
+          "status": "succeeded",
+          "model_id": "gen4.5",
+          "seed": 42,
+          "prompt_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "prompt_text": "A calm cinematic view of blue sky and sunlight, no text or watermark.",
+          "prompt_template_version": "runway-gen45-v1",
+          "reference_hashes": [],
+          "output_artifact_id": "55555555-5555-4555-8555-555555555555",
+          "output_content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "output_filename": "generated-beat-001-v01.mp4",
+          "output_media_type": "video/mp4",
+          "output_byte_size": 2048,
+          "duration_seconds": 5,
+          "estimated_cost_credits": 60,
+          "incurred_cost_credits": 60,
+          "verification_status": "accepted",
+          "rejection_codes": [],
+          "safety": {
+            "status": "passed",
+            "provider_moderation": "not_rejected",
+            "failure_code": null
+          },
+          "visual_verification": {
+            "verifier_provider": "openai-compatible",
+            "verifier_model": "vision-model",
+            "verifier_version": "generated-video-verifier-v1",
+            "frame_hashes": [
+              "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            ],
+            "description": "蓝天与日光，画面无文字和水印。",
+            "labels": ["蓝天", "日光"],
+            "confidence": 0.94,
+            "minimum_confidence": 0.75,
+            "quality_score": 0.91,
+            "minimum_quality_score": 0.65,
+            "visual_description_matched": true,
+            "visual_description_evidence": "首中尾帧均显示蓝天与日光。",
+            "must_match": [{"term": "蓝天", "matched": true}],
+            "must_not_match": [],
+            "has_watermark": false,
+            "has_embedded_text": false,
+            "unsafe": false,
+            "adult": false,
+            "violence": false,
+            "self_harm": false,
+            "hate_or_extremism": false,
+            "illegal_activity": false,
+            "recognizable_real_person_or_public_figure": false,
+            "brand_or_logo": false,
+            "protected_character": false,
+            "quality_usable": true,
+            "cut_safe": true,
+            "cut_safe_evidence": "首尾帧没有突变、黑帧或截断动作。",
+            "semantic_complete": true
+          }
+        }
+      ]
+    }
+  ]
+}

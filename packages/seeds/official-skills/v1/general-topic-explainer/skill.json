@@ -10,9 +10,9 @@
   "description": "面向新主题冷启动的安全解说起点，可由用户分叉后调整研究、写作和视觉策略。",
   "visibility": "public_readonly",
   "status": "active",
-  "current_version_id": "997e9386-7bd6-5aee-8d8d-ed4030c478bf",
+  "current_version_id": "62c48333-d19f-57b0-9479-bb844b63ef08",
   "forked_from_skill_id": null,
   "created_by": "e1574325-feff-5570-a90f-2261616c9872",
   "created_at": "2026-08-15T00:00:00Z",
-  "updated_at": "2026-08-15T00:00:00Z"
+  "updated_at": "2026-08-24T00:00:00Z"
 }

@@ -13,8 +13,9 @@ import shutil
 import tempfile
 import time
 import unicodedata
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from framefactory.runtime import (
 from framefactory.steps import ArtifactRef, StepContext, StepResult
 from framefactory.worker.config import LegacyMediaSettings
 from framefactory.worker.providers import ArtifactStorage, ProviderArtifact
+from framefactory.worker.retrieval.beats import normalize_beats
 from framefactory.worker.timeline import plan_edit_timeline
 
 _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
@@ -34,6 +36,8 @@ _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 # inputs do not leak container/codec differences into the final render.
 _VIDEO_SUFFIXES = {".m4v", ".mkv", ".mov", ".mp4", ".webm"}
 _SENTENCE_BREAK = re.compile(r"(?<=[。！？!?；;])\s*")
+_MAX_TIMING_SEGMENTS = 10_000
+_MAX_TIMING_WORDS = 10_000
 logger = logging.getLogger("framefactory.worker.media")
 
 
@@ -57,7 +61,11 @@ class EdgeSpeechCapability:
         settings: LegacyMediaSettings,
         storage: ArtifactStorage,
         *,
-        synthesizer: Callable[[str, Path, str, str], Awaitable[None]] | None = None,
+        synthesizer: Callable[
+            [str, Path, str, str],
+            Awaitable[Sequence[Mapping[str, Any]] | None],
+        ]
+        | None = None,
         duration_probe: Callable[[Path, StepContext], Awaitable[float]] | None = None,
     ) -> None:
         self.settings = settings
@@ -67,7 +75,8 @@ class EdgeSpeechCapability:
 
     async def execute(self, context: StepContext) -> StepResult:
         await context.checkpoint()
-        script = self.storage.read_json(_required_artifact(context, "script"))
+        script_artifact = _required_artifact(context, "script")
+        script = self.storage.read_json(script_artifact)
         narration = str(script.get("narration", "")).strip()
         if not narration:
             raise PermanentStepError("script narration is empty; TTS was not attempted")
@@ -77,7 +86,7 @@ class EdgeSpeechCapability:
             output = Path(directory) / "narration.mp3"
             target_duration = _target_duration_seconds(context.input_snapshot)
             rate = self.settings.tts_rate
-            duration = await self._synthesize_and_probe(
+            duration, word_boundaries = await self._synthesize_and_probe(
                 narration, output, rate, context
             )
             attempts = 1
@@ -90,7 +99,7 @@ class EdgeSpeechCapability:
                 if adjusted_rate == rate:
                     break
                 rate = adjusted_rate
-                duration = await self._synthesize_and_probe(
+                duration, word_boundaries = await self._synthesize_and_probe(
                     narration, output, rate, context
                 )
                 attempts += 1
@@ -98,12 +107,49 @@ class EdgeSpeechCapability:
         duration_fit = target_duration is None or _duration_fits(
             duration, target_duration, 0.20
         )
+        audio_content_hash = hashlib.sha256(data).hexdigest()
+        timing = _narration_timing_payload(
+            script,
+            duration=duration,
+            word_boundaries=word_boundaries,
+            audio_content_hash=audio_content_hash,
+            script_content_hash=script_artifact.content_hash,
+        )
+        webpage_video = _is_webpage_video_snapshot(context.input_snapshot)
+        if webpage_video:
+            if not duration_fit:
+                raise PermanentStepError(
+                    "webpage video narration could not meet the requested duration after "
+                    "bounded speech-rate adjustment",
+                    code="webpage_video_tts_duration_mismatch",
+                )
+            if bool(timing["word_timing_estimated"]) or not timing["words"]:
+                raise PermanentStepError(
+                    "webpage video narration requires native WordBoundary timing",
+                    code="webpage_video_tts_native_timing_required",
+                )
         artifact = self.storage.publish(
             context,
             ProviderArtifact("audio", "narration.mp3", "audio/mpeg", data),
         )
+        if artifact.content_hash != audio_content_hash:
+            raise PermanentStepError("published narration audio hash does not match its bytes")
+        timing_artifact = self.storage.publish(
+            context,
+            ProviderArtifact(
+                "narration_timing",
+                "narration-timing.json",
+                "application/json",
+                json.dumps(
+                    timing,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+            ),
+        )
         return StepResult(
-            artifacts=(artifact,),
+            artifacts=(artifact, timing_artifact),
             output_summary={
                 "provider": "edge-tts",
                 "voice": self.settings.tts_voice,
@@ -113,8 +159,19 @@ class EdgeSpeechCapability:
                 "target_duration_seconds": target_duration,
                 "duration_fit": duration_fit,
                 "synthesis_attempts": attempts,
+                "timing_estimated": timing["estimated"],
+                "timing_granularity": timing["granularity"],
+                "word_boundaries": len(timing["words"]),
             },
-            requires_review=not duration_fit,
+            # A sentence/beat boundary may be proportionally mapped onto native
+            # WordBoundary events when provider tokens do not exactly reproduce
+            # the authored punctuation.  That semantic grouping remains marked
+            # estimated in the artifact, but webpage rendering is safe to
+            # continue because captions consume the validated native word cues.
+            requires_review=(
+                not duration_fit
+                or (bool(timing["estimated"]) and not webpage_video)
+            ),
         )
 
     async def _synthesize_and_probe(
@@ -123,11 +180,12 @@ class EdgeSpeechCapability:
         output: Path,
         rate: str,
         context: StepContext,
-    ) -> float:
+    ) -> tuple[float, Sequence[Mapping[str, Any]] | None]:
+        word_boundaries: Sequence[Mapping[str, Any]] | None = None
         for provider_attempt in range(3):
             output.unlink(missing_ok=True)
             try:
-                await self._synthesizer(
+                word_boundaries = await self._synthesizer(
                     narration,
                     output,
                     self.settings.tts_voice,
@@ -152,9 +210,12 @@ class EdgeSpeechCapability:
         if not output.is_file() or output.stat().st_size < 1024:
             raise RetryableStepError("configured Edge TTS provider returned invalid audio")
         if self._duration_probe is not None:
-            return await self._duration_probe(output, context)
+            return await self._duration_probe(output, context), word_boundaries
         ffprobe = _resolve_command(self.settings.ffprobe_command, "FFprobe")
-        return await _probe_duration(ffprobe, output, context, cwd=output.parent)
+        return (
+            await _probe_duration(ffprobe, output, context, cwd=output.parent),
+            word_boundaries,
+        )
 
 
 class FFmpegQualityCapability:
@@ -334,6 +395,36 @@ class FFmpegRenderCapability:
         audio_ref = _required_artifact(context, "audio")
         manifest_ref = _required_artifact(context, "manifest")
         manifest = dict(self.storage.read_json(manifest_ref))
+        timing_refs = [
+            artifact
+            for artifact in context.input_artifacts
+            if artifact.kind == "narration_timing"
+        ]
+        webpage_video = _is_webpage_video_snapshot(context.input_snapshot)
+        if webpage_video and len(timing_refs) != 1:
+            raise PermanentStepError(
+                "webpage render requires exactly one native narration timing artifact"
+            )
+        if len(timing_refs) > 1:
+            raise PermanentStepError("render received multiple narration timing artifacts")
+        narration_timing: Mapping[str, Any] | None = None
+        if timing_refs:
+            candidate = self.storage.read_json(timing_refs[0])
+            if not isinstance(candidate, Mapping):
+                raise PermanentStepError("narration timing artifact must be an object")
+            narration_timing = candidate
+            if candidate.get("audio_content_hash") != audio_ref.content_hash:
+                raise PermanentStepError("narration timing targets a different audio artifact")
+            script_ref = _required_artifact(context, "script")
+            if candidate.get("script_content_hash") != script_ref.content_hash:
+                raise PermanentStepError("narration timing targets a different script artifact")
+            if webpage_video and (
+                bool(candidate.get("word_timing_estimated", True))
+                or not candidate.get("words")
+            ):
+                raise PermanentStepError(
+                    "webpage render requires native WordBoundary narration timing"
+                )
         entries = manifest.get("assets")
         if not isinstance(entries, list) or not entries:
             raise PermanentStepError("asset manifest contains no renderable media")
@@ -375,7 +466,7 @@ class FFmpegRenderCapability:
             for index, shot in enumerate(timeline, start=1):
                 await context.checkpoint()
                 asset_index = int(shot["asset_index"])
-                source, _entry = asset_paths[asset_index]
+                source, entry = asset_paths[asset_index]
                 segment = work / f"segment-{index:03d}.mp4"
                 command = _segment_command(
                     ffmpeg,
@@ -390,6 +481,12 @@ class FFmpegRenderCapability:
                     background_color=profile.background_color,
                     source_start_seconds=float(shot["source_start_seconds"]),
                     source_end_seconds=float(shot["source_end_seconds"]),
+                    image_motion=str(shot.get("motion") or entry.get("motion") or "static"),
+                    motion_focus=(
+                        shot.get("motion_focus")
+                        if isinstance(shot.get("motion_focus"), Mapping)
+                        else entry.get("motion_focus")
+                    ),
                 )
                 await _run_command(command, context, cwd=work, timeout_seconds=900)
                 segment_paths.append(segment)
@@ -425,6 +522,7 @@ class FFmpegRenderCapability:
                 _build_ass(
                     manifest.get("script", {}),
                     duration,
+                    timing=narration_timing,
                     width=profile.width,
                     height=profile.height,
                     layout=profile.layout,
@@ -514,20 +612,348 @@ class FFmpegRenderCapability:
                 "candidate_cuts": sum(
                     shot["cut_evidence"] == "candidate" for shot in timeline
                 ),
+                "subtitle_timing": (
+                    "narration_timing" if narration_timing is not None else "duration_weighted"
+                ),
             },
         )
 
 
-async def _edge_synthesize(text: str, output: Path, voice: str, rate: str) -> None:
+async def _edge_synthesize(
+    text: str, output: Path, voice: str, rate: str
+) -> tuple[Mapping[str, Any], ...]:
     try:
         from edge_tts import Communicate
     except ImportError as exc:  # pragma: no cover - packaging failure
         raise CapabilityUnavailable("Edge TTS dependency is not installed") from exc
-    await Communicate(text, voice, rate=rate).save(str(output))
+
+    boundaries: list[Mapping[str, Any]] = []
+    with output.open("wb") as stream:
+        # edge-tts 7.2.x defaults to SentenceBoundary.  Request word metadata
+        # explicitly; otherwise the filter below would truthfully return no
+        # native word track and every production synthesis would be escalated
+        # as estimated timing.
+        async for event in Communicate(
+            text,
+            voice,
+            rate=rate,
+            boundary="WordBoundary",
+        ).stream():
+            event_type = str(event.get("type", ""))
+            if event_type == "audio":
+                data = event.get("data")
+                if isinstance(data, bytes):
+                    stream.write(data)
+            elif event_type == "WordBoundary":
+                boundaries.append(
+                    {
+                        "text": str(event.get("text", "")),
+                        "offset": event.get("offset"),
+                        "duration": event.get("duration"),
+                    }
+                )
+    return tuple(boundaries)
+
+
+def _narration_timing_payload(
+    script: Mapping[str, Any],
+    *,
+    duration: float,
+    word_boundaries: Sequence[Mapping[str, Any]] | None,
+    audio_content_hash: str,
+    script_content_hash: str,
+) -> dict[str, Any]:
+    """Build one truthful timing artifact for both production and fallback TTS.
+
+    Edge ``WordBoundary`` events use 100-nanosecond ticks.  Test doubles and
+    alternate adapters may instead return explicit second fields.  If neither
+    representation yields a valid word track, sentence intervals are derived
+    deterministically from the measured audio duration and marked estimated.
+    """
+
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("narration timing duration must be positive and finite")
+    rounded_duration = round(duration, 6)
+    if rounded_duration <= 0:
+        raise PermanentStepError(
+            "narration timing duration rounds to a non-positive schema value"
+        )
+    narration = str(script.get("narration", "")).strip()
+    words = _normalize_word_boundaries(word_boundaries, duration)
+    if len(words) > _MAX_TIMING_WORDS:
+        raise PermanentStepError(
+            "native narration timing exceeds the 10000 word interval limit"
+        )
+    word_timing_estimated = not words
+    sentences = [item.strip() for item in _SENTENCE_BREAK.split(narration) if item.strip()]
+    if not sentences:
+        sentences = [narration]
+    if len(sentences) > _MAX_TIMING_SEGMENTS:
+        raise PermanentStepError(
+            "script narration exceeds the 10000 segment narration timing limit"
+        )
+    segments = _aligned_timing_units(
+        tuple({"text": sentence} for sentence in sentences),
+        duration=duration,
+        words=words,
+        word_timing_estimated=word_timing_estimated,
+        unit_prefix="sentence",
+    )
+    raw_beats = script.get("beats")
+    has_authored_beats = (
+        isinstance(raw_beats, Sequence)
+        and not isinstance(raw_beats, (str, bytes))
+        and any(isinstance(item, Mapping) for item in raw_beats)
+    )
+    beats = normalize_beats(script) if has_authored_beats else ()
+    beat_units = tuple(
+        {
+            "id": beat.id,
+            "sequence": beat.sequence,
+            "text": beat.narration,
+        }
+        for beat in beats
+    )
+    aligned_beats = _aligned_timing_units(
+        beat_units,
+        duration=duration,
+        words=words,
+        word_timing_estimated=word_timing_estimated,
+        unit_prefix="beat",
+    )
+    span_estimated = any(
+        bool(item.get("estimated")) for item in (*segments, *aligned_beats)
+    )
+    return {
+        "schema_version": "1.0.0",
+        "operation": "audio.synthesize",
+        "provider": "edge-tts",
+        "source": (
+            "duration_weighted_sentence_estimate"
+            if word_timing_estimated
+            else "edge_word_boundary"
+        ),
+        "granularity": "sentence" if word_timing_estimated else "word",
+        "estimated": word_timing_estimated or span_estimated,
+        "word_timing_estimated": word_timing_estimated,
+        "duration_seconds": rounded_duration,
+        "audio_content_hash": audio_content_hash,
+        "script_content_hash": script_content_hash,
+        "words": list(words),
+        "segments": list(segments),
+        "beats": list(aligned_beats),
+    }
+
+
+def _normalize_word_boundaries(
+    values: Sequence[Mapping[str, Any]] | None,
+    duration: float,
+) -> tuple[dict[str, Any], ...]:
+    normalized: list[dict[str, Any]] = []
+    for raw in values or ():
+        if not isinstance(raw, Mapping):
+            continue
+        text = str(raw.get("text", "")).strip()
+        if not text:
+            continue
+        start = _finite_number(raw.get("start_seconds"))
+        end = _finite_number(raw.get("end_seconds"))
+        if start is None:
+            offset = _finite_number(raw.get("offset"))
+            start = offset / 10_000_000 if offset is not None else None
+        if end is None:
+            raw_duration = _finite_number(raw.get("duration"))
+            end = (
+                start + raw_duration / 10_000_000
+                if start is not None and raw_duration is not None
+                else None
+            )
+        if start is None or end is None or start < 0 or end <= start:
+            continue
+        clipped_start = min(duration, start)
+        clipped_end = min(duration, end)
+        if clipped_end <= clipped_start:
+            continue
+        rounded_start = round(clipped_start, 6)
+        rounded_end = round(clipped_end, 6)
+        if rounded_end <= rounded_start or rounded_end <= 0:
+            continue
+        normalized.append(
+            {
+                "ordinal": len(normalized),
+                "text": text,
+                "start_seconds": rounded_start,
+                "end_seconds": rounded_end,
+                "estimated": False,
+                "alignment_source": "native_word_boundary",
+            }
+        )
+    normalized.sort(key=lambda item: (item["start_seconds"], item["ordinal"]))
+    for ordinal, item in enumerate(normalized):
+        item["ordinal"] = ordinal
+    return tuple(normalized)
+
+
+def _aligned_timing_units(
+    units: Sequence[Mapping[str, Any]],
+    *,
+    duration: float,
+    words: Sequence[Mapping[str, Any]],
+    word_timing_estimated: bool,
+    unit_prefix: str,
+) -> tuple[dict[str, Any], ...]:
+    values = [dict(unit) for unit in units if str(unit.get("text", "")).strip()]
+    if not values:
+        return ()
+    native_cuts = _exact_word_aggregation_cuts(values, words, duration)
+    if native_cuts is not None:
+        cuts = native_cuts
+        alignment_estimated = False
+        alignment_source = "native_word_aggregation"
+    else:
+        weights = [_timing_weight(str(unit["text"])) for unit in values]
+        total_weight = sum(weights) or float(len(values))
+        cumulative = 0.0
+        cuts = [0.0]
+        internal_cut_count = len(values) - 1
+        native_candidates = sorted(
+            {
+                float(word["start_seconds"])
+                for word in words[1:]
+                if 0 < float(word["start_seconds"]) < duration
+            }
+        )
+        use_native_candidates = (
+            len(words) >= len(values)
+            and len(native_candidates) >= internal_cut_count
+        )
+        for cut_index, weight in enumerate(weights[:-1]):
+            cumulative += weight
+            target = duration * cumulative / total_weight
+            if use_native_candidates:
+                remaining_after = internal_cut_count - cut_index - 1
+                eligible = [value for value in native_candidates if value > cuts[-1]]
+                selectable = eligible[: len(eligible) - remaining_after]
+                if selectable:
+                    target = min(
+                        selectable,
+                        key=lambda value: (abs(value - target), value),
+                    )
+            cuts.append(max(cuts[-1], min(duration, target)))
+        cuts.append(duration)
+        alignment_estimated = True
+        alignment_source = (
+            "duration_weighted_sentence_estimate"
+            if word_timing_estimated
+            else "word_boundary_proportional_estimate"
+        )
+    result: list[dict[str, Any]] = []
+    for index, unit in enumerate(values):
+        start = cuts[index]
+        end = cuts[index + 1]
+        if end <= start:
+            raise PermanentStepError(
+                "narration timing unit has a non-positive interval"
+            )
+        rounded_start = round(start, 6)
+        rounded_end = round(end, 6)
+        if rounded_end <= rounded_start or rounded_end <= 0:
+            raise PermanentStepError(
+                "narration timing unit rounds to a non-positive interval"
+            )
+        result.append(
+            {
+                "id": str(unit.get("id") or f"{unit_prefix}-{index + 1:03d}"),
+                "sequence": _positive_int(unit.get("sequence"), index + 1),
+                "text": str(unit["text"]),
+                "start_seconds": rounded_start,
+                "end_seconds": rounded_end,
+                "estimated": alignment_estimated,
+                "alignment_source": alignment_source,
+            }
+        )
+    if result:
+        result[0]["start_seconds"] = 0.0
+        result[-1]["end_seconds"] = round(duration, 6)
+    return tuple(result)
+
+
+def _exact_word_aggregation_cuts(
+    units: Sequence[Mapping[str, Any]],
+    words: Sequence[Mapping[str, Any]],
+    duration: float,
+) -> list[float] | None:
+    """Return native cuts only when unit text is an exact ordered token grouping."""
+
+    if not words or len(units) > len(words):
+        return None
+    unit_tokens = [_timing_token_text(str(unit.get("text", ""))) for unit in units]
+    word_tokens = [_timing_token_text(str(word.get("text", ""))) for word in words]
+    if not all(unit_tokens) or not all(word_tokens):
+        return None
+    if "".join(unit_tokens) != "".join(word_tokens):
+        return None
+    cumulative_words: dict[int, int] = {}
+    total = 0
+    for index, token in enumerate(word_tokens, start=1):
+        total += len(token)
+        cumulative_words[total] = index
+    cuts = [0.0]
+    cumulative_units = 0
+    for token in unit_tokens[:-1]:
+        cumulative_units += len(token)
+        word_index = cumulative_words.get(cumulative_units)
+        if word_index is None or word_index >= len(words):
+            return None
+        cuts.append(float(words[word_index]["start_seconds"]))
+    cuts.append(duration)
+    if any(end <= start for start, end in pairwise(cuts)):
+        return None
+    return cuts
+
+
+def _timing_token_text(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z\u3400-\u9fff]+", "", value).casefold()
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _timing_weight(value: str) -> float:
+    visible = len(re.sub(r"\s+", "", value))
+    pauses = 0.7 * len(re.findall(r"[，、,:：]", value))
+    stops = 1.8 * len(re.findall(r"[。！？!?；;]", value))
+    return max(1.0, visible + pauses + stops)
+
+
+def _positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
 
 
 def _target_duration_seconds(snapshot: object) -> float | None:
     root = snapshot if isinstance(snapshot, Mapping) else {}
+    if _is_webpage_video_snapshot(root):
+        value = root.get("duration_seconds")
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if 1 <= number <= 86_400 else None
     framefactory = root.get("_framefactory", {})
     framefactory = framefactory if isinstance(framefactory, Mapping) else {}
     composition = framefactory.get("composition_snapshot", {})
@@ -542,6 +968,12 @@ def _target_duration_seconds(snapshot: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if 1 <= number <= 86_400 else None
+
+
+def _is_webpage_video_snapshot(snapshot: object) -> bool:
+    root = snapshot if isinstance(snapshot, Mapping) else {}
+    value = root.get("webpage_video_run_id")
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _duration_fits(actual: float, target: float, tolerance: float) -> bool:
@@ -801,6 +1233,8 @@ def _segment_command(
     background_color: str = "101218",
     source_start_seconds: float = 0.0,
     source_end_seconds: float | None = None,
+    image_motion: str = "static",
+    motion_focus: object = None,
 ) -> tuple[str, ...]:
     is_image = source.suffix.lower() in _IMAGE_SUFFIXES
     input_args: tuple[str, ...]
@@ -829,6 +1263,14 @@ def _segment_command(
         media_fit=media_fit,
         background_color=background_color,
     )
+    if is_image and image_motion == "zoom_in":
+        video_filter += _slow_zoom_filter(
+            width,
+            height,
+            frame_rate,
+            duration,
+            motion_focus,
+        )
     if padding > 0:
         video_filter += f",tpad=stop_mode=clone:stop_duration={padding:.6f}"
     video_filter += f",trim=duration={duration:.6f},setpts=PTS-STARTPTS"
@@ -872,6 +1314,15 @@ def _media_filter(
     else:
         viewport_y = 0
         viewport_height = height
+    if media_fit == "blurred_contain":
+        return (
+            "split=2[bg][fg];"
+            f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},gblur=sigma=28[bgfill];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fgfit];"
+            "[bgfill][fgfit]overlay=(W-w)/2:(H-h)/2,"
+            f"fps={frame_rate},format=yuv420p"
+        )
     ratio = "increase" if media_fit == "cover" else "decrease"
     fitted = f"scale={width}:{viewport_height}:force_original_aspect_ratio={ratio}"
     if media_fit == "cover":
@@ -900,6 +1351,12 @@ def _render_profile(snapshot: object, fallback: LegacyMediaSettings) -> _RenderP
     resolution = resolution if isinstance(resolution, Mapping) else {}
     subtitles = production.get("subtitles", {})
     subtitles = subtitles if isinstance(subtitles, Mapping) else {}
+    # Browser regions frequently have landscape or content-height dimensions.
+    # Letterboxing those assets inside a portrait webpage video leaves most of
+    # the frame black and makes the detail motion ineffective.  Webpage runs
+    # therefore use a dedicated full-bleed fit; other pipelines continue to
+    # honour their immutable production setting.
+    webpage_media_fit = "blurred_contain" if _is_webpage_video_snapshot(root) else None
 
     def integer(value: object, default: int, minimum: int, maximum: int) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum:
@@ -914,7 +1371,12 @@ def _render_profile(snapshot: object, fallback: LegacyMediaSettings) -> _RenderP
         height=integer(resolution.get("height"), fallback.height, 240, 7680),
         frame_rate=integer(production.get("frame_rate"), fallback.frame_rate, 1, 120),
         layout=choice(production.get("layout"), "full_frame", {"full_frame", "editorial"}),
-        media_fit=choice(production.get("media_fit"), "cover", {"cover", "contain"}),
+        media_fit=webpage_media_fit
+        or choice(
+            production.get("media_fit"),
+            "cover",
+            {"cover", "contain", "blurred_contain"},
+        ),
         subtitle_enabled=(
             subtitles.get("enabled")
             if isinstance(subtitles.get("enabled"), bool)
@@ -973,6 +1435,7 @@ def _build_ass(
     script: object,
     duration: float,
     *,
+    timing: object | None = None,
     width: int,
     height: int,
     layout: str = "full_frame",
@@ -992,6 +1455,7 @@ def _build_ass(
     maximum_units = max(8, int(safe_width / max(1, font_size)))
     chunks = _caption_cues(narration, maximum_units, max_lines)
     total_characters = max(1, sum(len(value.replace("\n", "")) for value in chunks))
+    timed_chunks = _timed_caption_cues(timing, maximum_units, max_lines, duration)
     margin_vertical = max(
         40,
         round(height * (0.26 if subtitle_position == "lower_third" else 0.14)),
@@ -1010,9 +1474,9 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Microsoft YaHei,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,0,0,1,4,1,2,{margin_horizontal},{margin_horizontal},{margin_vertical},1
-Style: AiLabel,Microsoft YaHei,{max(18, font_size // 2)},&H00CCCCCC,&H00CCCCCC,&H00000000,&H50000000,0,0,0,0,100,100,0,0,1,2,0,7,24,24,24,1
-Style: Title,Microsoft YaHei,{title_size},&H00F1E8D2,&H00F1E8D2,&H00101218,&H00101218,-1,0,0,0,100,100,2,0,1,2,0,8,{margin_horizontal},{margin_horizontal},{max(32, round(height * 0.065))},1
+Style: Default,Noto Sans CJK SC,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,0,0,1,4,1,2,{margin_horizontal},{margin_horizontal},{margin_vertical},1
+Style: AiLabel,Noto Sans CJK SC,{max(18, font_size // 2)},&H00CCCCCC,&H00CCCCCC,&H00000000,&H50000000,0,0,0,0,100,100,0,0,1,2,0,7,24,24,24,1
+Style: Title,Noto Sans CJK SC,{title_size},&H00F1E8D2,&H00F1E8D2,&H00101218,&H00101218,-1,0,0,0,100,100,2,0,1,2,0,8,{margin_horizontal},{margin_horizontal},{max(32, round(height * 0.065))},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1024,6 +1488,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         )
     if not subtitle_enabled:
         return header + "\n".join(lines) + "\n"
+    if timed_chunks:
+        for start, end, chunk in timed_chunks:
+            lines.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{_ass_text(chunk)}"
+            )
+        return header + "\n".join(lines) + "\n"
     cursor = 0.0
     for index, chunk in enumerate(chunks):
         part = duration * len(chunk.replace("\n", "")) / total_characters
@@ -1033,6 +1503,103 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         )
         cursor = end
     return header + "\n".join(lines) + "\n"
+
+
+def _timed_caption_cues(
+    timing: object,
+    maximum_units: int,
+    max_lines: int,
+    duration: float,
+) -> tuple[tuple[float, float, str], ...]:
+    if not isinstance(timing, Mapping):
+        return ()
+    raw_words = timing.get("words")
+    if not isinstance(raw_words, list) or not raw_words:
+        raise PermanentStepError("narration timing contains no word cues")
+    words: list[tuple[str, float, float]] = []
+    prior_start = -1.0
+    for raw in raw_words:
+        if not isinstance(raw, Mapping) or bool(raw.get("estimated")):
+            raise PermanentStepError("narration timing word cue is estimated or malformed")
+        text = str(raw.get("text") or "").strip()
+        start = _finite_number(raw.get("start_seconds"))
+        end = _finite_number(raw.get("end_seconds"))
+        if (
+            not text
+            or start is None
+            or end is None
+            or start < 0
+            or end <= start
+            or start < prior_start
+            or end > duration + 0.25
+        ):
+            raise PermanentStepError("narration timing word cue is outside audio duration")
+        prior_start = start
+        words.append((text, start, min(duration, end)))
+
+    groups: list[list[tuple[str, float, float]]] = []
+    current: list[tuple[str, float, float]] = []
+    for word in words:
+        candidate = [*current, word]
+        text = _join_timing_words(candidate)
+        if current and len(_wrap_lines(text, maximum_units)) > max_lines:
+            groups.append(current)
+            current = [word]
+        else:
+            current = candidate
+    if current:
+        groups.append(current)
+    return tuple(
+        (
+            group[0][1],
+            group[-1][2],
+            "\n".join(_wrap_lines(_join_timing_words(group), maximum_units)[:max_lines]),
+        )
+        for group in groups
+    )
+
+
+def _slow_zoom_filter(
+    width: int,
+    height: int,
+    frame_rate: int,
+    duration: float,
+    focus: object,
+) -> str:
+    value = focus if isinstance(focus, Mapping) else {}
+    focus_x = min(
+        1.0, max(0.0, _number(value.get("x", 0.5)) if value else 0.5)
+    )
+    focus_y = min(
+        1.0, max(0.0, _number(value.get("y", 0.5)) if value else 0.5)
+    )
+    last_frame = max(1, round(duration * frame_rate) - 1)
+    zoom = (
+        "1+0.10*(0.5-0.5*cos(PI*"
+        f"min(on,{last_frame})/{last_frame}))"
+    )
+    x = f"max(0,min(iw-iw/zoom,{focus_x:.6f}*iw-iw/(2*zoom)))"
+    y = f"max(0,min(ih-ih/zoom,{focus_y:.6f}*ih-ih/(2*zoom)))"
+    return (
+        f",zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
+        f"s={width}x{height}:fps={frame_rate},format=yuv420p"
+    )
+
+
+def _join_timing_words(words: Sequence[tuple[str, float, float]]) -> str:
+    result = ""
+    for text, _start, _end in words:
+        separator = (
+            " "
+            if result
+            and result[-1:].isascii()
+            and result[-1:].isalnum()
+            and text[:1].isascii()
+            and text[:1].isalnum()
+            else ""
+        )
+        result += separator + text
+    return result
 
 
 def _ass_time(seconds: float) -> str:

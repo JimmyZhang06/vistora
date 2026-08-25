@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -91,12 +91,15 @@ class Scheduler:
             raise ValueError(f"run already exists with different input: {run_id}")
 
         existing_by_key = {
-            record.step_key: record for record in self.store.list_steps(workspace_id, run_id)
+            record.step_key: record
+            for record in self.store.list_steps(workspace_id, run_id)
         }
         expected_keys = {definition.key for definition in definitions}
         unexpected = set(existing_by_key) - expected_keys
         if unexpected:
-            raise ValueError(f"run already exists with different steps: {sorted(unexpected)!r}")
+            raise ValueError(
+                f"run already exists with different steps: {sorted(unexpected)!r}"
+            )
 
         for definition in definitions:
             candidate_step = self._step_record(workspace_id, run_id, definition, now)
@@ -120,7 +123,13 @@ class Scheduler:
         self.schedule_ready(workspace_id, run_id)
         return self._sync_run(workspace_id, run_id)
 
-    def schedule_ready(self, workspace_id: str, run_id: str) -> int:
+    def schedule_ready(
+        self,
+        workspace_id: str,
+        run_id: str,
+        *,
+        queue_name: str | None = None,
+    ) -> int:
         """Publish all due steps whose dependencies have succeeded.
 
         Publishing may happen more than once after a crash.  Queue messages carry
@@ -139,8 +148,10 @@ class Scheduler:
                 step
                 for step in steps
                 if step.status in {ExecutionState.QUEUED, ExecutionState.RETRYING}
+                and (queue_name is None or step.queue_name == queue_name)
                 and any(
-                    by_key[key].status in {ExecutionState.FAILED, ExecutionState.CANCELLED}
+                    by_key[key].status
+                    in {ExecutionState.FAILED, ExecutionState.CANCELLED}
                     for key in step.dependencies
                 )
             ]
@@ -163,9 +174,12 @@ class Scheduler:
         for snapshot in steps:
             if snapshot.status not in {ExecutionState.QUEUED, ExecutionState.RETRYING}:
                 continue
+            if queue_name is not None and snapshot.queue_name != queue_name:
+                continue
             dependencies = [by_key[key] for key in snapshot.dependencies]
             if snapshot.available_at > now or not all(
-                dependency.status is ExecutionState.SUCCEEDED for dependency in dependencies
+                dependency.status is ExecutionState.SUCCEEDED
+                for dependency in dependencies
             ):
                 continue
             self.queue.enqueue(
@@ -193,6 +207,7 @@ class Scheduler:
         decision: ReviewDecision,
         actor_id: str,
         comment: str | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> StepRecord:
         record = self._require_step(workspace_id, step_id)
         updated = review_step(
@@ -201,6 +216,7 @@ class Scheduler:
             actor_id=actor_id,
             comment=comment,
             at=self.clock.now(),
+            metadata=metadata,
         )
         saved = self.store.save_step(updated, expected_revision=record.revision)
         if saved.status is ExecutionState.RETRYING:
@@ -231,13 +247,15 @@ class Scheduler:
                     pass
         return self._sync_run(workspace_id, run_id)
 
-    def recover(self) -> int:
+    def recover(self, *, queue_name: str | None = None) -> int:
         """Recover due work and expired worker leases after a restart."""
 
         now = self.clock.now()
         touched_runs: set[tuple[str, str]] = set()
         recovered = 0
         for snapshot in self.store.list_recoverable(now):
+            if queue_name is not None and snapshot.queue_name != queue_name:
+                continue
             current = self.store.get_step(snapshot.workspace_id, snapshot.step_id)
             if current is None:
                 continue
@@ -251,7 +269,9 @@ class Scheduler:
                 )
                 updated = fail_step(current, error, retry=True, at=now)
                 try:
-                    saved = self.store.save_step(updated, expected_revision=current.revision)
+                    saved = self.store.save_step(
+                        updated, expected_revision=current.revision
+                    )
                 except RevisionConflictError:
                     continue
                 if saved.status is ExecutionState.RETRYING:
@@ -269,7 +289,11 @@ class Scheduler:
             touched_runs.add((current.workspace_id, current.run_id))
         for workspace_id, run_id in touched_runs:
             try:
-                recovered += self.schedule_ready(workspace_id, run_id)
+                recovered += self.schedule_ready(
+                    workspace_id,
+                    run_id,
+                    queue_name=queue_name,
+                )
             except (RuntimeError, ValueError) as exc:
                 logger.error(
                     "run recovery isolated workspace=%s run=%s error=%s",
@@ -292,7 +316,11 @@ class Scheduler:
                     (step.started_at for step in steps if step.started_at is not None),
                     default=now,
                 )
-            completed = now if status.terminal and run.completed_at is None else run.completed_at
+            completed = (
+                now
+                if status.terminal and run.completed_at is None
+                else run.completed_at
+            )
             if not status.terminal:
                 completed = None
             updated = replace(
@@ -308,7 +336,9 @@ class Scheduler:
                 return self.store.save_run(updated, expected_revision=run.revision)
             except RevisionConflictError:
                 continue
-        raise RevisionConflictError(f"could not synchronize run after repeated conflicts: {run_id}")
+        raise RevisionConflictError(
+            f"could not synchronize run after repeated conflicts: {run_id}"
+        )
 
     def _enqueue(self, step: StepRecord) -> None:
         self.queue.enqueue(
@@ -330,7 +360,9 @@ class Scheduler:
         for step in steps:
             missing = set(step.dependencies) - set(by_key)
             if missing:
-                raise ValueError(f"step {step.key} has unknown dependencies: {sorted(missing)!r}")
+                raise ValueError(
+                    f"step {step.key} has unknown dependencies: {sorted(missing)!r}"
+                )
 
         visiting: set[str] = set()
         visited: set[str] = set()
@@ -350,7 +382,9 @@ class Scheduler:
             visit(key)
 
     @staticmethod
-    def _step_record(workspace_id: str, run_id: str, step: RunStep, now: datetime) -> StepRecord:
+    def _step_record(
+        workspace_id: str, run_id: str, step: RunStep, now: datetime
+    ) -> StepRecord:
         return StepRecord(
             workspace_id=workspace_id,
             run_id=run_id,
@@ -427,13 +461,27 @@ class WorkerRuntime:
         )
         if delivery is None:
             return False
-        await self._process_delivery(delivery)
+        await self._process_delivery(delivery, reserved_queue_name=queue_name)
         return True
 
-    async def _process_delivery(self, delivery: QueueDelivery) -> None:
+    async def _process_delivery(
+        self,
+        delivery: QueueDelivery,
+        *,
+        reserved_queue_name: str,
+    ) -> None:
         message = delivery.message
         record = self.scheduler.store.get_step(message.workspace_id, message.step_id)
         if record is None or record.run_id != message.run_id:
+            self._safe_ack(delivery)
+            return
+        # Fence cross-queue injection before any durable state transition. A
+        # message physically placed on browser-capture cannot run a normal step
+        # merely by naming a valid step_id (or vice versa).
+        if (
+            message.queue_name != reserved_queue_name
+            or record.queue_name != reserved_queue_name
+        ):
             self._safe_ack(delivery)
             return
         if record.status not in {ExecutionState.QUEUED, ExecutionState.RETRYING}:
@@ -452,7 +500,9 @@ class WorkerRuntime:
         if run.cancellation_requested_at is not None or record.cancellation_requested:
             cancelled = request_cancellation(record, at=self.scheduler.clock.now())
             try:
-                self.scheduler.store.save_step(cancelled, expected_revision=record.revision)
+                self.scheduler.store.save_step(
+                    cancelled, expected_revision=record.revision
+                )
             except RevisionConflictError:
                 pass
             self._safe_ack(delivery)
@@ -460,7 +510,9 @@ class WorkerRuntime:
             return
         dependencies = {
             step.step_key: step
-            for step in self.scheduler.store.list_steps(record.workspace_id, record.run_id)
+            for step in self.scheduler.store.list_steps(
+                record.workspace_id, record.run_id
+            )
         }
         if not all(
             dependencies.get(key) is not None
@@ -479,7 +531,9 @@ class WorkerRuntime:
         )
         try:
             running = start_step(record, lease, at=now)
-            running = self.scheduler.store.save_step(running, expected_revision=record.revision)
+            running = self.scheduler.store.save_step(
+                running, expected_revision=record.revision
+            )
             self.scheduler._sync_run(running.workspace_id, running.run_id)
         except RevisionConflictError:
             self._safe_ack(delivery)
@@ -488,21 +542,30 @@ class WorkerRuntime:
         holder = [running]
 
         def cancellation_requested() -> bool:
-            current = self.scheduler.store.get_step(running.workspace_id, running.step_id)
-            current_run = self.scheduler.store.get_run(running.workspace_id, running.run_id)
+            current = self.scheduler.store.get_step(
+                running.workspace_id, running.step_id
+            )
+            current_run = self.scheduler.store.get_run(
+                running.workspace_id, running.run_id
+            )
             return (
                 current is None
                 or current.cancellation_requested
                 or current.status is not ExecutionState.RUNNING
                 or current.lease is None
                 or current.lease.token != delivery.receipt
-                or (current_run is not None and current_run.cancellation_requested_at is not None)
+                or (
+                    current_run is not None
+                    and current_run.cancellation_requested_at is not None
+                )
             )
 
         token = CancellationToken(cancellation_requested)
 
         def heartbeat() -> None:
-            current = self.scheduler.store.get_step(running.workspace_id, running.step_id)
+            current = self.scheduler.store.get_step(
+                running.workspace_id, running.step_id
+            )
             now = self.scheduler.clock.now()
             if (
                 current is None
@@ -525,7 +588,9 @@ class WorkerRuntime:
                     expected_revision=current.revision,
                 )
             except RevisionConflictError as exc:
-                raise LeaseLost(f"lease concurrently changed for step: {running.step_id}") from exc
+                raise LeaseLost(
+                    f"lease concurrently changed for step: {running.step_id}"
+                ) from exc
 
         input_artifacts = self._dependency_artifacts(running)
         context = StepContext(
@@ -544,6 +609,22 @@ class WorkerRuntime:
                 if running.review is not None and running.review.comment
                 else None
             ),
+            approved_dependency_step_ids=tuple(
+                dependency.step_id
+                for key in running.dependencies
+                if (dependency := dependencies.get(key)) is not None
+                and dependency.status is ExecutionState.SUCCEEDED
+                and dependency.review is not None
+                and dependency.review.decision is ReviewDecision.APPROVE
+            ),
+            approved_dependency_reviews={
+                dependency.step_id: dependency.review.metadata
+                for key in running.dependencies
+                if (dependency := dependencies.get(key)) is not None
+                and dependency.status is ExecutionState.SUCCEEDED
+                and dependency.review is not None
+                and dependency.review.decision is ReviewDecision.APPROVE
+            },
         )
 
         async def maintain_lease() -> None:
@@ -593,16 +674,20 @@ class WorkerRuntime:
                 ),
                 at=self.scheduler.clock.now(),
             )
-            saved = self.scheduler.store.save_step(completed, expected_revision=current.revision)
+            saved = self.scheduler.store.save_step(
+                completed, expected_revision=current.revision
+            )
         except StepCancelled:
             self._cancel_claimed(running, delivery)
             return
         except LeaseLost:
             # The durable running claim is intentionally left for lease recovery.
-            self.scheduler.recover()
+            self.scheduler.recover(queue_name=reserved_queue_name)
             return
         except RevisionConflictError:
-            current = self.scheduler.store.get_step(running.workspace_id, running.step_id)
+            current = self.scheduler.store.get_step(
+                running.workspace_id, running.step_id
+            )
             if current is not None and current.cancellation_requested:
                 self._cancel_claimed(current, delivery)
             else:
@@ -619,7 +704,11 @@ class WorkerRuntime:
 
         self._safe_ack(delivery)
         if saved.status is ExecutionState.SUCCEEDED:
-            self.scheduler.schedule_ready(saved.workspace_id, saved.run_id)
+            self.scheduler.schedule_ready(
+                saved.workspace_id,
+                saved.run_id,
+                queue_name=reserved_queue_name,
+            )
         self.scheduler._sync_run(saved.workspace_id, saved.run_id)
 
     def _cancel_claimed(self, claimed: StepRecord, delivery: QueueDelivery) -> None:
@@ -632,13 +721,17 @@ class WorkerRuntime:
         ):
             cancelled = cancel_running_step(current, at=self.scheduler.clock.now())
             try:
-                self.scheduler.store.save_step(cancelled, expected_revision=current.revision)
+                self.scheduler.store.save_step(
+                    cancelled, expected_revision=current.revision
+                )
             except RevisionConflictError:
                 pass
         self._safe_ack(delivery)
         self.scheduler._sync_run(claimed.workspace_id, claimed.run_id)
 
-    def _fail_claimed(self, claimed: StepRecord, delivery: QueueDelivery, exc: Exception) -> None:
+    def _fail_claimed(
+        self, claimed: StepRecord, delivery: QueueDelivery, exc: Exception
+    ) -> None:
         current = self.scheduler.store.get_step(claimed.workspace_id, claimed.step_id)
         if (
             current is None
@@ -651,21 +744,26 @@ class WorkerRuntime:
         retryable = isinstance(exc, (RetryableStepError, LeaseLost)) or not isinstance(
             exc, (PermanentStepError, LookupError, ValueError, TypeError)
         )
+        default_code = "step_retryable_error" if retryable else "step_permanent_error"
+        error_code = getattr(exc, "code", default_code)
+        error_details = getattr(exc, "details", {})
+        if not isinstance(error_code, str) or not error_code:
+            error_code = default_code
+        if not isinstance(error_details, Mapping):
+            error_details = {}
         error = StepError(
-            code="step_retryable_error" if retryable else "step_permanent_error",
+            code=error_code,
             message=str(exc) or exc.__class__.__name__,
             retryable=retryable,
+            details=error_details,
         )
-        failed = fail_step(current, error, retry=retryable, at=self.scheduler.clock.now())
+        failed = fail_step(
+            current, error, retry=retryable, at=self.scheduler.clock.now()
+        )
         retry_floor = (
-            exc.retry_after_seconds
-            if isinstance(exc, RetryableStepError)
-            else None
+            exc.retry_after_seconds if isinstance(exc, RetryableStepError) else None
         )
-        if (
-            failed.status is ExecutionState.RETRYING
-            and retry_floor is not None
-        ):
+        if failed.status is ExecutionState.RETRYING and retry_floor is not None:
             failed = replace(
                 failed,
                 available_at=max(
@@ -674,7 +772,9 @@ class WorkerRuntime:
                 ),
             )
         try:
-            saved = self.scheduler.store.save_step(failed, expected_revision=current.revision)
+            saved = self.scheduler.store.save_step(
+                failed, expected_revision=current.revision
+            )
         except RevisionConflictError:
             self._safe_ack(delivery)
             return
@@ -685,7 +785,11 @@ class WorkerRuntime:
                 self.scheduler._enqueue(saved)
         else:
             self._safe_ack(delivery)
-            self.scheduler.schedule_ready(saved.workspace_id, saved.run_id)
+            self.scheduler.schedule_ready(
+                saved.workspace_id,
+                saved.run_id,
+                queue_name=delivery.message.queue_name,
+            )
         self.scheduler._sync_run(saved.workspace_id, saved.run_id)
 
     def _dependency_artifacts(self, record: StepRecord) -> tuple[ArtifactRef, ...]:
@@ -695,7 +799,9 @@ class WorkerRuntime:
             if step.step_key not in dependencies:
                 continue
             artifacts.extend(
-                artifact for artifact in step.output_artifacts if isinstance(artifact, ArtifactRef)
+                artifact
+                for artifact in step.output_artifacts
+                if isinstance(artifact, ArtifactRef)
             )
         return tuple(artifacts)
 

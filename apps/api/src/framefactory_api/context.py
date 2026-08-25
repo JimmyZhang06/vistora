@@ -7,7 +7,15 @@ from uuid import UUID
 from .settings import Settings
 
 DEFAULT_OWNER_PERMISSIONS = frozenset(
-    {"assets:read", "assets:write", "assets:review", "assets:download"}
+    {
+        "assets:read",
+        "assets:write",
+        "assets:review",
+        "assets:download",
+        "url_capture:read",
+        "url_capture:write",
+        "url_capture:review",
+    }
 )
 
 

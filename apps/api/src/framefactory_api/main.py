@@ -37,6 +37,15 @@ from .context import (
 )
 from .contracts import ContractValidator
 from .errors import ApiError, ValidationError
+from .full_ai import (
+    FullAiControlService,
+    FullAiEstimateRequest,
+    FullAiEstimateResponse,
+    FullAiOptionsResponse,
+    FullAiRunCreate,
+    FullAiRunResponse,
+    FullAiRuntimeConfiguration,
+)
 from .models import (
     AssetAcquisitionCreate,
     AssetBatchReanalysis,
@@ -56,6 +65,7 @@ from .models import (
     GenerationBatchCreate,
     GenerationBatchRetryFailed,
     HealthResponse,
+    LibraryBuildJobCreate,
     PublishSkillVersionRequest,
     RemoteAssetImportCreate,
     ResourcePage,
@@ -79,6 +89,23 @@ from .storage import (
     ObjectNotFound,
     ObjectStorage,
     ObjectStorageUnavailable,
+)
+from .webpage_video import (
+    WebpageArtifactResponse,
+    WebpageCaptureResponse,
+    WebpageCaptureReviewRequest,
+    WebpagePageResponse,
+    WebpageScopeContent,
+    WebpageScopeReviewRequest,
+    WebpageSiteManifestResponse,
+    WebpageSiteResponse,
+    WebpageStoryboardContent,
+    WebpageStoryboardReviewRequest,
+    WebpageVideoControlService,
+    WebpageVideoOptionsResponse,
+    WebpageVideoRunCreate,
+    WebpageVideoRunResponse,
+    WebpageVideoRuntimeConfiguration,
 )
 
 WorkspaceHeader = Annotated[UUID | None, Header(alias="X-Workspace-Id")]
@@ -109,6 +136,14 @@ def _get_account_service(request: Request) -> AccountService:
     return request.app.state.account_service
 
 
+def _get_full_ai_service(request: Request) -> FullAiControlService:
+    return request.app.state.full_ai_service
+
+
+def _get_webpage_video_service(request: Request) -> WebpageVideoControlService:
+    return request.app.state.webpage_video_service
+
+
 def _get_context(
     provider: Annotated[WorkspaceContextProvider, Depends(_get_context_provider)],
     requested_workspace_id: WorkspaceHeader = None,
@@ -119,6 +154,10 @@ def _get_context(
 ServiceDependency = Annotated[ControlService, Depends(_get_service)]
 ContextDependency = Annotated[WorkspaceContext, Depends(_get_context)]
 AccountServiceDependency = Annotated[AccountService, Depends(_get_account_service)]
+FullAiServiceDependency = Annotated[FullAiControlService, Depends(_get_full_ai_service)]
+WebpageVideoServiceDependency = Annotated[
+    WebpageVideoControlService, Depends(_get_webpage_video_service)
+]
 
 
 def _page(resources: Sequence[Resource], limit: int, cursor: str | None) -> ResourcePage:
@@ -256,6 +295,171 @@ def _require_asset_permission(context: WorkspaceContext, permission: str) -> Non
         )
 
 
+def _require_url_capture_permission(
+    context: WorkspaceContext, permission: str
+) -> None:
+    if permission not in context.permissions:
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN,
+            "URL_CAPTURE_PERMISSION_DENIED",
+            "The current identity is not allowed to perform this URL capture operation",
+            details={"required_permission": permission},
+        )
+
+
+async def _sign_webpage_artifact(
+    artifact: WebpageArtifactResponse | None,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpageArtifactResponse | None:
+    if artifact is None:
+        return None
+    if storage is None:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "WEBPAGE_VIDEO_OBJECT_STORAGE_UNAVAILABLE",
+            "Object storage is unavailable for webpage-video preview delivery",
+        )
+    persisted = await repository.get_artifact(context.workspace_id, artifact.id)
+    if persisted.get("content_hash") != artifact.sha256:
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "WEBPAGE_VIDEO_ARTIFACT_CHANGED",
+            "The persisted artifact no longer matches the reviewed content hash",
+            details={"artifact_id": str(artifact.id)},
+        )
+    locator = ObjectLocator(
+        key=str(persisted["object_key"]),
+        sha256=artifact.sha256,
+        content_type=artifact.media_type,
+    )
+    try:
+        signed = await storage.presign_download(
+            context.workspace_id, locator, expires_in=900
+        )
+    except (ObjectNotFound, ObjectIntegrityError, ObjectStorageUnavailable) as exc:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "WEBPAGE_VIDEO_ARTIFACT_UNAVAILABLE",
+            "The webpage-video artifact could not be delivered",
+            details={"artifact_id": str(artifact.id)},
+        ) from exc
+    return artifact.model_copy(
+        update={
+            "preview_url": signed.url,
+            "download_url": signed.url,
+            "url_expires_at": signed.expires_at,
+        }
+    )
+
+
+async def _sign_webpage_capture(
+    capture: WebpageCaptureResponse,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpageCaptureResponse:
+    artifact = await _sign_webpage_artifact(
+        capture.artifact,
+        context=context,
+        repository=repository,
+        storage=storage,
+    )
+    return capture.model_copy(update={"artifact": artifact})
+
+
+async def _sign_webpage_run(
+    resource: WebpageVideoRunResponse,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpageVideoRunResponse:
+    final_video = await _sign_webpage_artifact(
+        resource.final_video,
+        context=context,
+        repository=repository,
+        storage=storage,
+    )
+    return resource.model_copy(update={"final_video": final_video})
+
+
+async def _sign_webpage_page(
+    page: WebpagePageResponse,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpagePageResponse:
+    screenshot = await _sign_webpage_artifact(
+        page.screenshot, context=context, repository=repository, storage=storage
+    )
+    regions = []
+    for region in page.regions:
+        artifact = await _sign_webpage_artifact(
+            region.artifact, context=context, repository=repository, storage=storage
+        )
+        regions.append(region.model_copy(update={"artifact": artifact}))
+    return page.model_copy(update={"screenshot": screenshot, "regions": regions})
+
+
+async def _sign_webpage_site_manifest(
+    manifest: WebpageSiteManifestResponse | None,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpageSiteManifestResponse | None:
+    if manifest is None:
+        return None
+    artifact = await _sign_webpage_artifact(
+        manifest.artifact, context=context, repository=repository, storage=storage
+    )
+    content = manifest.content
+    if isinstance(content, WebpageScopeContent):
+        pages = [
+            await _sign_webpage_page(
+                page, context=context, repository=repository, storage=storage
+            )
+            for page in content.pages
+        ]
+        content = content.model_copy(update={"pages": pages})
+    elif isinstance(content, WebpageStoryboardContent):
+        pages = [
+            await _sign_webpage_page(
+                page, context=context, repository=repository, storage=storage
+            )
+            for page in content.pages
+        ]
+        shots = []
+        for shot in content.shots:
+            signed = await _sign_webpage_artifact(
+                shot.artifact, context=context, repository=repository, storage=storage
+            )
+            shots.append(shot.model_copy(update={"artifact": signed}))
+        content = content.model_copy(update={"pages": pages, "shots": shots})
+    return manifest.model_copy(update={"artifact": artifact, "content": content})
+
+
+async def _sign_webpage_site(
+    site: WebpageSiteResponse,
+    *,
+    context: WorkspaceContext,
+    repository: ControlRepository,
+    storage: ObjectStorage | None,
+) -> WebpageSiteResponse:
+    scope = await _sign_webpage_site_manifest(
+        site.scope, context=context, repository=repository, storage=storage
+    )
+    storyboard = await _sign_webpage_site_manifest(
+        site.storyboard, context=context, repository=repository, storage=storage
+    )
+    return site.model_copy(update={"scope": scope, "storyboard": storyboard})
+
+
 async def _enqueue_asset_analysis(
     queue: JobQueue,
     *,
@@ -332,6 +536,90 @@ def create_app(
                 worker_capabilities=resolved_settings.worker_capabilities,
             )
             application.state.account_service = AccountService(resolved_repository)
+            application.state.full_ai_service = FullAiControlService(
+                resolved_repository,
+                FullAiRuntimeConfiguration(
+                    provider_name=resolved_settings.full_ai_provider_name,
+                    model_id=resolved_settings.full_ai_model_id,
+                    cost_per_second_minor=(
+                        resolved_settings.full_ai_cost_per_second_minor
+                    ),
+                    credit_unit_minor=resolved_settings.full_ai_credit_unit_minor,
+                    worker_capabilities=resolved_settings.worker_capabilities,
+                    queue_available=resolved_queue is not None,
+                    object_storage_available=resolved_storage is not None,
+                    terms_reference=resolved_settings.full_ai_terms_reference,
+                    terms_content_hash=resolved_settings.full_ai_terms_content_hash,
+                    terms_captured_at=resolved_settings.full_ai_terms_captured_at,
+                    pricing_reference=resolved_settings.full_ai_pricing_reference,
+                    pricing_content_hash=resolved_settings.full_ai_pricing_content_hash,
+                    pricing_captured_at=resolved_settings.full_ai_pricing_captured_at,
+                    output_rights_confirmed=(
+                        resolved_settings.full_ai_output_rights_confirmed
+                    ),
+                    output_rights_license_basis=(
+                        resolved_settings.full_ai_output_rights_license_basis
+                    ),
+                ),
+                queue=resolved_queue,
+                validate_scheduler_run=lambda value: validator.validate("run", value),
+            )
+            application.state.webpage_video_service = WebpageVideoControlService(
+                resolved_repository,
+                WebpageVideoRuntimeConfiguration(
+                    worker_capabilities=resolved_settings.worker_capabilities,
+                    queue_available=resolved_queue is not None,
+                    object_storage_available=resolved_storage is not None,
+                    public_delivery_available=(
+                        resolved_storage is not None
+                        and (
+                            (
+                                getattr(
+                                    getattr(resolved_storage, "settings", None),
+                                    "public_endpoint_url",
+                                    None,
+                                )
+                                or getattr(
+                                    getattr(resolved_storage, "settings", None),
+                                    "endpoint_url",
+                                    None,
+                                )
+                            )
+                            in {None, ""}
+                            or str(
+                                getattr(
+                                    getattr(resolved_storage, "settings", None),
+                                    "public_endpoint_url",
+                                    None,
+                                )
+                                or getattr(
+                                    getattr(resolved_storage, "settings", None),
+                                    "endpoint_url",
+                                    "",
+                                )
+                            ).startswith("https://")
+                            or (
+                                bool(
+                                    getattr(
+                                        getattr(resolved_storage, "settings", None),
+                                        "allow_insecure_loopback_public_endpoint",
+                                        False,
+                                    )
+                                )
+                                and bool(
+                                    getattr(
+                                        getattr(resolved_storage, "settings", None),
+                                        "public_endpoint_url",
+                                        None,
+                                    )
+                                )
+                            )
+                        )
+                    ),
+                ),
+                queue=resolved_queue,
+                validate_scheduler_run=lambda value: validator.validate("run", value),
+            )
             application.state.persistence = resolved_settings.repository_backend
             yield
         finally:
@@ -354,6 +642,8 @@ def create_app(
     app.state.job_queue = job_queue
     app.state.object_storage = object_storage
     app.state.remote_asset_gateway = remote_asset_gateway
+    app.state.full_ai_service = None
+    app.state.webpage_video_service = None
     app.state.persistence = resolved_settings.repository_backend
     app.add_middleware(
         CORSMiddleware,
@@ -437,6 +727,272 @@ def create_app(
             user_id=context.user_id,
             workspace_id=context.workspace_id,
             workspace_name=context.workspace_name,
+        )
+
+    @app.get(
+        "/v1/full-ai/options",
+        response_model=FullAiOptionsResponse,
+        tags=["Full AI"],
+    )
+    async def get_full_ai_options(
+        full_ai: FullAiServiceDependency,
+        context: ContextDependency,
+    ) -> FullAiOptionsResponse:
+        return await full_ai.options(context)
+
+    @app.post(
+        "/v1/full-ai/estimate",
+        response_model=FullAiEstimateResponse,
+        tags=["Full AI"],
+    )
+    async def estimate_full_ai_run(
+        command: FullAiEstimateRequest,
+        full_ai: FullAiServiceDependency,
+        context: ContextDependency,
+    ) -> FullAiEstimateResponse:
+        return await full_ai.estimate(context, command)
+
+    @app.post(
+        "/v1/full-ai/runs",
+        response_model=FullAiRunResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["Full AI"],
+    )
+    async def create_full_ai_run(
+        command: FullAiRunCreate,
+        full_ai: FullAiServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        response: Response,
+    ) -> FullAiRunResponse:
+        resource, _created = await full_ai.create_run(
+            context, command, idempotency_key
+        )
+        response.headers["Location"] = f"/v1/full-ai/runs/{resource.id}"
+        return resource
+
+    @app.get(
+        "/v1/full-ai/runs/{full_ai_run_id}",
+        response_model=FullAiRunResponse,
+        tags=["Full AI"],
+    )
+    async def get_full_ai_run(
+        full_ai_run_id: UUID,
+        full_ai: FullAiServiceDependency,
+        context: ContextDependency,
+    ) -> FullAiRunResponse:
+        return await full_ai.get_run(context, full_ai_run_id)
+
+    @app.get(
+        "/v1/webpage-video/options",
+        response_model=WebpageVideoOptionsResponse,
+        tags=["Webpage Video"],
+    )
+    async def get_webpage_video_options(
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+    ) -> WebpageVideoOptionsResponse:
+        _require_url_capture_permission(context, "url_capture:read")
+        return await webpage_video.options(context)
+
+    @app.post(
+        "/v1/webpage-video/runs",
+        response_model=WebpageVideoRunResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["Webpage Video"],
+    )
+    async def create_webpage_video_run(
+        command: WebpageVideoRunCreate,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> WebpageVideoRunResponse:
+        _require_url_capture_permission(context, "url_capture:write")
+        resource, _created = await webpage_video.create_run(
+            context, command, idempotency_key
+        )
+        response.headers["Location"] = f"/v1/webpage-video/runs/{resource.id}"
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_run(
+            resource,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.get(
+        "/v1/webpage-video/runs/{webpage_video_run_id}",
+        response_model=WebpageVideoRunResponse,
+        tags=["Webpage Video"],
+    )
+    async def get_webpage_video_run(
+        webpage_video_run_id: UUID,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        request: Request,
+        response: Response,
+    ) -> WebpageVideoRunResponse:
+        _require_url_capture_permission(context, "url_capture:read")
+        resource = await webpage_video.get_run(context, webpage_video_run_id)
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_run(
+            resource,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.get(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/capture",
+        response_model=WebpageCaptureResponse,
+        tags=["Webpage Video"],
+    )
+    async def get_webpage_video_capture(
+        webpage_video_run_id: UUID,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        request: Request,
+        response: Response,
+    ) -> WebpageCaptureResponse:
+        _require_url_capture_permission(context, "url_capture:read")
+        capture = await webpage_video.get_capture(context, webpage_video_run_id)
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_capture(
+            capture,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.post(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/capture/review",
+        response_model=WebpageVideoRunResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Webpage Video"],
+    )
+    async def review_webpage_video_capture(
+        webpage_video_run_id: UUID,
+        command: WebpageCaptureReviewRequest,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> WebpageVideoRunResponse:
+        _require_url_capture_permission(context, "url_capture:review")
+        resource = await webpage_video.review_capture(
+            context, webpage_video_run_id, command, idempotency_key
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_run(
+            resource,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.get(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/site",
+        response_model=WebpageSiteResponse,
+        tags=["Webpage Video"],
+    )
+    async def get_webpage_video_site(
+        webpage_video_run_id: UUID,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        request: Request,
+        response: Response,
+    ) -> WebpageSiteResponse:
+        _require_url_capture_permission(context, "url_capture:read")
+        site = await webpage_video.get_site(context, webpage_video_run_id)
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_site(
+            site,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.post(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/scope/review",
+        response_model=WebpageSiteResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Webpage Video"],
+    )
+    async def review_webpage_video_scope(
+        webpage_video_run_id: UUID,
+        command: WebpageScopeReviewRequest,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> WebpageSiteResponse:
+        _require_url_capture_permission(context, "url_capture:review")
+        site = await webpage_video.review_site_manifest(
+            context, webpage_video_run_id, "scope", command, idempotency_key
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_site(
+            site,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.post(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/storyboard/review",
+        response_model=WebpageSiteResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Webpage Video"],
+    )
+    async def review_webpage_video_storyboard(
+        webpage_video_run_id: UUID,
+        command: WebpageStoryboardReviewRequest,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> WebpageSiteResponse:
+        _require_url_capture_permission(context, "url_capture:review")
+        site = await webpage_video.review_site_manifest(
+            context, webpage_video_run_id, "storyboard", command, idempotency_key
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_site(
+            site,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
+        )
+
+    @app.post(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/cancel",
+        response_model=WebpageVideoRunResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Webpage Video"],
+    )
+    async def cancel_webpage_video_run(
+        webpage_video_run_id: UUID,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> WebpageVideoRunResponse:
+        _require_url_capture_permission(context, "url_capture:write")
+        resource = await webpage_video.cancel_run(
+            context, webpage_video_run_id, idempotency_key
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return await _sign_webpage_run(
+            resource,
+            context=context,
+            repository=request.app.state.repository,
+            storage=request.app.state.object_storage,
         )
 
     @app.get(
@@ -1122,6 +1678,91 @@ def create_app(
         _require_asset_permission(context, "assets:read")
         return await service.get_asset_library(context, library_id)
 
+    @app.post(
+        "/v1/library-build-jobs",
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Assets"],
+    )
+    async def create_library_build_job(
+        command: LibraryBuildJobCreate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        job, _created = await service.create_library_build_job(
+            context, command, idempotency_key
+        )
+        response.headers["Location"] = f"/v1/library-build-jobs/{job['id']}"
+        response.headers["ETag"] = _etag(job)
+        if job["status"] == "queued":
+            queue: JobQueue | None = request.app.state.job_queue
+            if queue is None:
+                raise ApiError(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "LIBRARY_BUILD_QUEUE_UNAVAILABLE",
+                    "The library build job was recorded but the asynchronous queue is unavailable",
+                    details={"job_id": job["id"]},
+                )
+            try:
+                await queue.enqueue(
+                    queue_name="library-build",
+                    payload={
+                        "workspace_id": job["workspace_id"],
+                        "job_id": job["id"],
+                        "library_id": job["library_id"],
+                        "spec": job["spec"],
+                    },
+                    deduplication_key=(
+                        f"library-build:{job['workspace_id']}:{job['id']}"
+                    ),
+                    # Analysis polling is expected work, not a provider retry.
+                    # Keep enough leased deliveries for long-form media while
+                    # the PostgreSQL job remains the durable source of truth.
+                    max_attempts=2000,
+                )
+            except QueueError as exc:
+                raise ApiError(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "LIBRARY_BUILD_QUEUE_UNAVAILABLE",
+                    "The library build job was recorded but could not be enqueued",
+                    details={"job_id": job["id"]},
+                ) from exc
+        return job
+
+    @app.get("/v1/library-build-jobs/{job_id}", tags=["Assets"])
+    async def get_library_build_job(
+        job_id: UUID,
+        service: ServiceDependency,
+        context: ContextDependency,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:read")
+        job = await service.get_library_build_job(context, job_id)
+        response.headers["ETag"] = _etag(job)
+        return job
+
+    @app.post(
+        "/v1/library-build-jobs/{job_id}/cancel",
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Assets"],
+    )
+    async def cancel_library_build_job(
+        job_id: UUID,
+        service: ServiceDependency,
+        context: ContextDependency,
+        if_match: IfMatchHeader,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        job = await service.cancel_library_build_job(
+            context, job_id, _revision(if_match)
+        )
+        response.headers["ETag"] = _etag(job)
+        return job
+
     @app.get(
         "/v1/asset-libraries/{library_id}/assets",
         response_model=ResourcePage,
@@ -1721,6 +2362,7 @@ def create_app(
                     "REMOTE_ASSET_TOO_LARGE",
                     "REMOTE_ASSET_TOO_LONG",
                     "REMOTE_MEDIA_UNSUPPORTED",
+                    "REMOTE_RIGHTS_UNVERIFIED",
                     "REDNOTE_RESPONSE_INVALID",
                     "REDNOTE_VIDEO_NOT_FOUND",
                 }
@@ -1750,12 +2392,39 @@ def create_app(
                 "retrieved_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "rights_confirmed": True,
             }
+            verified_rights_evidence: dict[str, Any] | None = None
+            if (
+                downloaded.platform == "wikimedia"
+                and command.copyright_status == "public_domain"
+                and downloaded.rights_evidence_type == "verified_public_domain"
+                and str(downloaded.rights_evidence_locator or "").startswith(
+                    "https://commons.wikimedia.org/"
+                )
+                and downloaded.rights_verified_at
+                and downloaded.license_name
+            ):
+                verified_rights_evidence = {
+                    "source_type": "website",
+                    "locator": downloaded.rights_evidence_locator,
+                    "provider": "wikimedia",
+                    "attribution": downloaded.author or "Wikimedia Commons",
+                    "license": downloaded.license_name,
+                    "evidence_type": "verified_public_domain",
+                    "verified_at": downloaded.rights_verified_at,
+                    "verification_method": "commons_api_extmetadata",
+                }
+                source.update(
+                    {
+                        "rights_evidence_type": "verified_public_domain",
+                        "rights_evidence_locator": downloaded.rights_evidence_locator,
+                        "rights_verified_at": downloaded.rights_verified_at,
+                    }
+                )
             tags = list(
                 dict.fromkeys(
                     [
                         *command.tags,
                         downloaded.platform,
-                        *(value for value in [downloaded.author] if value),
                     ]
                 )
             )
@@ -1785,6 +2454,7 @@ def create_app(
                     bucket=bucket,
                     idempotency_key=idempotency_key,
                     idempotency_payload=command.model_dump(mode="json"),
+                    verified_rights_evidence=verified_rights_evidence,
                 )
                 if not created:
                     current = await service.get_asset(
@@ -1905,7 +2575,11 @@ def create_app(
                                     if platform == "wikimedia"
                                     else command.copyright_status
                                 ),
-                                tags=[query[:100], platform, "auto-acquired"],
+                                # The provider query is acquisition provenance, not
+                                # visual evidence.  Persisting it as a normal asset
+                                # tag would let catalog label scoring prove its own
+                                # query and could auto-select unrelated footage.
+                                tags=[platform, "auto-acquired"],
                                 rights_confirmed=True,
                             ),
                             service,

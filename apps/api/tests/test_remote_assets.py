@@ -7,11 +7,102 @@ from framefactory_api.remote_assets import (
     _query_relevance,
     _subtitle_languages,
     _wikimedia_derivative,
+    _wikimedia_original_filename,
+    _wikimedia_public_domain_evidence,
+    _wikimedia_search_query,
     _ytdlp_download_error,
     classify_source,
     parse_rednote_response,
     parse_search_results,
 )
+
+
+def _commons_rights_payload(*, license_name: str = "Public domain") -> dict:
+    filename = "Apollo_11_Landing_first_steps.ogv"
+    return {
+        "query": {
+            "pages": {
+                "123": {
+                    "title": f"File:{filename}",
+                    "imageinfo": [
+                        {
+                            "url": (
+                                "https://upload.wikimedia.org/wikipedia/commons/"
+                                f"a/a1/{filename}"
+                            ),
+                            "descriptionurl": (
+                                "https://commons.wikimedia.org/wiki/"
+                                f"File:{filename}"
+                            ),
+                            "extmetadata": {
+                                "LicenseShortName": {"value": license_name},
+                                "Copyrighted": {
+                                    "value": (
+                                        "False" if license_name == "Public domain" else "True"
+                                    )
+                                },
+                                "Artist": {"value": "NASA"},
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+
+def test_wikimedia_transcode_maps_back_to_original_file_for_rights_lookup() -> None:
+    source = (
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/a1/"
+        "Apollo_11_Landing_first_steps.ogv/"
+        "Apollo_11_Landing_first_steps.ogv.720p.webm"
+    )
+
+    assert _wikimedia_original_filename(source) == "Apollo_11_Landing_first_steps.ogv"
+
+
+def test_commons_public_domain_metadata_becomes_traceable_verified_evidence() -> None:
+    evidence = _wikimedia_public_domain_evidence(
+        _commons_rights_payload(),
+        expected_filename="Apollo_11_Landing_first_steps.ogv",
+        verified_at="2026-08-22T12:00:00Z",
+    )
+
+    assert evidence == {
+        "title": "Apollo_11_Landing_first_steps.ogv",
+        "locator": (
+            "https://commons.wikimedia.org/wiki/"
+            "File:Apollo_11_Landing_first_steps.ogv"
+        ),
+        "license": "Public domain",
+        "attribution": "NASA",
+        "verified_at": "2026-08-22T12:00:00Z",
+    }
+
+
+def test_commons_licensed_or_mismatched_metadata_is_not_marked_public_domain() -> None:
+    with pytest.raises(RemoteAssetError) as licensed:
+        _wikimedia_public_domain_evidence(
+            _commons_rights_payload(license_name="CC BY 4.0"),
+            expected_filename="Apollo_11_Landing_first_steps.ogv",
+            verified_at="2026-08-22T12:00:00Z",
+        )
+    with pytest.raises(RemoteAssetError) as mismatch:
+        _wikimedia_public_domain_evidence(
+            _commons_rights_payload(),
+            expected_filename="Different_file.ogv",
+            verified_at="2026-08-22T12:00:00Z",
+        )
+    with pytest.raises(RemoteAssetError) as explicitly_not_public_domain:
+        _wikimedia_public_domain_evidence(
+            _commons_rights_payload(license_name="Not public domain"),
+            expected_filename="Apollo_11_Landing_first_steps.ogv",
+            verified_at="2026-08-22T12:00:00Z",
+        )
+
+    assert licensed.value.code == "REMOTE_RIGHTS_UNVERIFIED"
+    assert mismatch.value.code == "REMOTE_RIGHTS_UNVERIFIED"
+    assert explicitly_not_public_domain.value.code == "REMOTE_RIGHTS_UNVERIFIED"
 
 
 def test_wikimedia_prefers_smaller_official_transcode_over_original() -> None:
@@ -167,3 +258,39 @@ def test_relevance_gate_rejects_wrong_event_or_year() -> None:
         )
         == 0.0
     )
+
+
+@pytest.mark.parametrize(
+    "wrong_title",
+    (
+        "Apollo 17 EVA NASA",
+        "NASA Apollo 8 Manned Space Flight Report 1968",
+        "The Apollo 4 Mission 1967 NASA",
+    ),
+)
+def test_relevance_gate_rejects_conflicting_alpha_numeric_entity(
+    wrong_title: str,
+) -> None:
+    assert _query_relevance("NASA Apollo 11 moon landing", wrong_title) == 0.0
+
+
+def test_relevance_gate_accepts_exact_identifier_and_preserves_unnumbered_rules() -> None:
+    assert (
+        _query_relevance(
+            "NASA Apollo 11 moon landing",
+            "Apollo 11 Landing - first steps on the moon NASA",
+        )
+        >= 0.5
+    )
+    assert _query_relevance("Apollo moon landing", "Apollo moon landing archive") == 1.0
+    assert _query_relevance("Apollo 11 documentary", "Apollo documentary") >= 0.5
+
+
+def test_wikimedia_query_projection_preserves_numeric_identifiers_with_cjk_suffix() -> None:
+    assert _wikimedia_search_query("Apollo 11 月面平坦, 远处可见登月舱。") == "Apollo 11"
+    assert (
+        _wikimedia_search_query("NASA Apollo 11 登月舱着陆月面, 无火焰或烟雾。")
+        == "NASA Apollo 11"
+    )
+    numeric_only = "1969 1970 月面历史影像"
+    assert _wikimedia_search_query(numeric_only) == numeric_only

@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0.0",
+  "id": "ae752896-0fd1-5d6f-ba13-9d4bf504ea12",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "cb9f483d-4aa0-525b-8d45-01eaf92997f0",
+  "version": "1.1.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "通用主题解说输入",
+    "description": "提供主题、受众和希望强调的角度。",
+    "properties": {
+      "topic": {"type": "string", "title": "主题", "minLength": 3, "maxLength": 300},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160},
+      "angle": {"type": "string", "title": "创作角度", "format": "multiline", "maxLength": 1000}
+    },
+    "required": ["topic"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "news", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 2,
+    "maximum_sources": 10,
+    "freshness_days": 365,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 90,
+    "tone_tags": ["清晰", "具体", "故事化"],
+    "structure": [
+      {"name": "完整解说", "purpose": "用问题或矛盾开场，解释原因，给出可验证例证并收束核心结论。", "target_share": 1}
+    ],
+    "markdown_instructions": "先确认受众已有认知，再选择一个明确问题。事实陈述必须受研究产物约束；不确定信息要显式标注。将完整旁白拆成有稳定顺序的 Beat，并为每个 Beat 写出具体、可检索的 visual_description、must_match 与 must_not_match。使用短句、具体名词和自然转场，不用空泛口号。",
+    "prohibited_content": ["编造数据、引语或出处", "把推测写成确定事实", "规避平台安全规则"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "9:16",
+    "frame_rate": 30,
+    "visual_tags": ["清晰", "编辑感", "信息匹配"],
+    "shot_duration_seconds": {"minimum": 2, "target": 4, "maximum": 8},
+    "text_safe_area_percent": 10,
+    "generated_media_allowed": false
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video"],
+    "minimum_assets": 4,
+    "license_required": true,
+    "fallback": "fail",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "claims-supported", "category": "factuality", "description": "重要事实可追溯到研究产物中的可靠来源。", "severity": "error", "action": "fail"},
+      {"id": "assets-licensed", "category": "copyright", "description": "每个选用素材都有来源和可用权利记录。", "severity": "error", "action": "fail"},
+      {"id": "beat-coverage", "category": "visual", "description": "每个旁白 Beat 都有通过硬约束和权利校验的素材候选。", "severity": "warning", "action": "request_review"},
+      {"id": "timing-frozen", "category": "technical", "description": "渲染只消费已冻结的旁白时序、素材选择和 EDL。", "severity": "error", "action": "fail"},
+      {"id": "topic-coherence", "category": "writing", "description": "开场问题、解释过程和结论围绕同一主题。", "severity": "warning", "action": "request_review"}
+    ],
+    "human_review": "on_warning",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.web_acquisition", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "media.retrieve", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "timeline.align", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.edl", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "narration-audio", "kind": "audio", "media_types": ["audio/mpeg"], "required": true, "maximum_bytes": 536870912},
+      {"name": "narration-timing", "kind": "narration_timing", "media_types": ["application/json"], "required": true, "maximum_bytes": 104857600},
+      {"name": "retrieved-assets", "kind": "asset", "media_types": ["image/bmp", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "candidate-manifest", "kind": "candidate_manifest", "media_types": ["application/json"], "required": true, "maximum_bytes": 104857600},
+      {"name": "material-selection", "kind": "material_selection", "media_types": ["application/json"], "required": true, "maximum_bytes": 104857600},
+      {"name": "edit-decision-list", "kind": "timeline", "media_types": ["application/json"], "required": true, "maximum_bytes": 104857600},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "3df5479d-9eb2-583f-8531-66ba0bb61204",
+  "content_hash": "2f4a51ce16fdee195823b874d121d88bbbb3cb85d24a9680fcfb69b71b088b0e",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-22T00:00:00Z",
+  "published_at": "2026-08-22T00:00:00Z"
+}

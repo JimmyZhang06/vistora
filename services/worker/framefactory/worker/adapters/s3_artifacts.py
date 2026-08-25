@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ from framefactory.runtime import PermanentStepError, RetryableStepError
 from framefactory.steps import ArtifactRef, StepContext
 from framefactory.worker.config import ObjectStorageSettings
 from framefactory.worker.providers import ProviderArtifact
+
+logger = logging.getLogger(__name__)
 
 
 class ArtifactRecorder(Protocol):
@@ -38,14 +41,21 @@ class S3ArtifactStorage:
         except Exception as exc:
             raise RuntimeError("configured artifact bucket is unavailable") from exc
 
-    def publish(self, context: StepContext, artifact: ProviderArtifact) -> ArtifactRef:
+    def publish(
+        self,
+        context: StepContext,
+        artifact: ProviderArtifact,
+        *,
+        attempt_scoped: bool = False,
+    ) -> ArtifactRef:
         digest = hashlib.sha256(artifact.data).hexdigest()
+        attempt_identity = f":attempt:{context.attempt}" if attempt_scoped else ""
         artifact_id = uuid5(
             NAMESPACE_URL,
             f"framefactory-artifact:{context.workspace_id}:{context.run_id}:"
-            f"{context.step_id}:{artifact.kind}:{digest}",
+            f"{context.step_id}:{artifact.kind}:{artifact.filename}{attempt_identity}:{digest}",
         )
-        key = (
+        key = self._key(
             f"workspaces/{context.workspace_id}/runs/{context.run_id}/artifacts/"
             f"{artifact_id}/{artifact.filename}"
         )
@@ -54,6 +64,7 @@ class S3ArtifactStorage:
             "workspace-id": context.workspace_id,
             "run-id": context.run_id,
         }
+        object_created = False
         try:
             self.client.put_object(
                 Bucket=self.settings.bucket,
@@ -63,16 +74,26 @@ class S3ArtifactStorage:
                 Metadata=metadata,
                 IfNoneMatch="*",
             )
+            object_created = True
         except Exception as exc:
             response = getattr(exc, "response", {})
             code = str(response.get("Error", {}).get("Code", ""))
             status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            if code in {"PreconditionFailed", "ConditionalRequestConflict"} or status == 412:
+            if (
+                code in {"PreconditionFailed", "ConditionalRequestConflict"}
+                or status == 412
+            ):
                 self._verify_existing(key, digest)
-            elif status in {408, 409, 425, 429} or (isinstance(status, int) and status >= 500):
-                raise RetryableStepError("artifact object storage is temporarily unavailable") from exc
+            elif status in {408, 409, 425, 429} or (
+                isinstance(status, int) and status >= 500
+            ):
+                raise RetryableStepError(
+                    "artifact object storage is temporarily unavailable"
+                ) from exc
             else:
-                raise PermanentStepError("artifact publication was rejected by object storage") from exc
+                raise PermanentStepError(
+                    "artifact publication was rejected by object storage"
+                ) from exc
 
         reference = ArtifactRef(
             id=str(artifact_id),
@@ -91,7 +112,15 @@ class S3ArtifactStorage:
             filename=artifact.filename,
             created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
-        self.recorder.record_artifact(reference, bucket=self.settings.bucket)
+        try:
+            self.recorder.record_artifact(reference, bucket=self.settings.bucket)
+        except Exception:
+            # S3 and PostgreSQL cannot share a transaction. Delete only when
+            # this call proved that it created the object; never delete a
+            # pre-existing immutable object that may already have a durable row.
+            if object_created:
+                self._delete_unrecorded(key)
+            raise
         return reference
 
     def read_json(self, artifact: ArtifactRef) -> Mapping[str, Any]:
@@ -112,9 +141,13 @@ class S3ArtifactStorage:
             )
             data = response["Body"].read()
         except Exception as exc:
-            raise RetryableStepError("input artifact could not be read from object storage") from exc
+            raise RetryableStepError(
+                "input artifact could not be read from object storage"
+            ) from exc
         if hashlib.sha256(data).hexdigest() != artifact.content_hash:
-            raise PermanentStepError("input artifact content hash does not match its durable reference")
+            raise PermanentStepError(
+                "input artifact content hash does not match its durable reference"
+            )
         return data
 
     def materialize(self, artifact: ArtifactRef, destination: Path) -> None:
@@ -146,7 +179,10 @@ class S3ArtifactStorage:
             close = getattr(body, "close", None)
             if callable(close):
                 close()
-        if byte_size != artifact.byte_size or digest.hexdigest() != artifact.content_hash:
+        if (
+            byte_size != artifact.byte_size
+            or digest.hexdigest() != artifact.content_hash
+        ):
             destination.unlink(missing_ok=True)
             raise PermanentStepError(
                 "input artifact content hash does not match its durable reference"
@@ -168,9 +204,9 @@ class S3ArtifactStorage:
         artifact_id = uuid5(
             NAMESPACE_URL,
             f"framefactory-artifact:{context.workspace_id}:{context.run_id}:"
-            f"{context.step_id}:{kind}:{content_hash}",
+            f"{context.step_id}:{kind}:{filename}:{content_hash}",
         )
-        key = (
+        key = self._key(
             f"workspaces/{context.workspace_id}/runs/{context.run_id}/artifacts/"
             f"{artifact_id}/{filename}"
         )
@@ -226,7 +262,23 @@ class S3ArtifactStorage:
         except Exception as exc:
             raise RetryableStepError("existing artifact could not be verified") from exc
         if head.get("Metadata", {}).get("sha256") != digest:
-            raise PermanentStepError("immutable artifact key contains different content")
+            raise PermanentStepError(
+                "immutable artifact key contains different content"
+            )
+
+    def _delete_unrecorded(self, key: str) -> None:
+        try:
+            self.client.delete_object(Bucket=self.settings.bucket, Key=key)
+        except Exception:
+            logger.warning(
+                "could not remove artifact object after durable record failure",
+                extra={"bucket": self.settings.bucket, "object_key": key},
+                exc_info=True,
+            )
+
+    def _key(self, relative: str) -> str:
+        prefix = self.settings.key_prefix
+        return f"{prefix}/{relative}" if prefix else relative
 
     @staticmethod
     def _client(settings: ObjectStorageSettings) -> Any:

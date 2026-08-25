@@ -73,7 +73,7 @@
         "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
         "operation": {
           "type": "string",
-          "enum": ["research.collect", "research.verify", "writing.compose", "audio.synthesize", "media.select", "media.generate", "timeline.align", "render.compose", "quality.evaluate", "review.gate", "delivery.package"]
+          "enum": ["research.collect", "research.verify", "writing.compose", "writing.compose.generated", "writing.compose.webpage", "writing.compose.webpage_story", "audio.synthesize", "media.select", "media.generate", "media.inventory", "media.retrieve", "web.capture.validate", "web.capture.screenshot", "web.site.discover", "web.page.capture_batch", "web.region.analyze", "web.storyboard.plan", "web.materialize", "web.materialize.regions", "timeline.align", "render.compose", "render.edl", "quality.evaluate", "review.gate", "delivery.package"]
         },
         "depends_on": {
           "type": "array",

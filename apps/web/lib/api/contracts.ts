@@ -10,6 +10,7 @@ export interface ApiProblem {
   status?: number;
   field?: string;
   retryable?: boolean;
+  details?: JsonObject;
 }
 
 export type ApiResult<T> =
@@ -714,6 +715,7 @@ export interface AssetUploadRequest {
   description: string;
   copyrightStatus: "owned" | "licensed" | "public_domain";
   tags: string[];
+  relativePath?: string;
 }
 
 export interface RemoteAssetImportRequest {
@@ -724,6 +726,52 @@ export interface RemoteAssetImportRequest {
   copyrightStatus: "owned" | "licensed" | "public_domain";
   tags: string[];
   rightsConfirmed: true;
+}
+
+export type LibraryBuildSource = "youtube" | "bilibili" | "wikimedia";
+export type LibraryBuildStatus = "queued" | "running" | "completed" | "completed_with_errors" | "failed" | "cancelled";
+export type LibraryBuildStage = "discover" | "transfer" | "analyze" | "index";
+
+export interface LibraryBuildJobCreateRequest {
+  libraryId: string;
+  topic: string;
+  queries?: string[];
+  sources: LibraryBuildSource[];
+  maxAssets: number;
+  copyrightStatus: "licensed" | "public_domain";
+  rightsConfirmed: true;
+}
+
+export interface LibraryBuildJob {
+  schemaVersion: string;
+  id: string;
+  workspaceId: string;
+  libraryId: string;
+  status: LibraryBuildStatus;
+  stage: LibraryBuildStage;
+  spec: {
+    topic: string;
+    queries: string[];
+    sources: LibraryBuildSource[];
+    maxAssets: number;
+    copyrightStatus: "licensed" | "public_domain";
+    rightsConfirmed: true;
+  };
+  progress: {
+    assetIds: string[];
+    discovered: number;
+    transferred: number;
+    analyzed: number;
+    indexed: number;
+    failed: number;
+  };
+  error?: JsonObject;
+  revision: number;
+  createdBy: string;
+  createdAt: IsoTimestamp;
+  startedAt?: IsoTimestamp;
+  completedAt?: IsoTimestamp;
+  updatedAt: IsoTimestamp;
 }
 
 export interface VoiceProfileOption {
@@ -768,6 +816,295 @@ export interface ComposerOptions {
   voiceProfiles: VoiceProfileOption[];
   renderPresets: RenderPresetOption[];
   pipelines: PipelineOption[];
+}
+
+/**
+ * Contract for the isolated generated-only studio.  The browser only uses its
+ * dedicated resource/API and cannot supply Skill, Pipeline, Channel, or Asset
+ * Library identifiers; the server owns the scheduler Run binding.
+ */
+export interface FullAiBlocker {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface FullAiProviderOption {
+  name?: string;
+  modelId?: string;
+  status: "ready" | "unconfigured" | "incomplete";
+  supportsReconciliation: boolean;
+  submitUnknownPolicy: "manual_only";
+  continuityModes: Array<"prompt_pack" | "none" | string>;
+}
+
+export interface FullAiLimits {
+  briefMaxLength: number;
+  durationSeconds: number[];
+  aspectRatios: string[];
+  directions: string[];
+  variantsPerScene: number[];
+  clipSeconds: number;
+}
+
+export interface FullAiOptions {
+  schemaVersion: "1.0.0" | string;
+  mode: "generated_only";
+  status: "ready" | "blocked";
+  pipeline: {
+    slug: string;
+    version: number;
+    visualSourceMode: "generated_only";
+  };
+  provider: FullAiProviderOption;
+  limits: FullAiLimits;
+  blockers: FullAiBlocker[];
+}
+
+export interface FullAiSpec {
+  brief: string;
+  direction: string;
+  aspectRatio: string;
+  durationSeconds: number;
+  variantsPerScene: number;
+  continuity: boolean;
+  aiDisclosure: boolean;
+}
+
+export interface FullAiQuote {
+  currency: string;
+  amountMinor: number;
+  expiresAt: IsoTimestamp;
+}
+
+export interface FullAiEstimate {
+  schemaVersion: "1.0.0" | string;
+  status: "ready" | "blocked";
+  requestFingerprint: string;
+  plan: {
+    sceneCount: number;
+    clipSeconds: number;
+    candidateCount: number;
+    billableSeconds: number;
+  };
+  quote?: FullAiQuote;
+  blockers: FullAiBlocker[];
+}
+
+export interface FullAiRunCreateRequest extends FullAiSpec {
+  estimateFingerprint: string;
+  maxCostMinor: number;
+  currency: string;
+}
+
+export interface FullAiRun {
+  schemaVersion: "1.0.0" | string;
+  id: string;
+  projectRunId: string;
+  workspaceId: string;
+  status: string;
+  mode: "generated_only";
+  provider: {
+    name?: string;
+    modelId?: string;
+  };
+  spec: FullAiSpec;
+  quote: FullAiQuote;
+  billing: {
+    status: string;
+    authorizedAmountMinor: number;
+    incurredAmountMinor: number;
+    requiresReconciliation: boolean;
+  };
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+}
+
+/**
+ * Public contract for the isolated webpage-capture video workflow. The Web
+ * client intentionally exposes no cookies, credentials, custom headers,
+ * browser scripting, private-network targets, or arbitrary pipeline IDs.
+ */
+export type WebpageVideoAspectRatio = "16:9" | "9:16" | "1:1" | "4:3";
+
+export interface WebpageVideoBlocker {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface WebpageVideoVoiceOption {
+  id: string;
+  name: string;
+  language?: string;
+  description?: string;
+}
+
+export interface WebpageVideoOptions {
+  schemaVersion: string;
+  status: "ready" | "blocked";
+  pipeline?: { slug: string; version: number };
+  limits: {
+    urlMaxLength: number;
+    topicMaxLength: number;
+    aspectRatios: WebpageVideoAspectRatio[];
+    durationSeconds: number[];
+    crawlMaxPagesDefault: number;
+    crawlMaxPagesLimit: number;
+    crawlMaxDepthDefault: number;
+    crawlMaxDepthLimit: number;
+  };
+  voices: WebpageVideoVoiceOption[];
+  subtitles: {
+    supported: boolean;
+    defaultEnabled: boolean;
+  };
+  blockers: WebpageVideoBlocker[];
+}
+
+export interface WebpageVideoRunCreateRequest {
+  targetUrl: string;
+  topic: string;
+  aspectRatio: WebpageVideoAspectRatio;
+  durationSeconds: number;
+  subtitlesEnabled: boolean;
+  voiceProfileId?: string;
+  publicPageConfirmed: true;
+  rightsConfirmed: true;
+  crawl: {
+    maxPages: number;
+    maxDepth: number;
+    sameOriginOnly: true;
+    includeSitemap: boolean;
+  };
+}
+
+export type WebpageVideoReviewDecision = "approve" | "recapture" | "reject";
+export type WebpageVideoSiteReviewDecision = "approve" | "request_changes" | "reject";
+
+export interface WebpageVideoRegion {
+  id: string;
+  type: string;
+  label: string;
+  reason?: string;
+  score?: number;
+  previewUrl?: string;
+  sha256?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface WebpageVideoSitePage {
+  id: string;
+  url: string;
+  finalUrl?: string;
+  title?: string;
+  pageType?: string;
+  reason?: string;
+  score?: number;
+  selected: boolean;
+  status?: string;
+  capture?: WebpageVideoCapture;
+  regions: WebpageVideoRegion[];
+  failure?: { code?: string; message: string; retryable: boolean };
+}
+
+export interface WebpageVideoStoryboardShot {
+  id: string;
+  pageId: string;
+  regionId?: string;
+  label: string;
+  reason?: string;
+  previewUrl?: string;
+  durationSeconds?: number;
+  enabled: boolean;
+  order: number;
+}
+
+export interface WebpageVideoSitePlan {
+  schemaVersion: string;
+  mode: "site";
+  scope: {
+    status: string;
+    revision: number;
+    sha256: string;
+    pages: WebpageVideoSitePage[];
+  };
+  storyboard?: {
+    status: string;
+    revision: number;
+    sha256: string;
+    shots: WebpageVideoStoryboardShot[];
+  };
+}
+
+export interface WebpageVideoScopeReviewRequest {
+  decision: WebpageVideoSiteReviewDecision;
+  comment?: string;
+  expectedRevision: number;
+  expectedSha256: string;
+  selectedPageIds: string[];
+}
+
+export interface WebpageVideoStoryboardReviewRequest {
+  decision: WebpageVideoSiteReviewDecision;
+  comment?: string;
+  expectedRevision: number;
+  expectedSha256: string;
+  shots: Array<{ id: string; enabled: boolean; order: number }>;
+}
+
+export interface WebpageVideoCapture {
+  previewUrl?: string;
+  sha256: string;
+  requestedUrl: string;
+  finalUrl?: string;
+  revision: number;
+  width?: number;
+  height?: number;
+  capturedAt?: IsoTimestamp;
+  expiresAt?: IsoTimestamp;
+}
+
+export interface WebpageVideoMedia {
+  previewUrl?: string;
+  downloadUrl?: string;
+  captionsUrl?: string;
+  mediaType?: string;
+  filename?: string;
+}
+
+export interface WebpageVideoRun {
+  schemaVersion: string;
+  id: string;
+  projectRunId?: string;
+  workspaceId?: string;
+  status: string;
+  rawStatus: string;
+  revision: number;
+  targetUrl: string;
+  finalUrl?: string;
+  captureSha256?: string;
+  spec: {
+    topic: string;
+    aspectRatio: WebpageVideoAspectRatio | string;
+    durationSeconds: number;
+    subtitlesEnabled: boolean;
+    voiceProfileId?: string;
+  };
+  capture?: WebpageVideoCapture;
+  siteMode: boolean;
+  finalVideo?: WebpageVideoMedia;
+  failure?: { code?: string; message: string; retryable: boolean };
+  createdAt?: IsoTimestamp;
+  updatedAt?: IsoTimestamp;
+}
+
+export interface WebpageVideoReviewRequest {
+  decision: "approve" | "recapture" | "reject";
+  comment?: string;
+  expectedRevision: number;
+  expectedSha256: string;
 }
 
 export interface CapabilityGap {
@@ -890,6 +1227,8 @@ export interface Run {
   id: string;
   workspaceId: string;
   topic: string;
+  projectKind?: "standard" | "full_ai" | "webpage_video";
+  controlRunId?: string;
   channelId?: string;
   status: RunStatus;
   composition: RunComposition;
@@ -965,6 +1304,7 @@ export interface GenerationBatchCreateRequest {
   items: Array<{ topic: string; inputs?: JsonObject }>;
   composition: RunComposition;
   videoSettings?: VideoSettings;
+  researchMode: "off" | "when_missing" | "required";
 }
 
 export interface GenerationBatchItemQuery {

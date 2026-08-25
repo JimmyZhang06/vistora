@@ -4,6 +4,13 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import {
+  fullAiPendingAttemptKey,
+  readFullAiSubmissionAttempt,
+  saveFullAiSubmissionAttempt,
+  shouldRetainFullAiAttempt,
+} from "../lib/full-ai-submission.ts";
+
 const root = new URL("../", import.meta.url);
 const rootPath = fileURLToPath(root);
 
@@ -61,8 +68,98 @@ test("page identity and review workbench follow the shared layout grid", async (
   assert.match(detail, /review-artifact-grid--single/);
   assert.match(detail, /查看最终成片/);
   assert.match(detail, /evidenceLabel/);
+  assert.match(detail, /review-technical-details/);
+  assert.match(detail, /function EvidenceValue/);
   assert.match(css, /\.run-step-action \{[^}]*width: 126px/);
   assert.match(css, /\.review-drawer-header \{[^}]*grid-template-columns/);
+  assert.match(css, /\.review-evidence \{[^}]*align-items: start/);
+  assert.doesNotMatch(css, /\.review-evidence dd \{[^}]*overflow: auto/);
+});
+
+test("full-AI creation uses only its typed generated-only API and fail-closed state machine", async () => {
+  const [route, studio, composer, adapter, contracts, css] = await Promise.all([
+    source("app/create/ai/page.tsx"),
+    source("components/full-ai-video-studio.tsx"),
+    source("components/create-composer.tsx"),
+    source("lib/api/adapter.ts"),
+    source("lib/api/contracts.ts"),
+    source("app/globals.css"),
+  ]);
+  assert.match(route, /FullAiVideoStudio/);
+  assert.match(composer, /href="\/create\/ai"/);
+  for (const copy of [
+    "GENERATED ONLY",
+    "生成 Provider 不可用",
+    "服务端报价",
+    "本地预览",
+    "CandidateManifest",
+    "已停止自动重试，需人工核账",
+    "Run-scoped hash \\+ probe \\+ safety",
+    "提示词连续性",
+  ]) assert.match(studio, new RegExp(copy));
+  for (const state of ["loading", "unavailable", "editing", "estimating", "ready", "blocked", "submitting", "submit_unknown", "created", "failed"]) {
+    assert.match(studio, new RegExp(`"${state}"`));
+  }
+  for (const method of ["getFullAiOptions", "estimateFullAiRun", "createFullAiRun", "getFullAiRun"]) {
+    assert.match(adapter, new RegExp(method));
+    assert.match(studio, new RegExp(method));
+  }
+  assert.match(contracts, /mode: "generated_only"/);
+  assert.match(studio, /localStorage/);
+  assert.match(studio, /idempotencyKey/);
+  assert.match(studio, /projectRunId/);
+  assert.match(studio, /检查任务状态（仅查询）/);
+  assert.match(studio, /shouldRetainFullAiAttempt/);
+  assert.doesNotMatch(studio, /createRun\(|estimateRun\(/);
+  assert.doesNotMatch(studio, /assetLibrary|asset_library|assetAcquisition|media\.retrieve|Runway/i);
+  assert.match(css, /\.ai-studio-workbench \{/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.ai-studio-page/);
+});
+
+test("full-AI known runs persist until a clean terminal status", () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  const request = {
+    brief: "一支完全生成的短片", direction: "cinematic", aspectRatio: "9:16",
+    durationSeconds: 15, variantsPerScene: 2, continuity: true, aiDisclosure: true,
+    estimateFingerprint: "a".repeat(64), maxCostMinor: 900, currency: "USD",
+  };
+  const attempt = {
+    idempotencyKey: "full-ai-create:fixed-attempt",
+    request,
+    fullAiRunId: "11111111-1111-4111-8111-111111111111",
+  };
+
+  saveFullAiSubmissionAttempt(storage, attempt);
+  assert.deepEqual(readFullAiSubmissionAttempt(storage), attempt);
+  assert.match(storage.getItem(fullAiPendingAttemptKey), /fixed-attempt/);
+  for (const status of ["queued", "planning", "generating", "assembling", "quality_check"]) {
+    assert.equal(shouldRetainFullAiAttempt({ status, billing: { requiresReconciliation: false } }), true, status);
+  }
+  assert.equal(shouldRetainFullAiAttempt({ status: "failed", billing: { requiresReconciliation: true } }), true);
+  for (const status of ["succeeded", "failed", "cancelled"]) {
+    assert.equal(shouldRetainFullAiAttempt({ status, billing: { requiresReconciliation: false } }), false, status);
+  }
+
+  saveFullAiSubmissionAttempt(storage, null);
+  assert.equal(readFullAiSubmissionAttempt(storage), null);
+});
+
+test("Skill creation only advertises implemented flows and imports the selected JSON package", async () => {
+  const [creator, adapter] = await Promise.all([
+    source("components/skill-creator.tsx"),
+    source("lib/api/http-adapter.ts"),
+  ]);
+  assert.match(creator, /file\.text\(\)/);
+  assert.match(creator, /parseSkillPackage/);
+  assert.match(creator, /disabled=\{item\.available === false\}/);
+  assert.match(creator, /package: \{ \.\.\.importPackage, identity \}/);
+  assert.match(adapter, /distill_not_available/);
+  assert.match(adapter, /method: "DELETE"/);
 });
 
 test("tabs, keyboard shortcuts, live regions, and responsive preferences are present", async () => {
@@ -245,10 +342,53 @@ test("batch production stays paginated and uses durable batch endpoints", async 
   assert.match(component, /PAGE_SIZE = 50/);
   assert.match(component, /MAX_BATCH_SIZE = 5_000/);
   assert.match(component, /listGenerationBatchItems/);
+  assert.match(component, /researchMode/);
+  assert.match(component, /缺少来源时/);
+  assert.match(component, /4c7d9777-d754-5fa3-bf85-4bf5c9746dba/);
+  assert.match(component, /pipelineVersionId: STANDARD_PRODUCTION_V3_ID/);
+  assert.match(component, /source_urls/);
+  assert.match(component, /topicRowsFromText/);
+  assert.match(component, /source_urls: row\.sourceUrls/);
+  assert.match(component, /minimum_sources/);
+  assert.match(component, /maxLength=\{160\}/);
+  assert.match(component, /剪辑素材库/);
+  assert.match(component, /标准批量生产 v3 必须至少选择一个/);
+  assert.match(component, /selectedReadyAssetCount <= 0/);
+  assert.match(component, /批量剪辑内的自动补素材已关闭/);
+  assert.match(component, /assetLibraryIds/);
   assert.doesNotMatch(component, /createMockAdapter|mock-data/);
   assert.match(adapter, /createGenerationBatch/);
   assert.match(adapter, /cancelGenerationBatch/);
   assert.match(http, /\/v1\/generation-batches/);
+  assert.match(http, /research_mode: request\.researchMode/);
+  assert.match(http, /asset_acquisition: \{[\s\S]*?enabled: false/);
+});
+
+test("asset hub exposes durable themed library builds and bounded directory uploads", async () => {
+  const [hub, adapter, http] = await Promise.all([
+    source("components/asset-hub.tsx"),
+    source("lib/api/adapter.ts"),
+    source("lib/api/http-adapter.ts"),
+  ]);
+  for (const method of ["createLibraryBuildJob", "getLibraryBuildJob", "cancelLibraryBuildJob"]) {
+    assert.match(adapter, new RegExp(method));
+    assert.match(hub, new RegExp(method));
+  }
+  assert.match(http, /\/v1\/library-build-jobs/);
+  assert.match(http, /"If-Match": `"\$\{revision\}"`/);
+  assert.match(hub, /按主题初始化 \/ 补充/);
+  assert.match(hub, /这是素材联网采集，不是内容联网研究/);
+  assert.match(hub, /webkitdirectory/);
+  assert.match(hub, /relativePath/);
+  assert.match(http, /source: \{ type: "local_directory", relative_path: request\.relativePath \}/);
+  assert.match(hub, /UPLOAD_CONCURRENCY = 3/);
+  assert.match(hub, /MAX_LOCAL_FILES = 100/);
+  assert.match(hub, /retryFailedUploads/);
+  assert.match(hub, /BUILD_JOB_STORAGE_PREFIX/);
+  assert.match(hub, /localStorage\.getItem/);
+  assert.match(hub, /RESOURCE_NOT_FOUND/);
+  assert.match(hub, /不支持关闭页面后的断点续传/);
+  assert.doesNotMatch(hub, /最大 5 GB \/ 文件/);
 });
 
 test("asset operations use cursor pagination, durable endpoints, and server-owned readiness", async () => {

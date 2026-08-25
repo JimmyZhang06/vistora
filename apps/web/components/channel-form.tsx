@@ -216,7 +216,7 @@ export function ChannelForm({ channelId }: { channelId?: string }) {
             <label className="field"><span>品牌规范</span><textarea className="textarea" value={brandConfig.guidelines ?? ""} onChange={(event) => setBrandConfig((current) => ({ ...current, guidelines: event.target.value || undefined }))} placeholder="Logo 安全区、用色、字幕、片头片尾等规则" /></label>
           </section>
 
-          <footer className="channel-form-actions"><Link className="button-ghost" href={channelId ? `/channels/${encodeURIComponent(channelId)}` : "/channels"}>取消</Link><button className="button" type="submit" disabled={submitting || !workspaceId}>{submitting ? "正在保存…" : editing ? "保存频道" : "创建频道"}</button></footer>
+          <footer className="channel-form-actions theme-inverse"><Link className="button-ghost" href={channelId ? `/channels/${encodeURIComponent(channelId)}` : "/channels"}>取消</Link><button className="button" type="submit" disabled={submitting || !workspaceId}>{submitting ? "正在保存…" : editing ? "保存频道" : "创建频道"}</button></footer>
         </form>
       ) : null}
     </div>

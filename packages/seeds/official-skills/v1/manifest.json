@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package_id": "framefactory.official-skills.v1",
-  "package_version": "1.0.0",
+  "package_version": "1.8.0",
   "description": "Curated official starting points represented as ordinary declarative Skill and SkillVersion records.",
   "dry_run_only": true,
   "publisher": {
@@ -49,6 +49,54 @@
       "version_id": "30b37ab7-9cf7-5d26-ac3e-6d66880b536c",
       "version": "pipelines/standard-production/1.json",
       "expected_content_hash": "87ab3ff535a8e56a745f46170ecd0d8ff23201f09b98328a1fc09598c07e8801"
+    },
+    {
+      "order": 20,
+      "slug": "standard-production",
+      "pipeline_id": "2c15b2d6-1460-5d30-a718-f4b06d8e28d7",
+      "version_id": "3df5479d-9eb2-583f-8531-66ba0bb61204",
+      "version": "pipelines/standard-production/2.json",
+      "expected_content_hash": "9b0f9976c4ab9d05c06e3e30e9f7f3caf908ccdbe51ac435d4939357e122726c"
+    },
+    {
+      "order": 30,
+      "slug": "standard-production",
+      "pipeline_id": "2c15b2d6-1460-5d30-a718-f4b06d8e28d7",
+      "version_id": "4c7d9777-d754-5fa3-bf85-4bf5c9746dba",
+      "version": "pipelines/standard-production/3.json",
+      "expected_content_hash": "54c58573fdfd57f7ae03cca7617b59d63ea7961b4e30a1ebf5db54975435f98b"
+    },
+    {
+      "order": 40,
+      "slug": "full-ai-production",
+      "pipeline_id": "7ed21b77-7e4c-5801-8fc0-bee133575101",
+      "version_id": "fe7d52b9-7412-5c96-8214-398f18a2d682",
+      "version": "pipelines/full-ai-production/1.json",
+      "expected_content_hash": "bcd052d85ff4ac079a6aca18499686ede2486a2e22514f20fb73c151a55aced9"
+    },
+    {
+      "order": 41,
+      "slug": "full-ai-production",
+      "pipeline_id": "7ed21b77-7e4c-5801-8fc0-bee133575101",
+      "version_id": "6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c",
+      "version": "pipelines/full-ai-production/2.json",
+      "expected_content_hash": "131f77fb42a28c5478af59f5c8b3d238f86fae6496dd4451cc087561d398bebd"
+    },
+    {
+      "order": 50,
+      "slug": "webpage-video-production",
+      "pipeline_id": "7b80a43b-5752-58f3-aaa4-d423610f848d",
+      "version_id": "eaf69761-8571-5404-a50a-8ef5c0aa90d3",
+      "version": "pipelines/webpage-video-production/1.json",
+      "expected_content_hash": "0e7d669e7479bd7dcdb283613581089130a9ad9282e3ba2d19979d7fc0eacdef"
+    },
+    {
+      "order": 51,
+      "slug": "webpage-video-production",
+      "pipeline_id": "7b80a43b-5752-58f3-aaa4-d423610f848d",
+      "version_id": "2110e922-329d-565f-ba7a-3616c9d5070b",
+      "version": "pipelines/webpage-video-production/2.json",
+      "expected_content_hash": "d310c9ee96a16341e7ef273d0043df35297aa316c5518b75fb429b1b439155d6"
     }
   ],
   "entries": [
@@ -58,6 +106,20 @@
       "skill": "general-topic-explainer/skill.json",
       "version": "general-topic-explainer/1.0.0.json",
       "expected_content_hash": "2db0b1ed1fc14a49df05dcadec6f068c50ffa7e33c1820ceac7e652be82cedac"
+    },
+    {
+      "order": 11,
+      "slug": "general-topic-explainer",
+      "skill": "general-topic-explainer/skill.json",
+      "version": "general-topic-explainer/1.1.0.json",
+      "expected_content_hash": "2f4a51ce16fdee195823b874d121d88bbbb3cb85d24a9680fcfb69b71b088b0e"
+    },
+    {
+      "order": 12,
+      "slug": "general-topic-explainer",
+      "skill": "general-topic-explainer/skill.json",
+      "version": "general-topic-explainer/1.2.0.json",
+      "expected_content_hash": "109da16cf6d8091cd13da881c12bb93486b0c280b467b5f8e4d23702e9573a8e"
     },
     {
       "order": 20,
@@ -86,6 +148,34 @@
       "skill": "company-case-study/skill.json",
       "version": "company-case-study/1.0.0.json",
       "expected_content_hash": "47407b08b14ff5d95ebdfa5de4276fa391083da2ffe1be7ccf6a39874cca9d6f"
+    },
+    {
+      "order": 60,
+      "slug": "full-ai-video-director",
+      "skill": "full-ai-video-director/skill.json",
+      "version": "full-ai-video-director/1.0.0.json",
+      "expected_content_hash": "701ed899b6fb10414f3defc9cf27386dc124c53ae6b5ac107c99a2a6a3cddd78"
+    },
+    {
+      "order": 61,
+      "slug": "full-ai-video-director",
+      "skill": "full-ai-video-director/skill.json",
+      "version": "full-ai-video-director/1.1.0.json",
+      "expected_content_hash": "985af2bac4d16350a0e20ac8a637a8559377286c207ff3c212e3f8af36854581"
+    },
+    {
+      "order": 70,
+      "slug": "webpage-video-director",
+      "skill": "webpage-video-director/skill.json",
+      "version": "webpage-video-director/1.0.0.json",
+      "expected_content_hash": "d32963787450908fe93d9f37346894b3275856eae75f41870d4bea2a42cbb1d4"
+    },
+    {
+      "order": 71,
+      "slug": "webpage-video-director",
+      "skill": "webpage-video-director/skill.json",
+      "version": "webpage-video-director/1.1.0.json",
+      "expected_content_hash": "0b067d7f6bf9d048ee696e8f2b03e8ca071b85e350f5566ef979625682f969d1"
     }
   ]
 }

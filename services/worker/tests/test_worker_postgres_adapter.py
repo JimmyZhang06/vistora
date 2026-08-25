@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
+from uuid import UUID, uuid4
 
+import psycopg
 from framefactory.ports import RevisionConflictError
-from framefactory.runtime import ExecutionState, ReviewRecord, RunRecord, StepRecord
+from framefactory.runtime import (
+    ExecutionState,
+    PermanentStepError,
+    ReviewRecord,
+    RunRecord,
+    StepRecord,
+)
 from framefactory.steps import ArtifactRef
 from framefactory.worker.adapters.postgres import PostgresRunStore
 
@@ -40,7 +49,143 @@ class FakeConnection:
         self.rollbacks += 1
 
 
+class IntegrityFailureConnection(FakeConnection):
+    def __init__(self, error: psycopg.IntegrityError) -> None:
+        super().__init__([])
+        self.error = error
+
+    def execute(self, sql: str, parameters=()) -> Cursor:
+        self.calls.append((sql, parameters))
+        raise self.error
+
+
 class PostgresRunStoreTests(unittest.TestCase):
+    def test_artifact_tenant_constraint_is_a_permanent_stable_error(self) -> None:
+        artifact = ArtifactRef(
+            id="44444444-4444-4444-8444-444444444444",
+            workspace_id="11111111-1111-4111-8111-111111111111",
+            run_id="22222222-2222-4222-8222-222222222222",
+            step_id="55555555-5555-4555-8555-555555555555",
+            kind="manifest",
+            media_type="application/json",
+            object_key=(
+                "browser-capture/workspaces/11111111-1111-4111-8111-111111111111/"
+                "runs/22222222-2222-4222-8222-222222222222/artifacts/"
+                "44444444-4444-4444-8444-444444444444/capture-validation.json"
+            ),
+            byte_size=2,
+            content_hash="a" * 64,
+            filename="capture-validation.json",
+            created_at="2026-08-24T00:00:00Z",
+        )
+        connection = IntegrityFailureConnection(
+            psycopg.errors.CheckViolation(
+                'new row violates check constraint "artifacts_tenant_key"'
+            )
+        )
+
+        with self.assertRaises(PermanentStepError) as raised:
+            PostgresRunStore(connection).record_artifact(artifact, bucket="artifacts")
+
+        self.assertEqual("artifact_tenant_key_violation", raised.exception.code)
+        self.assertNotIn("new row", str(raised.exception))
+
+    def test_capture_attempt_binds_exact_final_worker_revision_and_replay(self) -> None:
+        workspace_id = "11111111-1111-4111-8111-111111111111"
+        run_id = "22222222-2222-4222-8222-222222222222"
+        webpage_run_id = "33333333-3333-4333-8333-333333333333"
+        step_id = UUID("44444444-4444-4444-8444-444444444444")
+        artifact_id = "55555555-5555-4555-8555-555555555555"
+        captured_at = datetime(2026, 8, 24, 1, 2, 3, tzinfo=UTC)
+        sha256 = "a" * 64
+        metadata = {
+            "redirect_chain": ["https://example.com/?redacted=1"],
+            "engine": "chromium",
+            "browser_version": "140.0.0",
+            "playwright_version": "1.62.0",
+            "websocket_attempts": 0,
+            "blocked_non_idempotent_requests": 0,
+        }
+        stored = {
+            "outcome": "captured",
+            "capture_revision": 7,
+            "requested_url": "https://example.com/?redacted=1",
+            "final_url": "https://example.com/?redacted=1",
+            "viewport_width": 1920,
+            "viewport_height": 1080,
+            "full_page": False,
+            "artifact_id": artifact_id,
+            "sha256": sha256,
+            "media_type": "image/png",
+            "metadata": metadata,
+            "error": None,
+            "captured_at": captured_at,
+        }
+        connection = FakeConnection(
+            [
+                Cursor(one={"id": webpage_run_id, "worker_revision": 7}),
+                Cursor(),
+                Cursor(one=stored),
+            ]
+        )
+        artifact = ArtifactRef(
+            id=artifact_id,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            step_id=str(step_id),
+            kind="image",
+            media_type="image/png",
+            object_key="browser-capture/workspaces/w/runs/r/artifacts/a/webpage.png",
+            byte_size=24,
+            content_hash=sha256,
+            filename="webpage.png",
+        )
+        PostgresRunStore(connection)._record_webpage_capture_attempt(
+            workspace_id=workspace_id,
+            run_id=run_id,
+            step_id=step_id,
+            capture_revision=7,
+            evidence={
+                "webpage_video_run_id": webpage_run_id,
+                "attempt_number": 2,
+                "requested_url": "https://example.com/?redacted=1",
+                "final_url": "https://example.com/?redacted=1",
+                "viewport_width": 1920,
+                "viewport_height": 1080,
+                "full_page": False,
+                "captured_at": captured_at.isoformat(),
+                "metadata": metadata,
+            },
+            artifact=artifact,
+            error=None,
+        )
+        self.assertIn("rs.worker_revision", connection.calls[0][0])
+        self.assertIn("ON CONFLICT", connection.calls[1][0])
+
+    def test_capture_attempt_rejects_stale_revision_before_insert(self) -> None:
+        connection = FakeConnection([Cursor(one={"id": uuid4(), "worker_revision": 6})])
+        with self.assertRaisesRegex(RuntimeError, "revision"):
+            PostgresRunStore(connection)._record_webpage_capture_attempt(
+                workspace_id="11111111-1111-4111-8111-111111111111",
+                run_id="22222222-2222-4222-8222-222222222222",
+                step_id=UUID("44444444-4444-4444-8444-444444444444"),
+                capture_revision=7,
+                evidence={
+                    "webpage_video_run_id": "33333333-3333-4333-8333-333333333333",
+                    "attempt_number": 1,
+                    "requested_url": "https://example.com/",
+                    "final_url": None,
+                    "viewport_width": 1920,
+                    "viewport_height": 1080,
+                    "full_page": False,
+                    "captured_at": None,
+                    "metadata": {},
+                },
+                artifact=None,
+                error={"code": "capture_failed", "retryable": False},
+            )
+        self.assertEqual(1, len(connection.calls))
+
     def test_healthcheck_requires_worker_schema_migration(self) -> None:
         connection = FakeConnection([Cursor(one={"healthy": False})])
         with self.assertRaisesRegex(RuntimeError, "0001_runtime_state.sql"):
@@ -49,7 +194,9 @@ class PostgresRunStoreTests(unittest.TestCase):
 
     def test_run_update_uses_revision_compare_and_swap(self) -> None:
         now = datetime(2026, 8, 16, tzinfo=UTC)
-        connection = FakeConnection([Cursor(one={"status": "queued"}), Cursor(one=None)])
+        connection = FakeConnection(
+            [Cursor(one={"status": "queued"}), Cursor(one=None)]
+        )
         store = PostgresRunStore(connection)
         with self.assertRaises(RevisionConflictError):
             store.save_run(
@@ -75,7 +222,9 @@ class PostgresRunStoreTests(unittest.TestCase):
             "running", PostgresRunStore._database_run_status(ExecutionState.RETRYING)
         )
 
-    def test_pending_scan_materializes_pipeline_nodes_and_allows_official_pipeline(self) -> None:
+    def test_pending_scan_materializes_pipeline_nodes_and_allows_official_pipeline(
+        self,
+    ) -> None:
         now = datetime(2026, 8, 16, tzinfo=UTC)
         connection = FakeConnection(
             [
@@ -85,7 +234,9 @@ class PostgresRunStoreTests(unittest.TestCase):
                             "workspace_id": "11111111-1111-4111-8111-111111111111",
                             "id": "22222222-2222-4222-8222-222222222222",
                             "input_snapshot": {"topic": "durability"},
-                            "composition_snapshot": {"skill_version": {"id": "version"}},
+                            "composition_snapshot": {
+                                "skill_version": {"id": "version"}
+                            },
                             "skill_version_id": "33333333-3333-4333-8333-333333333333",
                             "skill_version": "1.0.0",
                             "research_policy": {"depth": 3},
@@ -172,7 +323,9 @@ class PostgresRunStoreTests(unittest.TestCase):
             "pipeline_initialization_failed", connection.calls[1][1][0].obj["code"]
         )
 
-    def test_artifact_record_is_idempotent_and_verifies_immutable_identity(self) -> None:
+    def test_artifact_record_is_idempotent_and_verifies_immutable_identity(
+        self,
+    ) -> None:
         artifact = ArtifactRef(
             id="44444444-4444-4444-8444-444444444444",
             workspace_id="11111111-1111-4111-8111-111111111111",
@@ -213,11 +366,77 @@ class PostgresRunStoreTests(unittest.TestCase):
         store = PostgresRunStore(connection)
         store.record_artifact(artifact, bucket="artifacts")
         store.record_artifact(artifact, bucket="artifacts")
-        self.assertIn("ON CONFLICT (workspace_id, id) DO NOTHING", connection.calls[0][0])
+        self.assertIn(
+            "ON CONFLICT (workspace_id, id) DO NOTHING", connection.calls[0][0]
+        )
         self.assertEqual(connection.calls[0][1][:11], connection.calls[2][1][:11])
         self.assertEqual(connection.calls[0][1][11].obj, connection.calls[2][1][11].obj)
         self.assertEqual(connection.calls[0][1][12], connection.calls[2][1][12])
         self.assertNotIn("secret", str(connection.calls))
+
+    def test_retry_records_same_content_under_distinct_filename_identity(self) -> None:
+        first = ArtifactRef(
+            id="44444444-4444-4444-8444-444444444444",
+            workspace_id="11111111-1111-4111-8111-111111111111",
+            run_id="22222222-2222-4222-8222-222222222222",
+            step_id="55555555-5555-4555-8555-555555555555",
+            kind="asset",
+            media_type="image/jpeg",
+            object_key=(
+                "workspaces/11111111-1111-4111-8111-111111111111/"
+                "runs/22222222-2222-4222-8222-222222222222/artifacts/"
+                "44444444-4444-4444-8444-444444444444/asset-001.jpg"
+            ),
+            byte_size=12,
+            content_hash="a" * 64,
+            filename="asset-001.jpg",
+            created_at="2026-08-16T00:00:00Z",
+        )
+        reordered_retry = replace(
+            first,
+            id="66666666-6666-4666-8666-666666666666",
+            object_key=(
+                "workspaces/11111111-1111-4111-8111-111111111111/"
+                "runs/22222222-2222-4222-8222-222222222222/artifacts/"
+                "66666666-6666-4666-8666-666666666666/asset-002.jpg"
+            ),
+            filename="asset-002.jpg",
+        )
+        connection = FakeConnection(
+            [
+                Cursor(one={"id": first.id}),
+                Cursor(
+                    one={
+                        "object_key": first.object_key,
+                        "content_hash": first.content_hash,
+                        "byte_size": first.byte_size,
+                    }
+                ),
+                Cursor(one={"id": reordered_retry.id}),
+                Cursor(
+                    one={
+                        "object_key": reordered_retry.object_key,
+                        "content_hash": reordered_retry.content_hash,
+                        "byte_size": reordered_retry.byte_size,
+                    }
+                ),
+            ]
+        )
+        store = PostgresRunStore(connection)
+        store.append_event = MagicMock()  # type: ignore[method-assign]
+
+        store.record_artifact(first, bucket="artifacts")
+        store.record_artifact(reordered_retry, bucket="artifacts")
+
+        self.assertNotEqual(first.id, reordered_retry.id)
+        self.assertEqual(first.content_hash, reordered_retry.content_hash)
+        self.assertEqual(first.id, connection.calls[0][1][0])
+        self.assertEqual(reordered_retry.id, connection.calls[2][1][0])
+        self.assertEqual(first.object_key, connection.calls[0][1][8])
+        self.assertEqual(reordered_retry.object_key, connection.calls[2][1][8])
+        self.assertEqual(4, len(connection.calls))
+        self.assertEqual([], connection.cursors)
+        self.assertEqual(2, store.append_event.call_count)
 
     def test_artifact_insert_emits_one_event_with_database_step_identity(self) -> None:
         artifact = ArtifactRef(
@@ -259,7 +478,9 @@ class PostgresRunStoreTests(unittest.TestCase):
             connection.calls[0][1][3],
         )
         store.append_event.assert_called_once()
-        self.assertEqual("artifact.created", store.append_event.call_args.kwargs["event_type"])
+        self.assertEqual(
+            "artifact.created", store.append_event.call_args.kwargs["event_type"]
+        )
 
     def test_append_event_replay_does_not_allocate_another_sequence(self) -> None:
         connection = FakeConnection(
@@ -282,7 +503,9 @@ class PostgresRunStoreTests(unittest.TestCase):
                 deduplication_key="graph",
             )
 
-        inserts = [sql for sql, _ in connection.calls if "INSERT INTO run_events" in sql]
+        inserts = [
+            sql for sql, _ in connection.calls if "INSERT INTO run_events" in sql
+        ]
         self.assertEqual(1, len(inserts))
 
 

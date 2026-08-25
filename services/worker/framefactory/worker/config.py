@@ -36,9 +36,44 @@ class OpenAICompatibleSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchSearchSettings:
+    """Optional vendor-neutral HTTPS JSON search endpoint."""
+
+    url: str
+    bearer_token: str = field(repr=False)
+    timeout_seconds: float = 20.0
+    maximum_response_bytes: int = 1_048_576
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "FRAMEFACTORY_RESEARCH_SEARCH_URL must be a credential-free HTTPS URL"
+            )
+        if not self.bearer_token:
+            raise ValueError("FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN must not be empty")
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError(
+                "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS must be positive and finite"
+            )
+        if not 1_024 <= self.maximum_response_bytes <= 4_194_304:
+            raise ValueError(
+                "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES must be between 1024 and 4194304"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ObjectStorageSettings:
     bucket: str
     region: str = "us-east-1"
+    key_prefix: str = ""
     endpoint_url: str | None = None
     access_key_id: str | None = field(default=None, repr=False)
     secret_access_key: str | None = field(default=None, repr=False)
@@ -48,6 +83,10 @@ class ObjectStorageSettings:
             raise ValueError("FRAMEFACTORY_S3_BUCKET must not be empty")
         if bool(self.access_key_id) != bool(self.secret_access_key):
             raise ValueError("S3 access key id and secret must be configured together")
+        if self.key_prefix and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.key_prefix):
+            raise ValueError(
+                "FRAMEFACTORY_S3_KEY_PREFIX must be one lowercase safe path segment"
+            )
         if self.endpoint_url:
             parsed = urlsplit(self.endpoint_url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -176,6 +215,143 @@ class AssetAnalysisSettings:
             raise ValueError("JSON-only ASR responses cannot promise timestamp granularity")
 
 
+@dataclass(frozen=True, slots=True)
+class RunwaySettings:
+    """Text-only generated-video provider configuration.
+
+    Model and base URL are explicit deployment inputs so readiness never
+    silently changes when a provider adds or reroutes models.
+    """
+
+    base_url: str
+    api_key: str = field(repr=False)
+    model: str = "gen4.5"
+    timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "FRAMEFACTORY_RUNWAY_BASE_URL must be a credential-free HTTPS URL"
+            )
+        if not self.api_key:
+            raise ValueError("FRAMEFACTORY_RUNWAY_API_KEY must not be empty")
+        if self.model != "gen4.5":
+            raise ValueError(
+                "FRAMEFACTORY_RUNWAY_MODEL must be gen4.5 for generated-only text-to-video"
+            )
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError(
+                "FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS must be positive and finite"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class FullAiVisionSettings:
+    """Independent per-Beat vision provider for generated-only verification."""
+
+    base_url: str
+    api_key: str = field(repr=False)
+    model: str = ""
+    timeout_seconds: float = 180.0
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "FRAMEFACTORY_FULL_AI_VISION_BASE_URL must be a credential-free HTTPS URL"
+            )
+        if not self.api_key or not self.model:
+            raise ValueError("Full-AI vision API key and model must not be empty")
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError(
+                "FRAMEFACTORY_FULL_AI_VISION_TIMEOUT_SECONDS must be positive and finite"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class WebCaptureSettings:
+    """Dedicated browser-capture runtime and its fail-closed egress assertion."""
+
+    proxy_url: str
+    egress_policy_enforced: bool
+    proxy_username: str = field(default="", repr=False)
+    proxy_password: str = field(default="", repr=False)
+    allow_insecure_loopback_proxy: bool = False
+    disable_chromium_sandbox: bool = False
+    allow_non_standard_ports: bool = False
+    navigation_timeout_seconds: int = 20
+    settle_timeout_seconds: int = 30
+    screenshot_timeout_seconds: int = 10
+    job_timeout_seconds: int = 90
+    maximum_resources: int = 400
+    maximum_transfer_bytes: int = 104_857_600
+    maximum_body_characters: int = 12_000
+    maximum_redirects: int = 5
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.proxy_url)
+        loopback_http = (
+            self.allow_insecure_loopback_proxy
+            and parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        )
+        if (
+            (parsed.scheme != "https" and not loopback_http)
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "FRAMEFACTORY_BROWSER_EGRESS_PROXY_URL must be a credential-free HTTPS URL "
+                "or an explicitly enabled development loopback HTTP proxy"
+            )
+        if not self.egress_policy_enforced:
+            raise ValueError(
+                "browser capture requires FRAMEFACTORY_BROWSER_EGRESS_POLICY_ENFORCED=true"
+            )
+        if bool(self.proxy_username) != bool(self.proxy_password):
+            raise ValueError("browser egress proxy username and password must be paired")
+        for name in (
+            "navigation_timeout_seconds",
+            "settle_timeout_seconds",
+            "screenshot_timeout_seconds",
+            "job_timeout_seconds",
+            "maximum_resources",
+            "maximum_transfer_bytes",
+            "maximum_body_characters",
+            "maximum_redirects",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"browser capture {name} must be positive")
+        if self.job_timeout_seconds < self.navigation_timeout_seconds:
+            raise ValueError("browser capture hard timeout must cover navigation timeout")
+        if not 1 <= self.maximum_resources <= 2_000:
+            raise ValueError("browser capture maximum resources must be between 1 and 2000")
+        if not 1_048_576 <= self.maximum_transfer_bytes <= 536_870_912:
+            raise ValueError("browser capture maximum bytes must be between 1 MiB and 512 MiB")
+        if not 1_000 <= self.maximum_body_characters <= 50_000:
+            raise ValueError("browser capture body characters must be between 1000 and 50000")
+        if not 1 <= self.maximum_redirects <= 10:
+            raise ValueError("browser capture maximum redirects must be between 1 and 10")
+
+
 def _positive_float(environment: dict[str, str], name: str, default: str) -> float:
     try:
         value = float(environment.get(name, default))
@@ -219,6 +395,7 @@ class WorkerSettings:
     environment: str = "production"
     intake_queue_name: str = "runs"
     queue_name: str = "run-steps"
+    browser_capture_only: bool = False
     redis_namespace: str = "framefactory"
     worker_id: str = ""
     worker_concurrency: int = 1
@@ -228,10 +405,15 @@ class WorkerSettings:
     connect_timeout_seconds: float = 5.0
     allow_insecure_transport: bool = False
     openai_compatible: OpenAICompatibleSettings | None = None
+    research_search: ResearchSearchSettings | None = None
     object_storage: ObjectStorageSettings | None = None
     legacy_media: LegacyMediaSettings | None = None
     asset_library: AssetLibrarySettings | None = None
     asset_analysis: AssetAnalysisSettings | None = None
+    runway: RunwaySettings | None = None
+    full_ai_vision: FullAiVisionSettings | None = None
+    web_capture: WebCaptureSettings | None = None
+    declared_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         database = urlsplit(self.database_url)
@@ -242,10 +424,50 @@ class WorkerSettings:
             raise ValueError("FRAMEFACTORY_REDIS_URL must be a Redis URL with a host")
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("FRAMEFACTORY_ENV must be development, test, or production")
+        normalized_capabilities = tuple(
+            sorted({str(value).strip() for value in self.declared_capabilities if str(value).strip()})
+        )
+        if any(not _QUEUE.fullmatch(value) for value in normalized_capabilities):
+            raise ValueError(
+                "FRAMEFACTORY_WORKER_CAPABILITIES contains an invalid operation name"
+            )
+        object.__setattr__(self, "declared_capabilities", normalized_capabilities)
         if not _QUEUE.fullmatch(self.intake_queue_name):
             raise ValueError("FRAMEFACTORY_RUN_QUEUE contains unsupported characters")
         if not _QUEUE.fullmatch(self.queue_name):
             raise ValueError("FRAMEFACTORY_STEP_QUEUE contains unsupported characters")
+        if self.browser_capture_only and self.queue_name != "browser-capture":
+            raise ValueError(
+                "browser-capture-only workers must consume FRAMEFACTORY_STEP_QUEUE=browser-capture"
+            )
+        if not self.browser_capture_only and self.queue_name == "browser-capture":
+            raise ValueError(
+                "ordinary workers must not consume the reserved browser-capture queue"
+            )
+        if self.browser_capture_only != (self.web_capture is not None):
+            raise ValueError(
+                "browser capture settings and FRAMEFACTORY_BROWSER_CAPTURE_ONLY=true "
+                "must be configured together"
+            )
+        if self.browser_capture_only:
+            unrelated = tuple(
+                name
+                for name, value in (
+                    ("openai_compatible", self.openai_compatible),
+                    ("research_search", self.research_search),
+                    ("legacy_media", self.legacy_media),
+                    ("asset_library", self.asset_library),
+                    ("asset_analysis", self.asset_analysis),
+                    ("runway", self.runway),
+                    ("full_ai_vision", self.full_ai_vision),
+                )
+                if value is not None
+            )
+            if unrelated:
+                raise ValueError(
+                    "browser-capture-only workers reject unrelated providers: "
+                    + ", ".join(unrelated)
+                )
         if not _QUEUE.fullmatch(self.redis_namespace):
             raise ValueError("FRAMEFACTORY_REDIS_NAMESPACE contains unsupported characters")
         if not self.worker_id or len(self.worker_id) > 255:
@@ -281,6 +503,12 @@ class WorkerSettings:
                 and urlsplit(self.object_storage.endpoint_url).scheme != "https"
             ):
                 raise ValueError("production object storage endpoint requires HTTPS")
+        if (
+            self.environment == "production"
+            and self.openai_compatible is not None
+            and urlsplit(self.openai_compatible.base_url).scheme != "https"
+        ):
+            raise ValueError("production model provider requires HTTPS")
         if self.openai_compatible is not None and self.object_storage is None:
             raise ValueError(
                 "configured model providers require FRAMEFACTORY_S3_BUCKET for durable artifacts"
@@ -295,6 +523,25 @@ class WorkerSettings:
             )
         if self.asset_analysis is not None and self.object_storage is None:
             raise ValueError("configured asset analysis requires FRAMEFACTORY_S3_BUCKET")
+        if self.runway is not None and self.object_storage is None:
+            raise ValueError(
+                "configured Runway generation requires FRAMEFACTORY_S3_BUCKET"
+            )
+        if self.full_ai_vision is not None and self.object_storage is None:
+            raise ValueError(
+                "configured Full-AI vision verification requires FRAMEFACTORY_S3_BUCKET"
+            )
+        if self.web_capture is not None and self.object_storage is None:
+            raise ValueError("configured browser capture requires FRAMEFACTORY_S3_BUCKET")
+        if (
+            self.browser_capture_only
+            and self.object_storage is not None
+            and self.object_storage.key_prefix != "browser-capture"
+        ):
+            raise ValueError(
+                "browser-capture-only workers require "
+                "FRAMEFACTORY_S3_KEY_PREFIX=browser-capture"
+            )
         if (
             self.environment == "production"
             and not self.allow_insecure_transport
@@ -310,6 +557,13 @@ class WorkerSettings:
             and urlsplit(self.asset_analysis.asr_base_url).scheme != "https"
         ):
             raise ValueError("production ASR provider requires HTTPS")
+        if (
+            self.environment == "production"
+            and not self.allow_insecure_transport
+            and self.runway is not None
+            and urlsplit(self.runway.base_url).scheme != "https"
+        ):
+            raise ValueError("production Runway provider requires HTTPS")
 
     @classmethod
     def from_environment(cls, environ: dict[str, str] | None = None) -> WorkerSettings:
@@ -335,6 +589,9 @@ class WorkerSettings:
             environment=environment.get("FRAMEFACTORY_ENV", "production").strip().lower(),
             intake_queue_name=environment.get("FRAMEFACTORY_RUN_QUEUE", "runs").strip(),
             queue_name=environment.get("FRAMEFACTORY_STEP_QUEUE", "run-steps").strip(),
+            browser_capture_only=_boolean(
+                environment, "FRAMEFACTORY_BROWSER_CAPTURE_ONLY"
+            ),
             redis_namespace=environment.get(
                 "FRAMEFACTORY_REDIS_NAMESPACE", "framefactory"
             ).strip(),
@@ -358,10 +615,21 @@ class WorkerSettings:
                 environment, "FRAMEFACTORY_ALLOW_INSECURE_TRANSPORT"
             ),
             openai_compatible=_openai_settings(environment),
+            research_search=_research_search_settings(environment),
             object_storage=_object_storage_settings(environment),
             legacy_media=_legacy_media_settings(environment),
             asset_library=_asset_library_settings(environment, database_url),
             asset_analysis=_asset_analysis_settings(environment),
+            runway=_runway_settings(environment),
+            full_ai_vision=_full_ai_vision_settings(environment),
+            web_capture=_web_capture_settings(environment),
+            declared_capabilities=tuple(
+                value.strip()
+                for value in environment.get(
+                    "FRAMEFACTORY_WORKER_CAPABILITIES", ""
+                ).split(",")
+                if value.strip()
+            ),
         )
 
 
@@ -387,6 +655,40 @@ def _openai_settings(environment: dict[str, str]) -> OpenAICompatibleSettings | 
     )
 
 
+def _research_search_settings(
+    environment: dict[str, str],
+) -> ResearchSearchSettings | None:
+    url = environment.get("FRAMEFACTORY_RESEARCH_SEARCH_URL", "").strip()
+    bearer_token = _secret(
+        environment, "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN"
+    )
+    raw_timeout = environment.get(
+        "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS", ""
+    ).strip()
+    raw_maximum = environment.get(
+        "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES", ""
+    ).strip()
+    if not any((url, bearer_token, raw_timeout, raw_maximum)):
+        return None
+    if not url or not bearer_token:
+        raise ValueError(
+            "FRAMEFACTORY_RESEARCH_SEARCH_URL and "
+            "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN must be configured together"
+        )
+    return ResearchSearchSettings(
+        url=url,
+        bearer_token=bearer_token,
+        timeout_seconds=_positive_float(
+            environment, "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS", "20"
+        ),
+        maximum_response_bytes=_positive_int(
+            environment,
+            "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES",
+            "1048576",
+        ),
+    )
+
+
 def _object_storage_settings(environment: dict[str, str]) -> ObjectStorageSettings | None:
     bucket = environment.get("FRAMEFACTORY_S3_BUCKET", "").strip()
     if not bucket:
@@ -394,6 +696,7 @@ def _object_storage_settings(environment: dict[str, str]) -> ObjectStorageSettin
     return ObjectStorageSettings(
         bucket=bucket,
         region=environment.get("FRAMEFACTORY_S3_REGION", "us-east-1").strip(),
+        key_prefix=environment.get("FRAMEFACTORY_S3_KEY_PREFIX", "").strip(),
         endpoint_url=environment.get("FRAMEFACTORY_S3_ENDPOINT_URL", "").strip() or None,
         access_key_id=_secret(environment, "FRAMEFACTORY_S3_ACCESS_KEY_ID") or None,
         secret_access_key=_secret(environment, "FRAMEFACTORY_S3_SECRET_ACCESS_KEY") or None,
@@ -503,4 +806,132 @@ def _asset_analysis_settings(
         asr_timestamp_mode=environment.get(
             "FRAMEFACTORY_ASR_TIMESTAMP_MODE", "word"
         ).strip(),
+    )
+
+
+def _runway_settings(environment: dict[str, str]) -> RunwaySettings | None:
+    base_url = environment.get("FRAMEFACTORY_RUNWAY_BASE_URL", "").strip()
+    api_key = _secret(environment, "FRAMEFACTORY_RUNWAY_API_KEY")
+    model = environment.get("FRAMEFACTORY_RUNWAY_MODEL", "").strip()
+    raw_timeout = environment.get("FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS", "").strip()
+    if not any((base_url, api_key, model, raw_timeout)):
+        return None
+    if not all((base_url, api_key, model)):
+        raise ValueError(
+            "FRAMEFACTORY_RUNWAY_BASE_URL, FRAMEFACTORY_RUNWAY_API_KEY and "
+            "FRAMEFACTORY_RUNWAY_MODEL must be configured together"
+        )
+    return RunwaySettings(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=_positive_float(
+            environment, "FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS", "60"
+        ),
+    )
+
+
+def _full_ai_vision_settings(
+    environment: dict[str, str],
+) -> FullAiVisionSettings | None:
+    base_url = environment.get("FRAMEFACTORY_FULL_AI_VISION_BASE_URL", "").strip()
+    api_key = _secret(environment, "FRAMEFACTORY_FULL_AI_VISION_API_KEY")
+    model = environment.get("FRAMEFACTORY_FULL_AI_VISION_MODEL", "").strip()
+    raw_timeout = environment.get(
+        "FRAMEFACTORY_FULL_AI_VISION_TIMEOUT_SECONDS", ""
+    ).strip()
+    if not any((base_url, api_key, model, raw_timeout)):
+        return None
+    if not all((base_url, api_key, model)):
+        raise ValueError(
+            "FRAMEFACTORY_FULL_AI_VISION_BASE_URL, "
+            "FRAMEFACTORY_FULL_AI_VISION_API_KEY and "
+            "FRAMEFACTORY_FULL_AI_VISION_MODEL must be configured together"
+        )
+    return FullAiVisionSettings(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=_positive_float(
+            environment, "FRAMEFACTORY_FULL_AI_VISION_TIMEOUT_SECONDS", "180"
+        ),
+    )
+
+
+def _web_capture_settings(
+    environment: dict[str, str],
+) -> WebCaptureSettings | None:
+    enabled = _boolean(environment, "FRAMEFACTORY_BROWSER_CAPTURE_ENABLED")
+    if not enabled:
+        browser_values = (
+            environment.get("FRAMEFACTORY_BROWSER_EGRESS_PROXY_URL", ""),
+            environment.get("FRAMEFACTORY_BROWSER_EGRESS_PROXY_USERNAME", ""),
+            environment.get("FRAMEFACTORY_BROWSER_EGRESS_PROXY_PASSWORD", ""),
+        )
+        if any(value.strip() for value in browser_values):
+            raise ValueError(
+                "browser capture proxy settings require "
+                "FRAMEFACTORY_BROWSER_CAPTURE_ENABLED=true"
+            )
+        return None
+    proxy_url = environment.get(
+        "FRAMEFACTORY_BROWSER_EGRESS_PROXY_URL", ""
+    ).strip()
+    if not proxy_url:
+        raise ValueError("browser capture requires FRAMEFACTORY_BROWSER_EGRESS_PROXY_URL")
+    allow_loopback_proxy = _boolean(
+        environment, "FRAMEFACTORY_BROWSER_ALLOW_INSECURE_LOOPBACK_PROXY"
+    )
+    disable_chromium_sandbox = _boolean(
+        environment, "FRAMEFACTORY_BROWSER_DISABLE_CHROMIUM_SANDBOX"
+    )
+    development_only_override = allow_loopback_proxy or disable_chromium_sandbox
+    if (
+        development_only_override
+        and environment.get("FRAMEFACTORY_ENV", "production").lower()
+        != "development"
+    ):
+        raise ValueError(
+            "browser loopback/no-sandbox overrides are development-only"
+        )
+    return WebCaptureSettings(
+        proxy_url=proxy_url,
+        egress_policy_enforced=_boolean(
+            environment, "FRAMEFACTORY_BROWSER_EGRESS_POLICY_ENFORCED"
+        ),
+        proxy_username=_secret(
+            environment, "FRAMEFACTORY_BROWSER_EGRESS_PROXY_USERNAME"
+        ),
+        proxy_password=_secret(
+            environment, "FRAMEFACTORY_BROWSER_EGRESS_PROXY_PASSWORD"
+        ),
+        allow_insecure_loopback_proxy=allow_loopback_proxy,
+        disable_chromium_sandbox=disable_chromium_sandbox,
+        allow_non_standard_ports=_boolean(
+            environment, "FRAMEFACTORY_BROWSER_ALLOW_NON_STANDARD_PORTS"
+        ),
+        navigation_timeout_seconds=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_NAVIGATION_TIMEOUT_SECONDS", "20"
+        ),
+        settle_timeout_seconds=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_SETTLE_TIMEOUT_SECONDS", "30"
+        ),
+        screenshot_timeout_seconds=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_SCREENSHOT_TIMEOUT_SECONDS", "10"
+        ),
+        job_timeout_seconds=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_JOB_TIMEOUT_SECONDS", "90"
+        ),
+        maximum_resources=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_MAXIMUM_RESOURCES", "400"
+        ),
+        maximum_transfer_bytes=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_MAXIMUM_TRANSFER_BYTES", "104857600"
+        ),
+        maximum_body_characters=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_MAXIMUM_BODY_CHARACTERS", "12000"
+        ),
+        maximum_redirects=_positive_int(
+            environment, "FRAMEFACTORY_BROWSER_MAXIMUM_REDIRECTS", "5"
+        ),
     )

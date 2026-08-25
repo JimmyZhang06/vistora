@@ -17,6 +17,7 @@ from framefactory_api.settings import Settings
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DATABASE_URL_ENV = "FRAMEFACTORY_TEST_POSTGRES_URL"
 MUTATION_OPT_IN_ENV = "FRAMEFACTORY_TEST_POSTGRES_ALLOW_MUTATION"
+PIPELINE_V2_ID = "3df5479d-9eb2-583f-8531-66ba0bb61204"
 
 
 def _disposable_database_url() -> str:
@@ -71,11 +72,22 @@ def test_official_channel_defaults_and_run_snapshot_use_real_postgres(
         for version in versions.json()["data"]
         if version["ownership_type"] == "system"
         and version["state"] == "published"
-        and version["default_pipeline_version_id"] is not None
+        and version["default_pipeline_version_id"] == PIPELINE_V2_ID
     )
     assert official["workspace_id"] != workspace_id
 
     nonce = uuid4().hex[:12]
+    library_response = postgres_client.post(
+        "/v1/asset-libraries",
+        json={
+            "name": f"PostgreSQL Run Assets {nonce}",
+            "slug": f"postgres-run-assets-{nonce}",
+            "description": "Active library for the retrieval Pipeline preflight.",
+        },
+        headers={"Idempotency-Key": f"postgres-run-assets-{nonce}"},
+    )
+    assert library_response.status_code == 201, library_response.text
+    library = library_response.json()
     payload = {
         "name": f"PostgreSQL Channel {nonce}",
         "slug": f"postgres-channel-{nonce}",
@@ -88,7 +100,7 @@ def test_official_channel_defaults_and_run_snapshot_use_real_postgres(
         "default_composition": {
             "skill_version_id": official["id"],
             "pipeline_version_id": official["default_pipeline_version_id"],
-            "asset_library_ids": [],
+            "asset_library_ids": [library["id"]],
             "voice_profile_id": None,
             "render_preset_version_id": None,
         },
@@ -117,6 +129,7 @@ def test_official_channel_defaults_and_run_snapshot_use_real_postgres(
         run["composition_snapshot"]["pipeline_version"]["id"]
         == official["default_pipeline_version_id"]
     )
+    assert run["composition_snapshot"]["asset_library_ids"] == [library["id"]]
 
     archived_response = postgres_client.delete(
         f"/v1/channels/{created['id']}",

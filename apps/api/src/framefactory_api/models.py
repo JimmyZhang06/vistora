@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -262,6 +262,7 @@ class GenerationBatchCreate(StrictModel):
     items: list[BatchItemCreate] = Field(min_length=1, max_length=5000)
     composition: RunCompositionInput
     video_settings: VideoSettingsInput | None = None
+    research_mode: Literal["off", "when_missing", "required"] = "when_missing"
 
 
 class GenerationBatchRetryFailed(StrictModel):
@@ -288,6 +289,11 @@ class AssetUploadCreate(StrictModel):
     copyright_status: Literal["owned", "licensed", "public_domain"]
     tags: list[str] = Field(default_factory=list, max_length=64)
     source: dict[str, str | float | bool | None] | None = None
+
+    @field_validator("content_type", mode="before")
+    @classmethod
+    def normalize_content_type(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def validate_media_kind(self) -> AssetUploadCreate:
@@ -340,10 +346,46 @@ class AssetAcquisitionCreate(StrictModel):
         return self
 
 
+class LibraryBuildJobCreate(StrictModel):
+    library_id: UUID
+    topic: str = Field(min_length=1, max_length=1000)
+    queries: list[str] = Field(default_factory=list, max_length=12)
+    sources: list[Literal["youtube", "bilibili", "wikimedia"]] = Field(
+        default_factory=lambda: ["wikimedia"],
+        min_length=1,
+        max_length=3,
+    )
+    max_assets: int = Field(default=6, ge=1, le=6)
+    copyright_status: Literal["licensed", "public_domain"] = "public_domain"
+    rights_confirmed: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_build_spec(self) -> LibraryBuildJobCreate:
+        if not self.topic.strip():
+            raise ValueError("topic must contain visible characters")
+        cleaned_queries = [value.strip() for value in self.queries]
+        if any(not value or len(value) > 500 for value in cleaned_queries):
+            raise ValueError("queries must contain 1-500 visible characters")
+        if len(set(self.sources)) != len(self.sources):
+            raise ValueError("sources must be unique")
+        if self.copyright_status == "public_domain" and any(
+            source != "wikimedia" for source in self.sources
+        ):
+            raise ValueError(
+                "public_domain library builds only support the wikimedia source"
+            )
+        return self
+
+
 class AssetUploadComplete(StrictModel):
     object_key: str = Field(min_length=1, max_length=1024)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     content_type: str = Field(pattern=r"^(?:image|video)/[A-Za-z0-9.+-]+$", max_length=120)
+
+    @field_validator("content_type", mode="before")
+    @classmethod
+    def normalize_content_type(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class AssetMetadataPatch(StrictModel):

@@ -42,7 +42,28 @@ import type {
   GenerationBatchItem,
   GenerationBatchItemPage,
   GenerationBatchItemQuery,
+  LibraryBuildJob,
+  LibraryBuildJobCreateRequest,
+  FullAiBlocker,
+  FullAiEstimate,
+  FullAiOptions,
+  FullAiRun,
+  FullAiRunCreateRequest,
+  FullAiSpec,
   JsonObject,
+  WebpageVideoAspectRatio,
+  WebpageVideoBlocker,
+  WebpageVideoCapture,
+  WebpageVideoMedia,
+  WebpageVideoOptions,
+  WebpageVideoReviewRequest,
+  WebpageVideoScopeReviewRequest,
+  WebpageVideoSitePage,
+  WebpageVideoSitePlan,
+  WebpageVideoStoryboardReviewRequest,
+  WebpageVideoStoryboardShot,
+  WebpageVideoRun,
+  WebpageVideoRunCreateRequest,
   Run,
   RunArtifact,
   RunDraft,
@@ -94,6 +115,39 @@ function optionalNumber(value: unknown): number | undefined {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function records(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.map(record) : [];
+}
+
+function nonEmptyRecord(value: unknown): JsonRecord | undefined {
+  const mapped = record(value);
+  return Object.keys(mapped).length ? mapped : undefined;
+}
+
+function normalizeWebpageVideoStatus(value: unknown): string {
+  const status = text(value, "queued").toLowerCase();
+  const aliases: Record<string, string> = {
+    pending: "queued",
+    validating: "validating_url",
+    url_validating: "validating_url",
+    screenshotting: "capturing",
+    awaiting_review: "awaiting_capture_review",
+    promoting: "promoting_asset",
+    materializing: "promoting_asset",
+    analyzing: "analyzing_asset",
+    writing: "composing",
+    synthesizing: "composing",
+    timeline: "composing",
+    qc: "quality_check",
+    awaiting_quality_review: "quality_review_required",
+    awaiting_qc_review: "quality_review_required",
+    completed: "succeeded",
+    complete: "succeeded",
+    canceled: "cancelled",
+  };
+  return aliases[status] ?? status;
 }
 
 function idempotencyKey(prefix: string): string {
@@ -233,13 +287,14 @@ export function skillSpecToCanonicalPatch(spec: Partial<SkillSpec>, raw: JsonRec
   if (spec.assetPolicy) {
     const source = record(raw.asset_policy);
     const previous = canonicalVersionToSkillSpec({ asset_policy: source }).assetPolicy;
+    const requestedKinds = spec.assetPolicy.requiredTags.map((item) => item.trim()).filter(Boolean);
     const fallback = spec.assetPolicy.allowExternalAcquisition === previous.allowExternalAcquisition
       ? text(source.fallback, "fail")
       : spec.assetPolicy.allowExternalAcquisition ? "licensed_stock" : "fail";
     output.asset_policy = {
       ...source,
       library_binding: spec.assetPolicy.strategy === "channel_default" ? "channel_default" : spec.assetPolicy.strategy === "explicit_only" ? "none" : "run_composition",
-      allowed_kinds: spec.assetPolicy.requiredTags,
+      allowed_kinds: requestedKinds.length ? requestedKinds : previous.requiredTags.length ? previous.requiredTags : ["image", "video"],
       fallback,
     };
   }
@@ -349,6 +404,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     return {
       code: text(body.code, `HTTP_${response.status}`), message: text(body.message, response.statusText || "API 请求失败"), status: response.status,
       field: location || undefined, retryable: response.status === 429 || response.status >= 500,
+      details: Object.keys(details).length ? details as JsonObject : undefined,
     };
   }
 
@@ -555,6 +611,9 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
 
   async createSkill(request: CreateSkillRequest): Promise<ApiResult<Skill>> {
     const identity = request.kind === "import" ? request.package.identity : request.identity;
+    if (request.kind === "distill") {
+      return { ok: false, error: { code: "distill_not_available", message: "示例蒸馏服务尚未接入，未创建空白替代草稿。", status: 501 } };
+    }
     if (request.kind === "fork") {
       const forked = await this.request<{ skill: JsonRecord; version: JsonRecord }>(`/v1/skills/${encodeURIComponent(request.sourceSkillId)}/fork`, {
         method: "POST", headers: { "Idempotency-Key": idempotencyKey("fork-skill") }, body: JSON.stringify({
@@ -571,13 +630,16 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       visibility: identity.visibility ?? "private", publisher_name: "My Vistora",
     }) });
     if (!created.ok) return created;
-    const spec = request.kind === "blank" ? request.initialSpec : request.kind === "import" ? request.package.spec : {};
+    const spec = request.kind === "blank" ? request.initialSpec : request.package.spec;
     const version = await this.request<JsonRecord>("/v1/skill-versions", { method: "POST", headers: { "Idempotency-Key": idempotencyKey("create-version") }, body: JSON.stringify({
       skill_id: text(created.data.id), version: "0.1.0", ...defaultCanonicalSpec(spec),
       test_topics: request.kind === "import" ? request.package.testTopics ?? [] : [],
       release_notes: request.kind === "import" ? request.package.releaseNotes ?? "" : "",
     }) });
-    if (!version.ok) return version;
+    if (!version.ok) {
+      await this.request<void>(`/v1/skills/${encodeURIComponent(text(created.data.id))}`, { method: "DELETE" });
+      return version;
+    }
     return { ok: true, data: this.mapSkill(created.data, [this.mapVersion(version.data)]) };
   }
 
@@ -681,6 +743,76 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     } };
   }
 
+  private mapLibraryBuildJob(raw: JsonRecord): LibraryBuildJob {
+    const spec = record(raw.spec);
+    const progress = record(raw.progress);
+    const error = record(raw.error);
+    return {
+      schemaVersion: text(raw.schema_version, "1.0.0"),
+      id: text(raw.id),
+      workspaceId: text(raw.workspace_id),
+      libraryId: text(raw.library_id),
+      status: text(raw.status, "queued") as LibraryBuildJob["status"],
+      stage: text(raw.stage, "discover") as LibraryBuildJob["stage"],
+      spec: {
+        topic: text(spec.topic),
+        queries: strings(spec.queries),
+        sources: strings(spec.sources) as LibraryBuildJob["spec"]["sources"],
+        maxAssets: number(spec.max_assets, 6),
+        copyrightStatus: text(spec.copyright_status, "public_domain") as LibraryBuildJob["spec"]["copyrightStatus"],
+        rightsConfirmed: true,
+      },
+      progress: {
+        assetIds: strings(progress.asset_ids),
+        discovered: number(progress.discovered),
+        transferred: number(progress.transferred),
+        analyzed: number(progress.analyzed),
+        indexed: number(progress.indexed),
+        failed: number(progress.failed),
+      },
+      error: Object.keys(error).length ? error as LibraryBuildJob["error"] : undefined,
+      revision: number(raw.revision, 1),
+      createdBy: text(raw.created_by),
+      createdAt: text(raw.created_at),
+      startedAt: text(raw.started_at) || undefined,
+      completedAt: text(raw.completed_at) || undefined,
+      updatedAt: text(raw.updated_at),
+    };
+  }
+
+  async createLibraryBuildJob(
+    request: LibraryBuildJobCreateRequest,
+    key: string,
+  ): Promise<ApiResult<LibraryBuildJob>> {
+    const result = await this.request<JsonRecord>("/v1/library-build-jobs", {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        library_id: request.libraryId,
+        topic: request.topic,
+        queries: request.queries ?? [],
+        sources: request.sources,
+        max_assets: request.maxAssets,
+        copyright_status: request.copyrightStatus,
+        rights_confirmed: true,
+      }),
+    });
+    return result.ok ? { ok: true, data: this.mapLibraryBuildJob(result.data) } : result;
+  }
+
+  async getLibraryBuildJob(jobId: string): Promise<ApiResult<LibraryBuildJob>> {
+    const result = await this.request<JsonRecord>(`/v1/library-build-jobs/${encodeURIComponent(jobId)}`);
+    return result.ok ? { ok: true, data: this.mapLibraryBuildJob(result.data) } : result;
+  }
+
+  async cancelLibraryBuildJob(jobId: string, revision: number): Promise<ApiResult<LibraryBuildJob>> {
+    const result = await this.request<JsonRecord>(`/v1/library-build-jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      headers: { "If-Match": `"${revision}"` },
+    });
+    return result.ok ? { ok: true, data: this.mapLibraryBuildJob(result.data) } : result;
+  }
+
   async uploadAsset(request: AssetUploadRequest): Promise<ApiResult<void>> {
     try {
       const digest = await sha256Hex(request.file);
@@ -694,6 +826,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
           description: request.description, kind, content_type: request.file.type,
           byte_size: request.file.size, sha256: digest,
           copyright_status: request.copyrightStatus, tags: request.tags,
+          ...(request.relativePath ? { source: { type: "local_directory", relative_path: request.relativePath } } : {}),
         }),
       });
       if (!initiated.ok) return initiated;
@@ -1033,7 +1166,10 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     if (!versionsResult.ok) return versionsResult;
     if (!librariesResult.ok) return librariesResult;
     const skills = new Map(skillsResult.data.map((item) => [text(item.id), item]));
-    const versions = versionsResult.data.filter((item) => text(item.state) === "published");
+    const versions = versionsResult.data.filter((item) => {
+      const parent = skills.get(text(item.skill_id));
+      return text(item.state) === "published" && text(parent?.status) === "active";
+    });
     const pipelineIds = [...new Set(versions.map((item) => text(item.default_pipeline_version_id)).filter(Boolean))];
     return { ok: true, data: {
       channels: channelsResult.ok
@@ -1053,6 +1189,563 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       skills: versions.map((item) => { const skill = skills.get(text(item.skill_id)) ?? {}; const system = text(skill.publisher_type) === "system"; return { skillId: text(item.skill_id), skillName: text(skill.name), versionId: text(item.id), version: text(item.version), publisher: { id: system ? "system" : text(skill.workspace_id), workspaceId: text(skill.workspace_id), type: system ? "system" : "workspace", displayName: text(skill.publisher_name), verified: system } }; }),
       pipelines: pipelineIds.map((id) => ({ id, workspaceId: "", pipelineId: id, name: "Skill 默认 Pipeline", version: "1.0.0", capabilities: [] })),
     } };
+  }
+
+  private mapFullAiBlockers(value: unknown): FullAiBlocker[] {
+    return (Array.isArray(value) ? value : []).map((item) => {
+      const blocker = record(item);
+      return {
+        code: text(blocker.code, "FULL_AI_BLOCKED"),
+        message: text(blocker.message, "全 AI 生成当前不可用。"),
+        retryable: Boolean(blocker.retryable),
+      };
+    });
+  }
+
+  private fullAiSpecPayload(spec: FullAiSpec): JsonRecord {
+    return {
+      brief: spec.brief,
+      direction: spec.direction,
+      aspect_ratio: spec.aspectRatio,
+      duration_seconds: spec.durationSeconds,
+      variants_per_scene: spec.variantsPerScene,
+      continuity: spec.continuity,
+      ai_disclosure: spec.aiDisclosure,
+    };
+  }
+
+  private mapFullAiSpec(raw: JsonRecord): FullAiSpec {
+    return {
+      brief: text(raw.brief),
+      direction: text(raw.direction),
+      aspectRatio: text(raw.aspect_ratio),
+      durationSeconds: number(raw.duration_seconds),
+      variantsPerScene: number(raw.variants_per_scene),
+      continuity: Boolean(raw.continuity),
+      aiDisclosure: Boolean(raw.ai_disclosure),
+    };
+  }
+
+  async getFullAiOptions(): Promise<ApiResult<FullAiOptions>> {
+    const result = await this.request<JsonRecord>("/v1/full-ai/options");
+    if (!result.ok) return result;
+    const pipeline = record(result.data.pipeline);
+    const provider = record(result.data.provider);
+    const limits = record(result.data.limits);
+    const providerName = text(provider.name);
+    const modelId = text(provider.model_id);
+    return { ok: true, data: {
+      schemaVersion: text(result.data.schema_version, "1.0.0"),
+      mode: "generated_only",
+      status: text(result.data.status, "blocked") === "ready" ? "ready" : "blocked",
+      pipeline: {
+        slug: text(pipeline.slug),
+        version: number(pipeline.version),
+        visualSourceMode: "generated_only",
+      },
+      provider: {
+        name: providerName || undefined,
+        modelId: modelId || undefined,
+        status: (["ready", "unconfigured", "incomplete"].includes(text(provider.status))
+          ? text(provider.status)
+          : "unconfigured") as FullAiOptions["provider"]["status"],
+        supportsReconciliation: Boolean(provider.supports_reconciliation),
+        submitUnknownPolicy: "manual_only",
+        continuityModes: strings(provider.continuity_modes),
+      },
+      limits: {
+        briefMaxLength: number(limits.brief_max_length),
+        durationSeconds: (Array.isArray(limits.duration_seconds) ? limits.duration_seconds : []).filter((item): item is number => typeof item === "number"),
+        aspectRatios: strings(limits.aspect_ratios),
+        directions: strings(limits.directions),
+        variantsPerScene: (Array.isArray(limits.variants_per_scene) ? limits.variants_per_scene : []).filter((item): item is number => typeof item === "number"),
+        clipSeconds: number(limits.clip_seconds),
+      },
+      blockers: this.mapFullAiBlockers(result.data.blockers),
+    } };
+  }
+
+  async estimateFullAiRun(spec: FullAiSpec): Promise<ApiResult<FullAiEstimate>> {
+    const result = await this.request<JsonRecord>("/v1/full-ai/estimate", {
+      method: "POST",
+      body: JSON.stringify(this.fullAiSpecPayload(spec)),
+    });
+    if (!result.ok) return result;
+    const plan = record(result.data.plan);
+    const rawQuote = record(result.data.quote);
+    const quote = typeof rawQuote.amount_minor === "number" && text(rawQuote.currency)
+      ? {
+          currency: text(rawQuote.currency),
+          amountMinor: number(rawQuote.amount_minor),
+          expiresAt: text(rawQuote.expires_at),
+        }
+      : undefined;
+    return { ok: true, data: {
+      schemaVersion: text(result.data.schema_version, "1.0.0"),
+      status: text(result.data.status, "blocked") === "ready" ? "ready" : "blocked",
+      requestFingerprint: text(result.data.request_fingerprint),
+      plan: {
+        sceneCount: number(plan.scene_count),
+        clipSeconds: number(plan.clip_seconds),
+        candidateCount: number(plan.candidate_count),
+        billableSeconds: number(plan.billable_seconds),
+      },
+      quote,
+      blockers: this.mapFullAiBlockers(result.data.blockers),
+    } };
+  }
+
+  private mapFullAiRun(raw: JsonRecord): FullAiRun {
+    const provider = record(raw.provider);
+    const quote = record(raw.quote);
+    const billing = record(raw.billing);
+    const providerName = text(provider.name);
+    const modelId = text(provider.model_id);
+    return {
+      schemaVersion: text(raw.schema_version, "1.0.0"),
+      id: text(raw.id),
+      projectRunId: text(raw.project_run_id),
+      workspaceId: text(raw.workspace_id),
+      status: text(raw.status),
+      mode: "generated_only",
+      provider: {
+        name: providerName || undefined,
+        modelId: modelId || undefined,
+      },
+      spec: this.mapFullAiSpec(record(raw.spec)),
+      quote: {
+        currency: text(quote.currency),
+        amountMinor: number(quote.amount_minor),
+        expiresAt: text(quote.expires_at),
+      },
+      billing: {
+        status: text(billing.status),
+        authorizedAmountMinor: number(billing.authorized_amount_minor),
+        incurredAmountMinor: number(billing.incurred_amount_minor),
+        requiresReconciliation: Boolean(billing.requires_reconciliation),
+      },
+      createdAt: text(raw.created_at),
+      updatedAt: text(raw.updated_at),
+    };
+  }
+
+  async createFullAiRun(
+    request: FullAiRunCreateRequest,
+    key: string,
+  ): Promise<ApiResult<FullAiRun>> {
+    const result = await this.request<JsonRecord>("/v1/full-ai/runs", {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        ...this.fullAiSpecPayload(request),
+        estimate_fingerprint: request.estimateFingerprint,
+        max_cost_minor: request.maxCostMinor,
+        currency: request.currency,
+      }),
+    });
+    return result.ok ? { ok: true, data: this.mapFullAiRun(result.data) } : result;
+  }
+
+  async getFullAiRun(runId: string): Promise<ApiResult<FullAiRun>> {
+    const result = await this.request<JsonRecord>(`/v1/full-ai/runs/${encodeURIComponent(runId)}`);
+    return result.ok ? { ok: true, data: this.mapFullAiRun(result.data) } : result;
+  }
+
+  private mapWebpageVideoBlockers(value: unknown): WebpageVideoBlocker[] {
+    return records(value).map((blocker) => ({
+      code: text(blocker.code, "WEBPAGE_VIDEO_BLOCKED"),
+      message: text(blocker.message, "网页截图成片服务当前不可用。"),
+      retryable: Boolean(blocker.retryable),
+    }));
+  }
+
+  private mapWebpageVideoOptions(raw: JsonRecord): WebpageVideoOptions {
+    const source = nonEmptyRecord(raw.options) ?? raw;
+    const limits = nonEmptyRecord(source.limits) ?? source;
+    const pipeline = record(source.pipeline);
+    const allowedAspectRatios = new Set<WebpageVideoAspectRatio>(["16:9", "9:16", "1:1", "4:3"]);
+    const explicitRatios = strings(limits.aspect_ratios ?? source.aspect_ratios);
+    const viewportRatios = records(limits.viewports ?? source.viewports).map((viewport) => text(viewport.aspect_ratio));
+    const aspectRatios = [...new Set([...explicitRatios, ...viewportRatios])]
+      .filter((item): item is WebpageVideoAspectRatio => allowedAspectRatios.has(item as WebpageVideoAspectRatio));
+    const rawDurations = limits.duration_seconds ?? source.duration_seconds;
+    const durationSeconds = (Array.isArray(rawDurations) ? rawDurations : [])
+      .filter((item): item is number => typeof item === "number" && Number.isFinite(item) && item > 0);
+    const rawVoices = Array.isArray(source.voice_profiles)
+      ? source.voice_profiles
+      : Array.isArray(source.voices)
+        ? source.voices
+        : [];
+    const voices = rawVoices.flatMap((item) => {
+      if (typeof item === "string" && item) return [{ id: item, name: item }];
+      const voice = record(item);
+      const id = text(voice.id) || text(voice.voice_profile_id) || text(voice.value);
+      if (!id) return [];
+      const language = text(voice.language) || text(voice.locale);
+      const description = text(voice.description);
+      return [{
+        id,
+        name: text(voice.name) || text(voice.label) || id,
+        language: language || undefined,
+        description: description || undefined,
+      }];
+    });
+    const subtitles = record(source.subtitles);
+    const subtitleModes = strings(source.subtitle_modes ?? limits.subtitle_modes);
+    const subtitleSupported = typeof subtitles.supported === "boolean"
+      ? subtitles.supported
+      : typeof source.subtitles_supported === "boolean"
+        ? source.subtitles_supported
+        : subtitleModes.length > 0;
+    const defaultSubtitles = typeof subtitles.default_enabled === "boolean"
+      ? subtitles.default_enabled
+      : typeof source.default_subtitles_enabled === "boolean"
+        ? source.default_subtitles_enabled
+        : subtitleSupported;
+    const pipelineSlug = text(pipeline.slug);
+    return {
+      schemaVersion: text(source.schema_version, "1.0.0"),
+      status: text(source.status, "blocked") === "ready" ? "ready" : "blocked",
+      pipeline: pipelineSlug ? { slug: pipelineSlug, version: number(pipeline.version, 1) } : undefined,
+      limits: {
+        urlMaxLength: number(limits.url_max_length ?? limits.target_url_max_length ?? source.target_url_max_length, 2048),
+        topicMaxLength: number(limits.topic_max_length ?? limits.brief_max_length, 1600),
+        aspectRatios,
+        durationSeconds,
+        crawlMaxPagesDefault: number(limits.crawl_max_pages_default, 8),
+        crawlMaxPagesLimit: number(limits.crawl_max_pages_limit, 12),
+        crawlMaxDepthDefault: number(limits.crawl_max_depth_default, 1),
+        crawlMaxDepthLimit: number(limits.crawl_max_depth_limit, 2),
+      },
+      voices,
+      subtitles: { supported: subtitleSupported, defaultEnabled: subtitleSupported && defaultSubtitles },
+      blockers: this.mapWebpageVideoBlockers(source.blockers),
+    };
+  }
+
+  async getWebpageVideoOptions(): Promise<ApiResult<WebpageVideoOptions>> {
+    const result = await this.request<JsonRecord>("/v1/webpage-video/options");
+    return result.ok ? { ok: true, data: this.mapWebpageVideoOptions(result.data) } : result;
+  }
+
+  private webpageVideoCreatePayload(request: WebpageVideoRunCreateRequest): JsonRecord {
+    return {
+      target_url: request.targetUrl,
+      capture: {
+        mode: "viewport",
+        aspect_ratio: request.aspectRatio,
+        full_page: false,
+      },
+      video: {
+        topic: request.topic,
+        duration_seconds: request.durationSeconds,
+        subtitles_enabled: request.subtitlesEnabled,
+        voice_profile_id: request.voiceProfileId ?? null,
+      },
+      rights: {
+        public_page_confirmed: request.publicPageConfirmed,
+        rights_confirmed: request.rightsConfirmed,
+      },
+      crawl: {
+        max_pages: request.crawl.maxPages,
+        max_depth: request.crawl.maxDepth,
+        same_origin_only: true,
+        include_sitemap: request.crawl.includeSitemap,
+      },
+    };
+  }
+
+  private mapWebpageVideoCapture(raw: JsonRecord): WebpageVideoCapture {
+    const source = nonEmptyRecord(raw.capture) ?? raw;
+    const screenshot = nonEmptyRecord(source.screenshot) ?? source;
+    const artifact = nonEmptyRecord(screenshot.artifact) ?? screenshot;
+    const viewport = nonEmptyRecord(source.viewport) ?? nonEmptyRecord(screenshot.viewport);
+    const previewUrl = text(screenshot.preview_url)
+      || text(screenshot.signed_preview_url)
+      || text(screenshot.signed_url)
+      || text(screenshot.url)
+      || text(artifact.preview_url)
+      || text(artifact.download_url);
+    const requestedUrl = text(source.requested_url)
+      || text(source.target_url)
+      || text(raw.requested_url)
+      || text(raw.target_url);
+    const finalUrl = text(source.final_url) || text(screenshot.final_url) || text(raw.final_url);
+    const sha256 = text(screenshot.sha256)
+      || text(screenshot.content_hash)
+      || text(artifact.sha256)
+      || text(artifact.content_hash)
+      || text(source.sha256)
+      || text(raw.capture_sha256);
+    const width = optionalNumber(screenshot.width ?? artifact.width ?? viewport?.width);
+    const height = optionalNumber(screenshot.height ?? artifact.height ?? viewport?.height);
+    const capturedAt = text(source.captured_at) || text(screenshot.captured_at);
+    const expiresAt = text(screenshot.url_expires_at)
+      || text(artifact.url_expires_at)
+      || text(screenshot.expires_at)
+      || text(artifact.expires_at);
+    return {
+      previewUrl: previewUrl || undefined,
+      sha256,
+      requestedUrl,
+      finalUrl: finalUrl || undefined,
+      revision: number(
+        screenshot.capture_revision,
+        number(source.capture_revision, number(raw.capture_revision, number(screenshot.revision, number(source.revision, number(raw.revision))))),
+      ),
+      width,
+      height,
+      capturedAt: capturedAt || undefined,
+      expiresAt: expiresAt || undefined,
+    };
+  }
+
+  private mapWebpageVideoMedia(raw: JsonRecord): WebpageVideoMedia | undefined {
+    const result = record(raw.result);
+    const output = record(raw.output);
+    const source = nonEmptyRecord(raw.final_video)
+      ?? nonEmptyRecord(result.final_video)
+      ?? nonEmptyRecord(output.final_video)
+      ?? (text(raw.final_video_url) || text(raw.video_url) || text(raw.output_url) ? raw : undefined);
+    if (!source) return undefined;
+    const previewUrl = text(source.preview_url) || text(source.signed_preview_url) || text(source.signed_url) || text(source.url)
+      || text(source.video_url) || text(source.final_video_url) || text(source.output_url);
+    const downloadUrl = text(source.download_url) || text(source.signed_download_url) || previewUrl;
+    if (!previewUrl && !downloadUrl) return undefined;
+    const mediaType = text(source.media_type) || text(source.content_type);
+    const filename = text(source.filename);
+    return {
+      previewUrl: previewUrl || undefined,
+      downloadUrl: downloadUrl || undefined,
+      captionsUrl: (text(source.captions_url) || text(source.subtitle_url) || undefined),
+      mediaType: mediaType || undefined,
+      filename: filename || undefined,
+    };
+  }
+
+  private mapWebpageVideoRun(raw: JsonRecord): WebpageVideoRun {
+    const source = nonEmptyRecord(raw.run) ?? raw;
+    const request = record(source.request);
+    const spec = nonEmptyRecord(source.spec) ?? request;
+    const video = nonEmptyRecord(source.video) ?? nonEmptyRecord(spec.video) ?? spec;
+    const rawCapture = nonEmptyRecord(source.capture) ?? nonEmptyRecord(source.screenshot);
+    const mappedCapture = rawCapture ? this.mapWebpageVideoCapture({ ...source, capture: rawCapture }) : undefined;
+    const targetUrl = text(source.target_url)
+      || text(source.requested_url)
+      || text(request.target_url)
+      || text(spec.target_url)
+      || mappedCapture?.requestedUrl
+      || "";
+    const finalUrl = text(source.final_url) || mappedCapture?.finalUrl || "";
+    const captureSha256 = text(source.capture_sha256)
+      || text(source.screenshot_sha256)
+      || mappedCapture?.sha256
+      || "";
+    const failure = nonEmptyRecord(source.failure) ?? nonEmptyRecord(source.error);
+    const failureMessage = failure ? text(failure.message) || text(failure.detail) : "";
+    const voiceProfileId = text(video.voice_profile_id) || text(video.voice_id);
+    const rawStatus = text(source.status) || text(source.state) || "queued";
+    return {
+      schemaVersion: text(source.schema_version, "1.0.0"),
+      id: text(source.id) || text(source.webpage_video_run_id),
+      projectRunId: (text(source.project_run_id) || text(source.underlying_run_id) || undefined),
+      workspaceId: (text(source.workspace_id) || undefined),
+      status: normalizeWebpageVideoStatus(rawStatus),
+      rawStatus,
+      revision: mappedCapture?.revision || number(source.capture_revision, number(source.revision)),
+      targetUrl,
+      finalUrl: finalUrl || undefined,
+      captureSha256: captureSha256 || undefined,
+      spec: {
+        topic: text(video.topic) || text(video.brief) || text(spec.topic) || text(spec.page_purpose),
+        aspectRatio: text(video.aspect_ratio) || text(record(spec.capture).aspect_ratio) || text(spec.aspect_ratio),
+        durationSeconds: number(video.duration_seconds, number(spec.duration_seconds)),
+        subtitlesEnabled: typeof video.subtitles_enabled === "boolean" ? video.subtitles_enabled : Boolean(video.subtitles),
+        voiceProfileId: voiceProfileId || undefined,
+      },
+      capture: mappedCapture,
+      siteMode: Boolean(
+        source.site_mode
+        || text(source.mode) === "site"
+        || Object.keys(record(request.crawl)).length
+        || Object.keys(record(spec.crawl)).length
+        || ["discovering", "discovering_pages", "awaiting_scope_review", "capturing_pages", "analyzing_regions", "planning_storyboard", "awaiting_storyboard_review"].includes(rawStatus)
+      ),
+      finalVideo: this.mapWebpageVideoMedia(source),
+      failure: failureMessage ? {
+        code: text(failure?.code) || undefined,
+        message: failureMessage,
+        retryable: Boolean(failure?.retryable),
+      } : undefined,
+      createdAt: text(source.created_at) || undefined,
+      updatedAt: text(source.updated_at) || undefined,
+    };
+  }
+
+  async createWebpageVideoRun(
+    request: WebpageVideoRunCreateRequest,
+    key: string,
+  ): Promise<ApiResult<WebpageVideoRun>> {
+    const result = await this.request<JsonRecord>("/v1/webpage-video/runs", {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify(this.webpageVideoCreatePayload(request)),
+    });
+    return result.ok ? { ok: true, data: this.mapWebpageVideoRun(result.data) } : result;
+  }
+
+  async getWebpageVideoRun(runId: string): Promise<ApiResult<WebpageVideoRun>> {
+    const result = await this.request<JsonRecord>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}`);
+    return result.ok ? { ok: true, data: this.mapWebpageVideoRun(result.data) } : result;
+  }
+
+  async getWebpageVideoCapture(runId: string): Promise<ApiResult<WebpageVideoCapture>> {
+    const result = await this.request<JsonRecord>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/capture`);
+    return result.ok ? { ok: true, data: this.mapWebpageVideoCapture(result.data) } : result;
+  }
+
+  private mapWebpageVideoSitePage(raw: JsonRecord): WebpageVideoSitePage {
+    const rawCapture = nonEmptyRecord(raw.capture) ?? nonEmptyRecord(raw.screenshot);
+    const rawRegions = Array.isArray(raw.regions) ? raw.regions : Array.isArray(raw.key_regions) ? raw.key_regions : [];
+    const failure = nonEmptyRecord(raw.failure) ?? nonEmptyRecord(raw.error);
+    const failureMessage = failure ? text(failure.message) || text(failure.detail) : "";
+    return {
+      id: text(raw.id) || text(raw.page_id),
+      url: text(raw.url) || text(raw.requested_url),
+      finalUrl: text(raw.final_url) || text(raw.canonical_url) || undefined,
+      title: text(raw.title) || undefined,
+      pageType: text(raw.page_type) || text(raw.type) || undefined,
+      reason: text(raw.reason) || text(raw.selection_reason) || undefined,
+      score: optionalNumber(raw.score ?? raw.relevance_score),
+      selected: typeof raw.selected === "boolean" ? raw.selected : true,
+      status: text(raw.status) || undefined,
+      capture: rawCapture ? this.mapWebpageVideoCapture({ capture: { ...rawCapture, requested_url: text(raw.url), final_url: text(raw.canonical_url) || text(raw.url) } }) : undefined,
+      regions: rawRegions.map((value, index) => {
+        const region = record(value);
+        const artifact = nonEmptyRecord(region.artifact) ?? region;
+        return {
+          id: text(region.id) || text(region.region_id) || `region-${index + 1}`,
+          type: text(region.type) || text(region.region_type) || text(region.kind) || "region",
+          label: text(region.label) || text(region.title) || text(region.kind) || `关键区域 ${index + 1}`,
+          reason: text(region.reason) || text(region.selection_reason) || undefined,
+          score: optionalNumber(region.score),
+          previewUrl: text(region.preview_url) || text(region.signed_url) || text(artifact.preview_url) || text(artifact.download_url) || undefined,
+          sha256: text(region.sha256) || text(artifact.sha256) || undefined,
+          width: optionalNumber(region.width ?? artifact.width),
+          height: optionalNumber(region.height ?? artifact.height),
+        };
+      }),
+      failure: failureMessage ? { code: text(failure?.code) || undefined, message: failureMessage, retryable: Boolean(failure?.retryable) } : undefined,
+    };
+  }
+
+  private mapWebpageVideoStoryboardShot(raw: JsonRecord, index: number): WebpageVideoStoryboardShot {
+    const artifact = nonEmptyRecord(raw.artifact) ?? raw;
+    return {
+      id: text(raw.id) || text(raw.shot_id) || `shot-${index + 1}`,
+      pageId: text(raw.page_id),
+      regionId: text(raw.region_id) || undefined,
+      label: text(raw.label) || text(raw.title) || text(raw.narration_cue) || `镜头 ${index + 1}`,
+      reason: text(raw.reason) || text(raw.selection_reason) || text(raw.narration_cue) || undefined,
+      previewUrl: text(raw.preview_url) || text(raw.signed_url) || text(artifact.preview_url) || text(artifact.download_url) || undefined,
+      durationSeconds: optionalNumber(raw.duration_seconds),
+      enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
+      order: number(raw.order, number(raw.ordinal, index + 1) - 1),
+    };
+  }
+
+  private mapWebpageVideoSite(raw: JsonRecord): WebpageVideoSitePlan {
+    const source = nonEmptyRecord(raw.site) ?? raw;
+    const scope = nonEmptyRecord(source.scope) ?? nonEmptyRecord(source.page_scope) ?? {};
+    const scopeContent = nonEmptyRecord(scope.content) ?? scope;
+    const storyboard = nonEmptyRecord(source.storyboard);
+    const storyboardContent = nonEmptyRecord(storyboard?.content) ?? storyboard;
+    const rawPages = Array.isArray(scopeContent.pages) ? scopeContent.pages : Array.isArray(source.pages) ? source.pages : [];
+    const rawShots = Array.isArray(storyboardContent?.shots) ? storyboardContent.shots : [];
+    const storyboardPages = Array.isArray(storyboardContent?.pages) ? storyboardContent.pages : [];
+    const enrichedPages = new Map(rawPages.map((value) => {
+      const page = record(value);
+      return [text(page.id) || text(page.page_id), page];
+    }));
+    for (const value of storyboardPages) {
+      const page = record(value);
+      const id = text(page.id) || text(page.page_id);
+      enrichedPages.set(id, { ...enrichedPages.get(id), ...page });
+    }
+    const scopeHash = text(scope.sha256) || text(scope.hash) || text(source.scope_sha256);
+    return {
+      schemaVersion: text(source.schema_version, "2.0.0"),
+      mode: "site",
+      scope: {
+        status: text(scope.status) || text(source.scope_status) || "waiting",
+        revision: number(scope.revision, number(scope.scope_revision, number(source.scope_revision))),
+        sha256: scopeHash,
+        pages: [...enrichedPages.values()].map((value) => this.mapWebpageVideoSitePage(value)),
+      },
+      storyboard: storyboard ? {
+        status: text(storyboard.status) || text(source.storyboard_status) || "waiting",
+        revision: number(storyboard.revision, number(storyboard.storyboard_revision, number(source.storyboard_revision))),
+        sha256: text(storyboard.sha256) || text(storyboard.hash) || text(source.storyboard_sha256),
+        shots: rawShots.map((value, index) => this.mapWebpageVideoStoryboardShot(record(value), index)),
+      } : undefined,
+    };
+  }
+
+  async getWebpageVideoSite(runId: string): Promise<ApiResult<WebpageVideoSitePlan>> {
+    const result = await this.request<JsonRecord>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/site`);
+    return result.ok ? { ok: true, data: this.mapWebpageVideoSite(result.data) } : result;
+  }
+
+  async reviewWebpageVideoRun(
+    runId: string,
+    review: WebpageVideoReviewRequest,
+    key: string,
+  ): Promise<ApiResult<void>> {
+    return this.request<void>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/capture/review`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        decision: review.decision,
+        ...(review.comment ? { comment: review.comment } : {}),
+        expected_revision: review.expectedRevision,
+        expected_sha256: review.expectedSha256,
+      }),
+    });
+  }
+
+  async reviewWebpageVideoScope(runId: string, review: WebpageVideoScopeReviewRequest, key: string): Promise<ApiResult<void>> {
+    return this.request<void>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/scope/review`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        decision: review.decision,
+        ...(review.comment ? { comment: review.comment } : {}),
+        expected_revision: review.expectedRevision,
+        expected_sha256: review.expectedSha256,
+        selected_page_ids: review.selectedPageIds,
+      }),
+    });
+  }
+
+  async reviewWebpageVideoStoryboard(runId: string, review: WebpageVideoStoryboardReviewRequest, key: string): Promise<ApiResult<void>> {
+    return this.request<void>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/storyboard/review`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        decision: review.decision,
+        ...(review.comment ? { comment: review.comment } : {}),
+        expected_revision: review.expectedRevision,
+        expected_sha256: review.expectedSha256,
+        shots: review.shots.map((shot) => ({ id: shot.id, enabled: shot.enabled, order: shot.order })),
+      }),
+    });
+  }
+
+  async cancelWebpageVideoRun(runId: string, key: string): Promise<ApiResult<void>> {
+    return this.request<void>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+    });
   }
 
   private runPayload(draft: RunDraft): JsonRecord {
@@ -1203,6 +1896,13 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const persistedCost = record(persistedEstimate.cost ?? raw.cost);
     const hasCost = typeof persistedCost.amount === "number";
     const hasEmbeddedSteps = Array.isArray(raw.steps);
+    const webpageVideoRunId = text(input.webpage_video_run_id);
+    const fullAiRunId = text(input.full_ai_run_id);
+    const projectKind: Run["projectKind"] = webpageVideoRunId
+      ? "webpage_video"
+      : fullAiRunId || text(snapshot.visual_source_mode) === "generated_only"
+        ? "full_ai"
+        : "standard";
     const videoSettings = Object.keys(production).length ? {
       language: text(production.language, "zh-CN"),
       aspectRatio: text(production.aspect_ratio, "16:9") as VideoSettings["aspectRatio"],
@@ -1230,7 +1930,10 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       },
     } satisfies VideoSettings : undefined;
     return {
-      id: text(raw.id), workspaceId: text(raw.workspace_id), topic: text(input.topic, text(input.prompt, "未命名主题")), channelId: text(raw.channel_id) || undefined,
+      id: text(raw.id), workspaceId: text(raw.workspace_id), topic: text(input.topic, text(input.prompt, "未命名主题")),
+      projectKind,
+      controlRunId: webpageVideoRunId || fullAiRunId || undefined,
+      channelId: text(raw.channel_id) || undefined,
       status: text(raw.status, "queued") as Run["status"],
       composition: { skillVersionId: text(skillRef.id), assetLibraryIds: strings(snapshot.asset_library_ids), voiceProfileId: text(snapshot.voice_profile_id) || undefined, renderPresetVersionId: text(renderRef.id) || undefined, pipelineVersionId: text(pipelineRef.id) },
       videoSettings,
@@ -1407,6 +2110,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         workspace_id: request.workspaceId,
         name: request.name,
         channel_id: request.channelId ?? null,
+        research_mode: request.researchMode,
         items: request.items.map((item) => ({ topic: item.topic, inputs: item.inputs ?? {} })),
         composition: {
           skill_version_id: request.composition.skillVersionId,
@@ -1432,11 +2136,11 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
             max_lines: request.videoSettings.subtitles.maxLines,
           },
           asset_acquisition: {
-            enabled: request.videoSettings.assetAcquisition.enabled,
-            sources: request.videoSettings.assetAcquisition.sources,
-            max_assets: request.videoSettings.assetAcquisition.maxAssets,
-            copyright_status: request.videoSettings.assetAcquisition.copyrightStatus,
-            rights_confirmed: request.videoSettings.assetAcquisition.rightsConfirmed,
+            enabled: false,
+            sources: ["wikimedia"],
+            max_assets: 1,
+            copyright_status: "public_domain",
+            rights_confirmed: false,
           },
         } : undefined,
       }),

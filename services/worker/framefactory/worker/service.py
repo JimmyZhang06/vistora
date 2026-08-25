@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from datetime import timedelta
 
 from framefactory.ports import DeliveryLeaseLostError
@@ -17,12 +18,20 @@ from .adapters.asset_analysis import (
     S3MediaObjectStore,
     SystemMalwareScanner,
 )
+from .adapters.database_assets import ControlApiAssetAcquirer
 from .adapters.postgres_asset_jobs import PostgresAssetJobRepository
 from .adapters.s3_artifacts import S3ArtifactStorage
 from .asset_service import AssetAnalysisService
-from .capabilities import configured_capabilities, production_step_registry
+from .capabilities import (
+    assert_declared_capabilities_configured,
+    configured_capabilities,
+    production_step_registry,
+)
 from .clock import SystemClock
 from .config import WorkerSettings
+from .generation.ledger import PostgresPaidOperationLedger
+from .library_build_service import LibraryBuildService, PostgresLibraryBuildRepository
+from .web_capture.playwright_adapter import playwright_runtime_healthcheck
 
 logger = logging.getLogger("framefactory.worker")
 
@@ -37,7 +46,9 @@ class WorkerService:
         scheduler: Scheduler,
         runtime: WorkerRuntime,
         artifact_storage: S3ArtifactStorage | None = None,
+        paid_operation_ledger: PostgresPaidOperationLedger | None = None,
         asset_analysis: AssetAnalysisService | None = None,
+        library_build: LibraryBuildService | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -45,7 +56,9 @@ class WorkerService:
         self.scheduler = scheduler
         self.runtime = runtime
         self.artifact_storage = artifact_storage
+        self.paid_operation_ledger = paid_operation_ledger
         self.asset_analysis = asset_analysis
+        self.library_build = library_build
         self._stop = asyncio.Event()
 
     def healthcheck(self) -> None:
@@ -53,6 +66,12 @@ class WorkerService:
         self.queue.healthcheck()
         if self.artifact_storage is not None:
             self.artifact_storage.healthcheck()
+        if self.paid_operation_ledger is not None:
+            self.paid_operation_ledger.healthcheck()
+        if self.settings.browser_capture_only:
+            playwright_runtime_healthcheck(
+                timeout_seconds=min(15.0, self.settings.web_capture.job_timeout_seconds)
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -70,6 +89,7 @@ class WorkerService:
         decision: ReviewDecision,
         actor_id: str,
         comment: str | None = None,
+        metadata: Mapping[str, object] | None = None,
     ):
         """Public control boundary; persists and resumes an audited review gate."""
 
@@ -79,29 +99,52 @@ class WorkerService:
             decision=decision,
             actor_id=actor_id,
             comment=comment,
+            metadata=metadata,
         )
 
     def close(self) -> None:
         if self.asset_analysis is not None:
             self.asset_analysis.close()
+        if self.paid_operation_ledger is not None:
+            self.paid_operation_ledger.close()
         self.queue.close()
         self.store.close()
 
     async def process_once(self) -> bool:
         """Consume one API run request or one durable step."""
 
-        if self.asset_analysis is not None and self.asset_analysis.process_once():
+        if self.settings.browser_capture_only:
+            return await self.runtime.process_one(
+                queue_name=self.settings.queue_name,
+                worker_id=self.settings.worker_id,
+            )
+
+        # Asset analysis performs blocking database, object-storage and
+        # FFmpeg/ASR work.  Running it on the shared asyncio loop would also
+        # pause the lease maintainers of every worker in this process.
+        if self.asset_analysis is not None and await asyncio.to_thread(
+            self.asset_analysis.process_once
+        ):
             return True
         if self._initialize_one():
             return True
-        return await self.runtime.process_one(
+        if await self.runtime.process_one(
             queue_name=self.settings.queue_name,
             worker_id=self.settings.worker_id,
-        )
+        ):
+            return True
+        # Library construction is intentionally lower priority than Run intake
+        # and Run steps. Its analysis work is delegated to the existing queue.
+        if self.library_build is not None:
+            return await self.library_build.process_once()
+        return False
 
     async def run_forever(self) -> None:
         self.healthcheck()
-        self._recover_and_initialize()
+        if self.settings.browser_capture_only:
+            self.scheduler.recover(queue_name=self.settings.queue_name)
+        else:
+            self._recover_and_initialize()
         next_recovery = self.scheduler.clock.now() + timedelta(
             seconds=self.settings.recovery_interval_seconds
         )
@@ -115,7 +158,10 @@ class WorkerService:
             now = self.scheduler.clock.now()
             if now >= next_recovery:
                 try:
-                    self._recover_and_initialize()
+                    if self.settings.browser_capture_only:
+                        self.scheduler.recover(queue_name=self.settings.queue_name)
+                    else:
+                        self._recover_and_initialize()
                     if self.asset_analysis is not None:
                         self.asset_analysis.resume_settled_runs()
                 except Exception:
@@ -151,7 +197,8 @@ class WorkerService:
                 (
                     item
                     for item in self.store.load_pending_graphs(limit=100)
-                    if item.workspace_id == message.workspace_id and item.run_id == message.run_id
+                    if item.workspace_id == message.workspace_id
+                    and item.run_id == message.run_id
                 ),
                 None,
             )
@@ -229,6 +276,7 @@ def build_service(settings: WorkerSettings) -> WorkerService:
     except Exception:
         store.close()
         raise
+    paid_operation_ledger: PostgresPaidOperationLedger | None = None
     try:
         clock = SystemClock()
         scheduler = Scheduler(store=store, queue=queue, clock=clock)
@@ -237,13 +285,21 @@ def build_service(settings: WorkerSettings) -> WorkerService:
             if settings.object_storage is not None
             else None
         )
+        if settings.runway is not None:
+            paid_operation_ledger = PostgresPaidOperationLedger.connect(
+                settings.database_url,
+                timeout_seconds=settings.connect_timeout_seconds,
+            )
+        capability_registry = configured_capabilities(
+            settings,
+            artifact_storage=artifact_storage,
+            paid_operation_ledger=paid_operation_ledger,
+        )
+        assert_declared_capabilities_configured(capability_registry, settings)
         runtime = WorkerRuntime(
             scheduler=scheduler,
             steps=production_step_registry(),
-            capabilities=configured_capabilities(
-                settings,
-                artifact_storage=artifact_storage,
-            ),
+            capabilities=capability_registry,
             lease_seconds=settings.lease_seconds,
         )
         asset_analysis = None
@@ -292,6 +348,24 @@ def build_service(settings: WorkerSettings) -> WorkerService:
                 worker_id=settings.worker_id,
                 lease_seconds=settings.lease_seconds,
             )
+        library_build = None
+        if not settings.browser_capture_only:
+            library_settings = settings.asset_library
+            library_build = LibraryBuildService(
+                repository=PostgresLibraryBuildRepository(settings.database_url),
+                queue=queue,
+                acquirer=(
+                    ControlApiAssetAcquirer(
+                        library_settings.control_api_url,
+                        timeout_seconds=library_settings.acquisition_timeout_seconds,
+                    )
+                    if library_settings is not None and library_settings.control_api_url
+                    else None
+                ),
+                clock=clock,
+                worker_id=settings.worker_id,
+                lease_seconds=settings.lease_seconds,
+            )
         return WorkerService(
             settings=settings,
             store=store,
@@ -299,9 +373,13 @@ def build_service(settings: WorkerSettings) -> WorkerService:
             scheduler=scheduler,
             runtime=runtime,
             artifact_storage=artifact_storage,
+            paid_operation_ledger=paid_operation_ledger,
             asset_analysis=asset_analysis,
+            library_build=library_build,
         )
     except Exception:
+        if paid_operation_ledger is not None:
+            paid_operation_ledger.close()
         queue.close()
         store.close()
         raise

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -18,6 +19,7 @@ from framefactory_api.postgres_repository import (
     _asset_from_row,
     _channel_from_row,
     _datetime_value,
+    _full_ai_run_from_row,
     _run_step_from_row,
     _skill_from_row,
     _version_from_row,
@@ -97,6 +99,178 @@ def test_asset_segments_only_query_current_completed_analysis() -> None:
     assert "JOIN asset_analyses aa" in query
     assert "aa.status='completed'" in query
     assert args == (WORKSPACE_ID, USER_ID)
+
+
+def test_verified_wikimedia_rights_are_persisted_as_trusted_source_evidence() -> None:
+    connection = _Connection()
+    repository = _repository(connection)
+    now = "2026-08-22T12:00:00Z"
+    asset_id = uuid4()
+    file_id = uuid4()
+    resource = {
+        "id": str(asset_id),
+        "workspace_id": str(WORKSPACE_ID),
+        "library_id": str(uuid4()),
+        "kind": "video",
+        "title": "Apollo 11 Landing first steps",
+        "description": "NASA public-domain footage",
+        "metadata": {
+            "tags": ["Apollo 11"],
+            "source": {
+                "platform": "wikimedia",
+                "source_url": (
+                    "https://upload.wikimedia.org/wikipedia/commons/a/a1/"
+                    "Apollo_11_Landing_first_steps.ogv"
+                ),
+                "author": "NASA",
+                "license": "Public domain",
+            },
+            "rights_evidence": {
+                "source_type": "website",
+                "locator": (
+                    "https://commons.wikimedia.org/wiki/"
+                    "File:Apollo_11_Landing_first_steps.ogv"
+                ),
+                "provider": "wikimedia",
+                "attribution": "NASA",
+                "license": "Public domain",
+                "evidence_type": "verified_public_domain",
+                "verified_at": now,
+                "verification_method": "commons_api_extmetadata",
+            },
+        },
+        "copyright_status": "public_domain",
+        "created_by": str(USER_ID),
+        "created_at": now,
+        "file": {
+            "id": str(file_id),
+            "bucket": "assets",
+            "object_key": f"workspaces/{WORKSPACE_ID}/objects/apollo",
+            "original_filename": "apollo.webm",
+            "media_type": "video/webm",
+            "byte_size": 100,
+            "content_hash": "a" * 64,
+        },
+    }
+    repository.get_asset = AsyncMock(return_value=resource)
+
+    asyncio.run(repository.create_asset_upload(resource))
+
+    query, args = next(
+        (query, args)
+        for query, args in connection.executions
+        if "INSERT INTO asset_sources" in query
+    )
+    assert "evidence_type,verified_at" in query
+    assert args[4] == (
+        "https://commons.wikimedia.org/wiki/"
+        "File:Apollo_11_Landing_first_steps.ogv"
+    )
+    assert args[5:9] == (
+        "wikimedia",
+        "NASA",
+        "Public domain",
+        "verified_public_domain",
+    )
+    assert args[9] == datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+
+
+def test_webpage_capture_attempt_replay_treats_capture_time_as_immutable() -> None:
+    attempt_id = uuid4()
+    webpage_run_id = uuid4()
+    run_id = uuid4()
+    step_id = uuid4()
+    artifact_id = uuid4()
+    captured_at = datetime(2026, 8, 24, 1, 2, 3, tzinfo=UTC)
+    created_at = datetime(2026, 8, 24, 1, 2, 4, tzinfo=UTC)
+    row = {
+        "id": attempt_id,
+        "workspace_id": WORKSPACE_ID,
+        "webpage_video_run_id": webpage_run_id,
+        "underlying_run_id": run_id,
+        "screenshot_step_id": step_id,
+        "attempt_number": 1,
+        "capture_revision": 3,
+        "outcome": "captured",
+        "requested_url": "https://example.com/",
+        "final_url": "https://example.com/",
+        "viewport_width": 1920,
+        "viewport_height": 1080,
+        "full_page": False,
+        "artifact_id": artifact_id,
+        "sha256": "a" * 64,
+        "media_type": "image/png",
+        "metadata": {},
+        "error": None,
+        "captured_at": captured_at,
+        "created_at": created_at,
+    }
+
+    class ScriptedConnection(_Connection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows = iter([None, row])
+
+        async def fetchrow(self, query: str, *args: Any) -> Any:
+            self.executions.append((query, args))
+            return next(self.rows)
+
+    resource = {
+        "schema_version": "1.0.0",
+        **{key: str(value) if isinstance(value, UUID) else value for key, value in row.items()},
+        "captured_at": "2026-08-24T01:02:05Z",
+        "created_at": "2026-08-24T01:02:04Z",
+    }
+
+    with pytest.raises(ConflictError, match="different immutable evidence"):
+        asyncio.run(_repository(ScriptedConnection()).append_webpage_capture_attempt(resource))
+
+
+def test_untrusted_source_metadata_cannot_self_assert_verified_rights() -> None:
+    connection = _Connection()
+    repository = _repository(connection)
+    resource = {
+        "id": str(uuid4()),
+        "workspace_id": str(WORKSPACE_ID),
+        "library_id": str(uuid4()),
+        "kind": "video",
+        "title": "Untrusted",
+        "description": "",
+        "metadata": {
+            "tags": [],
+            "source": {
+                "platform": "youtube",
+                "source_url": "https://www.youtube.com/watch?v=untrusted",
+                "license": "Public domain",
+                "rights_evidence_type": "verified_public_domain",
+                "rights_verified_at": "2026-08-22T12:00:00Z",
+            },
+        },
+        "copyright_status": "public_domain",
+        "created_by": str(USER_ID),
+        "created_at": "2026-08-22T12:00:00Z",
+        "file": {
+            "id": str(uuid4()),
+            "bucket": "assets",
+            "object_key": f"workspaces/{WORKSPACE_ID}/objects/untrusted",
+            "original_filename": "untrusted.mp4",
+            "media_type": "video/mp4",
+            "byte_size": 100,
+            "content_hash": "b" * 64,
+        },
+    }
+    repository.get_asset = AsyncMock(return_value=resource)
+
+    asyncio.run(repository.create_asset_upload(resource))
+
+    _query, args = next(
+        (query, args)
+        for query, args in connection.executions
+        if "INSERT INTO asset_sources" in query
+    )
+    assert args[4] == "https://www.youtube.com/watch?v=untrusted"
+    assert args[8] == "copyright"
+    assert args[9] is None
 
 
 def test_skill_row_mapping_normalizes_database_types() -> None:
@@ -184,6 +358,37 @@ def test_platform_connection_lookup_never_selects_secret_reference() -> None:
     query, _args = connection.executions[-1]
     assert "secret_ref" not in query
     assert "secret_ref" not in resource
+
+
+def test_asset_library_lookup_is_workspace_scoped_and_preserves_status() -> None:
+    connection = _Connection()
+    library_id = UUID("66666666-6666-4666-8666-666666666666")
+    now = datetime(2026, 8, 22, 1, 2, 3, tzinfo=UTC)
+    connection.fetchrow_result = {
+        "id": library_id,
+        "workspace_id": WORKSPACE_ID,
+        "name": "Archived library",
+        "slug": "archived-library",
+        "description": "No longer usable for new Runs",
+        "visibility": "private",
+        "status": "archived",
+        "created_by": USER_ID,
+        "created_at": now,
+        "updated_at": now,
+        "asset_count": 3,
+        "ready_asset_count": 2,
+    }
+
+    resource = asyncio.run(
+        _repository(connection).get_asset_library(WORKSPACE_ID, library_id)
+    )
+
+    query, args = connection.executions[-1]
+    assert "l.workspace_id=$1 AND l.id=$2" in query
+    assert args == (WORKSPACE_ID, library_id)
+    assert resource["workspace_id"] == str(WORKSPACE_ID)
+    assert resource["status"] == "archived"
+    assert resource["ready_asset_count"] == 2
 
 
 def test_channel_list_filters_are_parameterized_in_postgres() -> None:
@@ -506,7 +711,11 @@ def test_review_gate_uses_worker_revision_cas_and_appends_audit_action() -> None
     class ScriptedConnection(_Connection):
         def __init__(self) -> None:
             super().__init__()
-            self.fetchrows = [current, saved]
+            self.fetchrows = [
+                current,
+                {"status": "awaiting_review", "cancel_requested_at": None},
+                saved,
+            ]
 
         async def fetchrow(self, query: str, *args: Any) -> Any:
             self.executions.append((query, args))
@@ -532,6 +741,7 @@ def test_review_gate_uses_worker_revision_cas_and_appends_audit_action() -> None
             expected_revision=int(current["worker_revision"]),
             operation_key="review:quality:one",
             request_fingerprint="a" * 64,
+            review_metadata={"schema_version": "2.0.0", "selected_page_ids": ["page-01"]},
         )
     )
 
@@ -548,6 +758,10 @@ def test_review_gate_uses_worker_revision_cas_and_appends_audit_action() -> None
     assert "THEN static_review_required ELSE review_required END" in sql
     assert review_insert[2] == database_step_id
     assert review_insert[3] == "approved"
+    assert review_insert[5]["metadata"] == {
+        "schema_version": "2.0.0",
+        "selected_page_ids": ["page-01"],
+    }
     assert review_insert[6] == USER_ID
 
 
@@ -676,6 +890,63 @@ def test_api_key_row_mapping_never_includes_secret_hash() -> None:
     )
 
     assert resource["key_prefix"] == "ffk_example"
+
+
+def test_full_ai_repository_inserts_scheduler_and_control_records_in_one_transaction() -> None:
+    source = inspect.getsource(PostgreSQLControlRepository.create_full_ai_run_idempotently)
+
+    assert "async with self._transaction()" in source
+    assert "await self._insert_run(connection, scheduler_run)" in source
+    assert "INSERT INTO full_ai_runs" in source
+    assert 'request_path="/v1/full-ai/runs"' in source
+
+
+def test_full_ai_idempotency_replay_lookup_is_workspace_scoped() -> None:
+    source = inspect.getsource(
+        PostgreSQLControlRepository.find_full_ai_run_by_idempotency_key
+    )
+
+    assert "far.workspace_id = $1" in source
+    assert "far.idempotency_key = $2" in source
+    assert "JOIN runs r" in source
+
+
+def test_full_ai_row_mapping_exposes_manual_reconciliation_without_internal_ids() -> None:
+    now = datetime(2026, 8, 23, 1, 2, 3, tzinfo=UTC)
+    resource = _full_ai_run_from_row(
+        {
+            "id": UUID("77777777-7777-4777-8777-777777777777"),
+            "workspace_id": WORKSPACE_ID,
+            "underlying_run_id": UUID("88888888-8888-4888-8888-888888888888"),
+            "status": "generating",
+            "provider_name": "runway",
+            "model_id": "gen4.5",
+            "spec": {"brief": "Story"},
+            "plan": {"candidate_count": 2},
+            "quote": {
+                "currency": "USD",
+                "amount_minor": 120,
+                "expires_at": "2026-08-23T01:10:00Z",
+            },
+            "billing_status": "submit_unknown",
+            "authorized_amount_minor": 120,
+            "incurred_amount_minor": 0,
+            "requires_reconciliation": True,
+            "idempotency_key": "full-ai-create-001",
+            "request_hash": "a" * 64,
+            "estimate_fingerprint": "b" * 64,
+            "created_by": USER_ID,
+            "created_at": now,
+            "updated_at": now,
+            "scheduler_status": "running",
+            "scheduler_updated_at": now,
+        }
+    )
+
+    assert resource["status"] == "reconciliation_required"
+    assert resource["billing"]["requires_reconciliation"] is True
+    assert resource["underlying_run_id"] == "88888888-8888-4888-8888-888888888888"
+    assert resource["project_run_id"] == "88888888-8888-4888-8888-888888888888"
     assert "key_hash" not in resource
 
 
@@ -705,16 +976,38 @@ def test_bootstrap_inserts_official_pipeline_before_skill_versions() -> None:
     asyncio.run(repository.bootstrap())
 
     statements = [query for query, _ in connection.executions]
-    pipeline_version_index = next(
+    pipeline_version_indexes = [
         index for index, query in enumerate(statements) if "INSERT INTO pipeline_versions" in query
-    )
+    ]
     skill_version_index = next(
         index for index, query in enumerate(statements) if "INSERT INTO skill_versions" in query
     )
-    assert pipeline_version_index < skill_version_index
-    pipeline_args = connection.executions[pipeline_version_index][1]
-    assert pipeline_args[0] == UUID("30b37ab7-9cf7-5d26-ac3e-6d66880b536c")
-    assert pipeline_args[1] != WORKSPACE_ID
+    assert len(pipeline_version_indexes) == len(versions.pipelines)
+    assert all(index < skill_version_index for index in pipeline_version_indexes)
+    pipeline_arguments = [connection.executions[index][1] for index in pipeline_version_indexes]
+    assert {arguments[0] for arguments in pipeline_arguments} == {
+        UUID(seed.version["id"]) for seed in versions.pipelines
+    }
+    assert all(arguments[1] != WORKSPACE_ID for arguments in pipeline_arguments)
+    current_version_updates = [
+        args
+        for query, args in connection.executions
+        if "UPDATE pipelines SET current_version_id" in query
+    ]
+    current_by_pipeline = {arguments[0]: arguments[1] for arguments in current_version_updates}
+    assert current_by_pipeline[UUID("2c15b2d6-1460-5d30-a718-f4b06d8e28d7")] == UUID(
+        "4c7d9777-d754-5fa3-bf85-4bf5c9746dba"
+    )
+    assert current_by_pipeline[UUID("7ed21b77-7e4c-5801-8fc0-bee133575101")] == UUID(
+        "6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c"
+    )
+    full_ai_update = next(
+        arguments
+        for arguments in current_version_updates
+        if arguments[0] == UUID("7ed21b77-7e4c-5801-8fc0-bee133575101")
+        and arguments[1] == UUID("6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c")
+    )
+    assert full_ai_update[5] == "active"
 
 
 def test_bootstrap_rejects_conflicting_persisted_pipeline_content() -> None:

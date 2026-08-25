@@ -109,6 +109,12 @@
         "voice_profile_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
         "render_preset": { "$ref": "#/$defs/NullableVersionReference" },
         "pipeline_version": { "$ref": "#/$defs/VersionReference" },
+        "catalog_snapshot_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "visual_source_mode": {
+          "type": "string",
+          "enum": ["asset_libraries", "generated_only"]
+        },
+        "full_ai_generation": { "$ref": "#/$defs/FullAiGenerationSnapshot" },
         "production_settings": { "$ref": "#/$defs/ProductionSettings" },
         "capabilities": {
           "type": "array",
@@ -116,6 +122,59 @@
           "uniqueItems": true,
           "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
         }
+      }
+    },
+    "FullAiGenerationSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_name", "model_id", "ratio", "variants_per_beat", "target_duration_seconds", "scene_count",
+        "candidate_count", "billable_seconds", "max_cost_minor", "continuity_mode",
+        "full_ai_run_id", "terms_snapshot", "pricing_snapshot",
+        "output_rights_confirmed", "output_rights_license_basis"
+      ],
+      "properties": {
+        "provider_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "ratio": { "type": "string", "enum": ["720:1280", "1280:720"] },
+        "variants_per_beat": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "target_duration_seconds": { "type": "integer", "enum": [15, 30, 45, 60] },
+        "scene_count": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "candidate_count": { "type": "integer", "minimum": 1, "maximum": 36 },
+        "billable_seconds": { "type": "integer", "minimum": 5, "maximum": 180 },
+        "max_cost_minor": { "type": "integer", "minimum": 0 },
+        "continuity_mode": { "type": "string", "enum": ["prompt_pack", "none"] },
+        "full_ai_run_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "terms_snapshot": { "$ref": "#/$defs/ExternalContractSnapshot" },
+        "pricing_snapshot": {
+          "allOf": [
+            { "$ref": "#/$defs/ExternalContractSnapshot" },
+            {
+              "type": "object",
+              "required": ["currency", "credit_unit_minor", "cost_per_second_minor"],
+              "properties": {
+                "currency": { "const": "USD" },
+                "credit_unit_minor": { "const": 1 },
+                "cost_per_second_minor": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        },
+        "output_rights_confirmed": { "const": true },
+        "output_rights_license_basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    },
+    "ExternalContractSnapshot": {
+      "type": "object",
+      "required": ["ref", "content_hash", "captured_at"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "captured_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
       }
     },
     "ProductionSettings": {

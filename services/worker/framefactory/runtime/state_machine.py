@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from datetime import datetime
 
@@ -18,7 +18,9 @@ from .model import (
 )
 
 ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
-    ExecutionState.QUEUED: frozenset({ExecutionState.RUNNING, ExecutionState.CANCELLED}),
+    ExecutionState.QUEUED: frozenset(
+        {ExecutionState.RUNNING, ExecutionState.CANCELLED}
+    ),
     ExecutionState.RUNNING: frozenset(
         {
             ExecutionState.AWAITING_REVIEW,
@@ -29,7 +31,12 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
         }
     ),
     ExecutionState.AWAITING_REVIEW: frozenset(
-        {ExecutionState.SUCCEEDED, ExecutionState.RETRYING, ExecutionState.FAILED, ExecutionState.CANCELLED}
+        {
+            ExecutionState.SUCCEEDED,
+            ExecutionState.RETRYING,
+            ExecutionState.FAILED,
+            ExecutionState.CANCELLED,
+        }
     ),
     ExecutionState.RETRYING: frozenset(
         {ExecutionState.RUNNING, ExecutionState.FAILED, ExecutionState.CANCELLED}
@@ -42,7 +49,9 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
 
 def require_transition(source: ExecutionState, target: ExecutionState) -> None:
     if target not in ALLOWED_TRANSITIONS[source]:
-        raise InvalidTransition(f"cannot transition from {source.value} to {target.value}")
+        raise InvalidTransition(
+            f"cannot transition from {source.value} to {target.value}"
+        )
 
 
 def start_step(record: StepRecord, lease: Lease, *, at: datetime) -> StepRecord:
@@ -82,8 +91,12 @@ def finish_step(
     review_required: bool | None = None,
     at: datetime,
 ) -> StepRecord:
-    needs_review = record.review_required if review_required is None else review_required
-    target = ExecutionState.AWAITING_REVIEW if needs_review else ExecutionState.SUCCEEDED
+    needs_review = (
+        record.review_required if review_required is None else review_required
+    )
+    target = (
+        ExecutionState.AWAITING_REVIEW if needs_review else ExecutionState.SUCCEEDED
+    )
     require_transition(record.status, target)
     at = require_aware(at, field_name="at")
     review = ReviewRecord(requested_at=at) if needs_review else record.review
@@ -100,12 +113,18 @@ def finish_step(
     )
 
 
-def fail_step(record: StepRecord, error: StepError, *, retry: bool, at: datetime) -> StepRecord:
+def fail_step(
+    record: StepRecord, error: StepError, *, retry: bool, at: datetime
+) -> StepRecord:
     at = require_aware(at, field_name="at")
     can_retry = retry and record.attempt_count < record.max_attempts
     target = ExecutionState.RETRYING if can_retry else ExecutionState.FAILED
     require_transition(record.status, target)
-    available_at = at + record.retry_policy.delay_after(record.attempt_count) if can_retry else record.available_at
+    available_at = (
+        at + record.retry_policy.delay_after(record.attempt_count)
+        if can_retry
+        else record.available_at
+    )
     return replace(
         record,
         status=target,
@@ -122,7 +141,11 @@ def request_cancellation(record: StepRecord, *, at: datetime) -> StepRecord:
     if record.terminal:
         return record
     if record.status is ExecutionState.RUNNING:
-        return replace(record, cancellation_requested_at=record.cancellation_requested_at or at, updated_at=at)
+        return replace(
+            record,
+            cancellation_requested_at=record.cancellation_requested_at or at,
+            updated_at=at,
+        )
     require_transition(record.status, ExecutionState.CANCELLED)
     return replace(
         record,
@@ -154,6 +177,7 @@ def review_step(
     actor_id: str,
     comment: str | None,
     at: datetime,
+    metadata: Mapping[str, object] | None = None,
 ) -> StepRecord:
     if record.status is not ExecutionState.AWAITING_REVIEW:
         raise InvalidTransition("only an awaiting_review step can be reviewed")
@@ -161,12 +185,19 @@ def review_step(
     if decision is ReviewDecision.APPROVE:
         target = ExecutionState.SUCCEEDED
         error = record.error
-    elif decision is ReviewDecision.REQUEST_CHANGES and record.attempt_count < record.max_attempts:
+    elif (
+        decision is ReviewDecision.REQUEST_CHANGES
+        and record.attempt_count < record.max_attempts
+    ):
         target = ExecutionState.RETRYING
-        error = StepError("review_changes_requested", comment or "changes requested", retryable=True)
+        error = StepError(
+            "review_changes_requested", comment or "changes requested", retryable=True
+        )
     else:
         target = ExecutionState.FAILED
-        error = StepError("review_rejected", comment or "review rejected", retryable=False)
+        error = StepError(
+            "review_rejected", comment or "review rejected", retryable=False
+        )
     require_transition(record.status, target)
     review = ReviewRecord(
         decision=decision,
@@ -174,6 +205,7 @@ def review_step(
         comment=comment,
         requested_at=record.review.requested_at if record.review else None,
         decided_at=at,
+        metadata=metadata or (record.review.metadata if record.review else {}),
     )
     available_at = (
         at + record.retry_policy.delay_after(record.attempt_count)
@@ -201,7 +233,9 @@ def aggregate_run_state(steps: Iterable[StepRecord]) -> ExecutionState:
         return ExecutionState.SUCCEEDED
     if any(state is ExecutionState.FAILED for state in states):
         return ExecutionState.FAILED
-    if all(state.terminal for state in states) and any(state is ExecutionState.CANCELLED for state in states):
+    if all(state.terminal for state in states) and any(
+        state is ExecutionState.CANCELLED for state in states
+    ):
         return ExecutionState.CANCELLED
     for state in (
         ExecutionState.AWAITING_REVIEW,

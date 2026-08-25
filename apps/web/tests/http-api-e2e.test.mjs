@@ -77,7 +77,74 @@ test("production Web adapter completes the control loop over real HTTP", { timeo
   assert.ok(session.ok && session.data.activeWorkspaceId);
   const workspaceId = session.ok ? session.data.activeWorkspaceId : "";
 
+  const fullAiOptions = await adapter.getFullAiOptions();
+  assert.equal(fullAiOptions.ok, true);
+  assert.equal(fullAiOptions.ok && fullAiOptions.data.mode, "generated_only");
+  assert.equal(fullAiOptions.ok && fullAiOptions.data.status, "blocked");
+  assert.equal(fullAiOptions.ok && fullAiOptions.data.provider.supportsReconciliation, false);
+  assert.equal(fullAiOptions.ok && fullAiOptions.data.provider.submitUnknownPolicy, "manual_only");
+  assert.deepEqual(fullAiOptions.ok && fullAiOptions.data.limits.aspectRatios, ["9:16", "16:9"]);
+  const fullAiEstimate = await adapter.estimateFullAiRun({
+    brief: "一座漂浮在云海上的未来城市在清晨苏醒",
+    direction: "cinematic",
+    aspectRatio: "9:16",
+    durationSeconds: 30,
+    variantsPerScene: 2,
+    continuity: true,
+    aiDisclosure: true,
+  });
+  assert.equal(fullAiEstimate.ok, true);
+  assert.equal(fullAiEstimate.ok && fullAiEstimate.data.status, "blocked");
+  assert.equal(fullAiEstimate.ok && fullAiEstimate.data.quote, undefined);
+  assert.equal(fullAiEstimate.ok && fullAiEstimate.data.plan.sceneCount, 6);
+
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const unavailableDistill = await adapter.createSkill({
+    kind: "distill",
+    workspaceId,
+    identity: {
+      name: "Unavailable distillation",
+      slug: `unavailable-distillation-${suffix}`,
+      description: "This request must fail without creating a substitute draft.",
+      visibility: "private",
+    },
+    examples: [{ id: "example-1", kind: "text", label: "Example", value: "Example content" }],
+  });
+  assert.equal(unavailableDistill.ok, false);
+  assert.equal(!unavailableDistill.ok && unavailableDistill.error.code, "distill_not_available");
+
+  const imported = await adapter.createSkill({
+    kind: "import",
+    workspaceId,
+    package: {
+      schemaVersion: "1.0",
+      identity: {
+        name: "Web HTTP E2E Import",
+        slug: `web-http-e2e-import-${suffix}`,
+        description: "Imported through the production adapter over real HTTP.",
+        visibility: "private",
+      },
+      spec: {
+        inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] },
+        researchPolicy: { factBoundary: "strict", requireCitations: true, preferredSources: ["official"], excludedSources: [] },
+        writingInstructions: "Imported instructions must remain intact over production HTTP.",
+        visualPolicy: { direction: "documentary", shotGuidance: ["Use traceable footage."], forbiddenTreatments: ["fabrication"] },
+        assetPolicy: { strategy: "workspace_libraries", requiredTags: [], allowExternalAcquisition: false },
+        qcRubric: { criteria: [{ id: "clarity", label: "Clarity", description: "The result is clear.", minimumScore: 0.8 }] },
+        outputContract: { format: "script", fields: ["script"], constraints: {} },
+        modelRequirements: { capabilities: ["text.structured_output"] },
+      },
+      testTopics: ["Imported topic"],
+      releaseNotes: "Imported package",
+    },
+  });
+  assert.equal(imported.ok, true, JSON.stringify(imported));
+  const importedDetail = await adapter.getSkill(imported.ok ? imported.data.id : "");
+  assert.equal(importedDetail.ok, true);
+  const importedDraft = importedDetail.ok ? importedDetail.data.versions.find((version) => version.state === "draft") : undefined;
+  assert.equal(importedDraft?.spec.writingInstructions, "Imported instructions must remain intact over production HTTP.");
+  assert.deepEqual(importedDraft?.testTopics, ["Imported topic"]);
+
   const created = await adapter.createSkill({
     kind: "blank",
     workspaceId,

@@ -300,6 +300,52 @@ def test_follow_up_skill_drafts_can_start_from_identical_content(
     assert "on skill_versions (skill_id, content_hash)" in normalized_sql
 
 
+def test_full_ai_paid_operations_are_durable_and_never_resubmit_unknown_charges(
+    normalized_sql: str,
+) -> None:
+    run_body = _table_body(normalized_sql, "full_ai_runs")
+    operation_body = _table_body(normalized_sql, "full_ai_paid_operations")
+    assert {
+        "underlying_run_id",
+        "request_hash",
+        "estimate_fingerprint",
+        "authorized_amount_minor",
+        "requires_reconciliation",
+    } <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", run_body))
+    assert {
+        "operation_key",
+        "scene_key",
+        "variant_index",
+        "provider_idempotency_key",
+        "provider_request_id",
+        "result",
+        "submit_unknown",
+        "reconciliation_attempts",
+    } <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", operation_body))
+    assert "unique (workspace_id, full_ai_run_id, operation_key)" in operation_body
+    assert "unique (workspace_id, full_ai_run_id, scene_key, variant_index)" in operation_body
+    assert _has_rls_policy(normalized_sql, "full_ai_runs")
+    assert _has_rls_policy(normalized_sql, "full_ai_paid_operations")
+    assert "submit_unknown must be reconciled and cannot be resubmitted" in normalized_sql
+    assert "full_ai_paid_operations_validate_transition" in normalized_sql
+    assert "full_ai_paid_operations_validate_budget" in normalized_sql
+    assert "full_ai_paid_operations_aggregate_billing" in normalized_sql
+    assert "full_ai_paid_operations_prevent_delete" in normalized_sql
+    assert "full-ai candidate count exceeds the frozen plan" in normalized_sql
+    assert "full-ai paid operation exceeds the run budget" in normalized_sql
+    assert "definite_rejection" in normalized_sql
+    assert "submitting can be released only after a definite provider rejection" in normalized_sql
+    assert "full-ai cost and reconciliation counters are monotonic" in normalized_sql
+    assert "status = 'reconciliation_required'" in normalized_sql
+    assert "full_ai_paid_operations_result_shape" in normalized_sql
+    assert "verification_status" in normalized_sql
+    assert "output_content_hash" in normalized_sql
+    assert "accepted_artifact" in normalized_sql
+    assert "verification_evidence" in normalized_sql
+    assert "pg_column_size(result) <= 1048576" in normalized_sql
+    assert "full-ai paid operation result checkpoint is immutable" in normalized_sql
+
+
 def test_recovery_queues_have_claim_and_retry_indexes(normalized_sql: str) -> None:
     assert _has_index_covering(normalized_sql, "run_steps", {"status", "available_at"}), (
         "run_steps needs a status/available_at recovery index"
@@ -311,6 +357,21 @@ def test_recovery_queues_have_claim_and_retry_indexes(normalized_sql: str) -> No
     assert _has_index_covering(normalized_sql, "outbox_events", {"status", "available_at"}), (
         "outbox_events needs a dispatch/recovery index"
     )
+
+
+def test_artifact_tenant_key_accepts_only_standard_or_browser_capture_namespace(
+    normalized_sql: str,
+) -> None:
+    assert "drop constraint artifacts_tenant_key" in normalized_sql
+    assert (
+        "'workspaces/' || workspace_id::text || '/runs/' || run_id::text || '/artifacts/%'"
+        in normalized_sql
+    )
+    assert (
+        "'browser-capture/workspaces/' || workspace_id::text || '/runs/' || "
+        "run_id::text || '/artifacts/%'" in normalized_sql
+    )
+    assert r"object_key !~ '(^|/)\.\.(/|$)'" in normalized_sql
 
 
 def test_audit_and_outbox_are_workspace_scoped_and_append_only(normalized_sql: str) -> None:

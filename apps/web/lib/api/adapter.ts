@@ -37,6 +37,21 @@ import type {
   GenerationBatchCreateRequest,
   GenerationBatchItemPage,
   GenerationBatchItemQuery,
+  LibraryBuildJob,
+  LibraryBuildJobCreateRequest,
+  FullAiEstimate,
+  FullAiOptions,
+  FullAiRun,
+  FullAiRunCreateRequest,
+  FullAiSpec,
+  WebpageVideoCapture,
+  WebpageVideoOptions,
+  WebpageVideoReviewRequest,
+  WebpageVideoScopeReviewRequest,
+  WebpageVideoSitePlan,
+  WebpageVideoStoryboardReviewRequest,
+  WebpageVideoRun,
+  WebpageVideoRunCreateRequest,
   Run,
   RunDraft,
   RunEstimate,
@@ -98,9 +113,38 @@ export interface FrameFactoryAdapter {
   deleteDraft(skillId: string): Promise<ApiResult<void>>;
 
   getComposerOptions(workspaceId: string): Promise<ApiResult<ComposerOptions>>;
+  getFullAiOptions(): Promise<ApiResult<FullAiOptions>>;
+  estimateFullAiRun(spec: FullAiSpec): Promise<ApiResult<FullAiEstimate>>;
+  createFullAiRun(
+    request: FullAiRunCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<FullAiRun>>;
+  getFullAiRun(runId: string): Promise<ApiResult<FullAiRun>>;
+  getWebpageVideoOptions(): Promise<ApiResult<WebpageVideoOptions>>;
+  createWebpageVideoRun(
+    request: WebpageVideoRunCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<WebpageVideoRun>>;
+  getWebpageVideoRun(runId: string): Promise<ApiResult<WebpageVideoRun>>;
+  getWebpageVideoCapture(runId: string): Promise<ApiResult<WebpageVideoCapture>>;
+  getWebpageVideoSite(runId: string): Promise<ApiResult<WebpageVideoSitePlan>>;
+  reviewWebpageVideoRun(
+    runId: string,
+    review: WebpageVideoReviewRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<void>>;
+  reviewWebpageVideoScope(runId: string, review: WebpageVideoScopeReviewRequest, idempotencyKey: string): Promise<ApiResult<void>>;
+  reviewWebpageVideoStoryboard(runId: string, review: WebpageVideoStoryboardReviewRequest, idempotencyKey: string): Promise<ApiResult<void>>;
+  cancelWebpageVideoRun(runId: string, idempotencyKey: string): Promise<ApiResult<void>>;
   createAssetLibrary(
     request: AssetLibraryCreateRequest,
   ): Promise<ApiResult<AssetLibraryOption>>;
+  createLibraryBuildJob(
+    request: LibraryBuildJobCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<LibraryBuildJob>>;
+  getLibraryBuildJob(jobId: string): Promise<ApiResult<LibraryBuildJob>>;
+  cancelLibraryBuildJob(jobId: string, revision: number): Promise<ApiResult<LibraryBuildJob>>;
   uploadAsset(request: AssetUploadRequest): Promise<ApiResult<void>>;
   importRemoteAsset(request: RemoteAssetImportRequest): Promise<ApiResult<void>>;
   listAssets(libraryId: string, query?: AssetQuery): Promise<ApiResult<AssetPage>>;

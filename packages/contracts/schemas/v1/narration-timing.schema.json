@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/narration-timing.schema.json",
+  "title": "NarrationTiming",
+  "description": "Immutable alignment evidence tying narration text intervals to one audio and script artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "operation", "provider", "source", "granularity", "estimated",
+    "word_timing_estimated", "duration_seconds", "audio_content_hash", "script_content_hash",
+    "words", "segments", "beats"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "operation": { "const": "audio.synthesize" },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "source": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "granularity": { "type": "string", "enum": ["word", "sentence"] },
+    "estimated": { "type": "boolean" },
+    "word_timing_estimated": { "type": "boolean" },
+    "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "audio_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "script_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "words": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/WordInterval" }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/TimingUnit" }
+    },
+    "beats": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/TimingUnit" }
+    }
+  },
+  "$defs": {
+    "WordInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "text", "start_seconds", "end_seconds", "estimated", "alignment_source"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string", "minLength": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "estimated": { "type": "boolean" },
+        "alignment_source": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "TimingUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "text", "start_seconds", "end_seconds", "estimated", "alignment_source"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "estimated": { "type": "boolean" },
+        "alignment_source": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "operation": "audio.synthesize",
+      "provider": "edge-tts",
+      "source": "edge_word_boundary",
+      "granularity": "word",
+      "estimated": false,
+      "word_timing_estimated": false,
+      "duration_seconds": 4.2,
+      "audio_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "script_content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "words": [
+        {"ordinal": 0, "text": "为什么", "start_seconds": 0, "end_seconds": 0.8, "estimated": false, "alignment_source": "native_word_boundary"}
+      ],
+      "segments": [
+        {"id": "sentence-001", "sequence": 1, "text": "为什么天空是蓝色？", "start_seconds": 0, "end_seconds": 4.2, "estimated": false, "alignment_source": "native_word_aggregation"}
+      ],
+      "beats": [
+        {"id": "beat-001", "sequence": 1, "text": "为什么天空是蓝色？", "start_seconds": 0, "end_seconds": 4.2, "estimated": false, "alignment_source": "native_word_aggregation"}
+      ]
+    }
+  ]
+}

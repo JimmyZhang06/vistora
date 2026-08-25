@@ -49,7 +49,13 @@ class ArtifactRef:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> ArtifactRef:
-        return cls(**{name: value.get(name) for name in cls.__dataclass_fields__ if name in value})
+        return cls(
+            **{
+                name: value.get(name)
+                for name in cls.__dataclass_fields__
+                if name in value
+            }
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,10 +155,26 @@ class StepContext:
     maximum_attempts: int = 3
     review_feedback: str | None = None
     artifact_publisher: ArtifactPublisher | None = None
+    approved_dependency_step_ids: tuple[str, ...] = ()
+    approved_dependency_reviews: Mapping[str, Any] = field(default_factory=FrozenMap)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "input_snapshot", InputSnapshot.capture(self.input_snapshot))
+        object.__setattr__(
+            self, "input_snapshot", InputSnapshot.capture(self.input_snapshot)
+        )
         object.__setattr__(self, "input_artifacts", tuple(self.input_artifacts))
+        object.__setattr__(
+            self,
+            "approved_dependency_step_ids",
+            tuple(sorted(set(self.approved_dependency_step_ids))),
+        )
+        normalized_reviews = normalize_json(
+            self.approved_dependency_reviews,
+            path="$.approved_dependency_reviews",
+        )
+        if not isinstance(normalized_reviews, FrozenMap):
+            raise TypeError("approved dependency reviews must be an object")
+        object.__setattr__(self, "approved_dependency_reviews", normalized_reviews)
         if self.attempt < 1:
             raise ValueError("attempt must be positive")
         if self.maximum_attempts < self.attempt:

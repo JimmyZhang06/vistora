@@ -30,6 +30,17 @@
     "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
     "expires_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "const": "inventory" } }
+      },
+      "then": {
+        "properties": { "media_type": { "const": "application/json" } }
+      }
+    }
+  ],
   "examples": [
     {
       "schema_version": "1.0.0",

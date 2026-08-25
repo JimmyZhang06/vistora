@@ -19,7 +19,13 @@ class ProviderArtifact:
 
 
 class ArtifactStorage(Protocol):
-    def publish(self, context: StepContext, artifact: ProviderArtifact) -> ArtifactRef: ...
+    def publish(
+        self,
+        context: StepContext,
+        artifact: ProviderArtifact,
+        *,
+        attempt_scoped: bool = False,
+    ) -> ArtifactRef: ...
 
     def read_bytes(self, artifact: ArtifactRef) -> bytes: ...
 

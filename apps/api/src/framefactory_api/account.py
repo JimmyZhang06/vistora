@@ -129,7 +129,14 @@ class SessionResponse(StrictModel):
 
 
 ApiKeyScope = Literal[
-    "account:read", "skills:read", "skills:write", "runs:read", "runs:write"
+    "account:read",
+    "skills:read",
+    "skills:write",
+    "runs:read",
+    "runs:write",
+    "url_capture:read",
+    "url_capture:write",
+    "url_capture:review",
 ]
 
 

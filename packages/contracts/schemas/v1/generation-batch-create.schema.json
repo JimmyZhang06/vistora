@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/generation-batch-create.schema.json",
+  "title": "GenerationBatchCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "items", "composition"],
+  "properties": {
+    "workspace_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "name": { "$ref": "common.schema.json#/$defs/Name" },
+    "channel_id": { "$ref": "common.schema.json#/$defs/NullableUuid" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/Item" }
+    },
+    "composition": { "$ref": "run-create.schema.json#/properties/composition" },
+    "video_settings": {
+      "allOf": [
+        { "$ref": "run-create.schema.json#/$defs/VideoSettings" },
+        {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": {
+                "asset_acquisition": {
+                  "oneOf": [
+                    { "type": "null" },
+                    {
+                      "type": "object",
+                      "properties": { "enabled": { "const": false } }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "research_mode": {
+      "type": "string",
+      "enum": ["off", "when_missing", "required"],
+      "default": "when_missing"
+    }
+  },
+  "$defs": {
+    "Item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic"],
+      "properties": {
+        "topic": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "inputs": { "$ref": "run.schema.json#/$defs/InputValues" }
+      }
+    }
+  }
+}

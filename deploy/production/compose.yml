@@ -33,6 +33,7 @@ x-app-env: &app-env
   FRAMEFACTORY_DEFAULT_USER_ID: ${FF_DEFAULT_USER_ID:?required}
   FRAMEFACTORY_DEFAULT_WORKSPACE_ID: ${FF_DEFAULT_WORKSPACE_ID:?required}
   FRAMEFACTORY_CORS_ALLOW_ORIGINS: ${FF_CORS_ALLOW_ORIGINS:?required}
+  FRAMEFACTORY_WORKER_CAPABILITIES: ${FF_WORKER_CAPABILITIES:?required}
 
 services:
   migrate:
@@ -53,7 +54,10 @@ services:
   api:
     <<: *hardened
     build: {context: ../.., dockerfile: deploy/production/Dockerfile, target: api}
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # Presigned browser URLs must use an externally reachable HTTPS origin.
+      FRAMEFACTORY_S3_PUBLIC_ENDPOINT_URL: ${FF_S3_PUBLIC_ENDPOINT_URL:?required}
     secrets: [database_url, redis_url, s3_access_key, s3_secret_key]
     tmpfs: ["/tmp:size=256m,mode=1777"]
     ports: ["127.0.0.1:${FF_API_PORT:-8080}:8080"]
@@ -71,20 +75,22 @@ services:
     environment:
       <<: *app-env
       FRAMEFACTORY_ALLOW_INSECURE_TRANSPORT: "true"
-      FRAMEFACTORY_LEGACY_MEDIA_ENABLED: ${FF_LEGACY_MEDIA_ENABLED:-false}
-      FRAMEFACTORY_LEGACY_ASSET_ROOT: /opt/framefactory/legacy-media
-      FRAMEFACTORY_LEGACY_ASSET_CATALOGS: ${FF_LEGACY_ASSET_CATALOGS:-}
+      FRAMEFACTORY_STEP_QUEUE: run-steps
+      FRAMEFACTORY_BROWSER_CAPTURE_ONLY: "false"
+      FRAMEFACTORY_BROWSER_CAPTURE_ENABLED: "false"
+      FRAMEFACTORY_OPENAI_BASE_URL: ${FF_OPENAI_BASE_URL:?required}
+      FRAMEFACTORY_OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      FRAMEFACTORY_OPENAI_RESEARCH_MODEL: ${FF_OPENAI_RESEARCH_MODEL:?required}
+      FRAMEFACTORY_OPENAI_WRITING_MODEL: ${FF_OPENAI_WRITING_MODEL:?required}
+      FRAMEFACTORY_OPENAI_QUALITY_MODEL: ${FF_OPENAI_QUALITY_MODEL:?required}
+      FRAMEFACTORY_OPENAI_TIMEOUT_SECONDS: ${FF_OPENAI_TIMEOUT_SECONDS:-60}
+      FRAMEFACTORY_LEGACY_MEDIA_ENABLED: ${FF_LEGACY_MEDIA_ENABLED:?required}
       FRAMEFACTORY_LEGACY_TTS_VOICE: ${FF_LEGACY_TTS_VOICE:-zh-CN-YunjianNeural}
       FRAMEFACTORY_LEGACY_TTS_RATE: ${FF_LEGACY_TTS_RATE:-+25%}
       FRAMEFACTORY_CONTROL_API_URL: http://api:8080
       FRAMEFACTORY_ASSET_ACQUISITION_TIMEOUT_SECONDS: ${FF_ASSET_ACQUISITION_TIMEOUT_SECONDS:-600}
-    secrets: [database_url, redis_url, s3_access_key, s3_secret_key]
+    secrets: [database_url, redis_url, s3_access_key, s3_secret_key, openai_api_key]
     tmpfs: ["/tmp:size=256m,mode=1777"]
-    volumes:
-      - type: bind
-        source: ${FF_LEGACY_MEDIA_DIR:-../../var/legacy-media}
-        target: /opt/framefactory/legacy-media
-        read_only: true
     networks: [backend, egress]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -98,6 +104,69 @@ services:
         exec framefactory-worker run
     cpus: 2.0
     mem_limit: 2g
+
+  browser-capture-worker:
+    <<: *hardened
+    build: {context: ../.., dockerfile: deploy/production/Dockerfile, target: browser-capture}
+    environment:
+      <<: *app-env
+      FRAMEFACTORY_DATABASE_URL_FILE: /run/secrets/capture_database_url
+      FRAMEFACTORY_REDIS_URL_FILE: /run/secrets/capture_redis_url
+      FRAMEFACTORY_S3_ACCESS_KEY_ID_FILE: /run/secrets/capture_s3_access_key
+      FRAMEFACTORY_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/capture_s3_secret_key
+      FRAMEFACTORY_S3_KEY_PREFIX: browser-capture
+      FRAMEFACTORY_ALLOW_INSECURE_TRANSPORT: "true"
+      FRAMEFACTORY_STEP_QUEUE: browser-capture
+      FRAMEFACTORY_BROWSER_CAPTURE_ONLY: "true"
+      FRAMEFACTORY_BROWSER_CAPTURE_ENABLED: "true"
+      # This assertion is intentionally operator-supplied. Setting it true
+      # without an external deny-private/metadata egress policy is unsafe.
+      FRAMEFACTORY_BROWSER_EGRESS_POLICY_ENFORCED: ${FF_BROWSER_EGRESS_POLICY_ENFORCED:?required}
+      FRAMEFACTORY_BROWSER_EGRESS_PROXY_URL: ${FF_BROWSER_EGRESS_PROXY_URL:?required}
+      FRAMEFACTORY_BROWSER_ALLOW_NON_STANDARD_PORTS: "false"
+      FRAMEFACTORY_BROWSER_NAVIGATION_TIMEOUT_SECONDS: ${FF_BROWSER_NAVIGATION_TIMEOUT_SECONDS:-20}
+      FRAMEFACTORY_BROWSER_SETTLE_TIMEOUT_SECONDS: ${FF_BROWSER_SETTLE_TIMEOUT_SECONDS:-30}
+      FRAMEFACTORY_BROWSER_SCREENSHOT_TIMEOUT_SECONDS: ${FF_BROWSER_SCREENSHOT_TIMEOUT_SECONDS:-10}
+      FRAMEFACTORY_BROWSER_JOB_TIMEOUT_SECONDS: ${FF_BROWSER_JOB_TIMEOUT_SECONDS:-90}
+      FRAMEFACTORY_BROWSER_MAXIMUM_RESOURCES: ${FF_BROWSER_MAXIMUM_RESOURCES:-400}
+      FRAMEFACTORY_BROWSER_MAXIMUM_TRANSFER_BYTES: ${FF_BROWSER_MAXIMUM_TRANSFER_BYTES:-104857600}
+      FRAMEFACTORY_BROWSER_MAXIMUM_BODY_CHARACTERS: ${FF_BROWSER_MAXIMUM_BODY_CHARACTERS:-12000}
+      FRAMEFACTORY_BROWSER_MAXIMUM_REDIRECTS: ${FF_BROWSER_MAXIMUM_REDIRECTS:-5}
+      FRAMEFACTORY_WORKER_CONCURRENCY: ${FF_BROWSER_WORKER_CONCURRENCY:-1}
+    secrets:
+      - capture_database_url
+      - capture_redis_url
+      - capture_s3_access_key
+      - capture_s3_secret_key
+    tmpfs:
+      - "/tmp:size=512m,uid=1000,gid=1000,mode=1777"
+      - "/dev/shm:size=512m,uid=1000,gid=1000,mode=1777"
+    networks: [capture-backend, capture-egress]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      s3: {condition: service_healthy}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        export FRAMEFACTORY_DATABASE_URL="$$(cat /run/secrets/capture_database_url)"
+        export FRAMEFACTORY_REDIS_URL="$$(cat /run/secrets/capture_redis_url)"
+        exec framefactory-worker run
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          export FRAMEFACTORY_DATABASE_URL="$$(cat /run/secrets/capture_database_url)" &&
+          export FRAMEFACTORY_REDIS_URL="$$(cat /run/secrets/capture_redis_url)" &&
+          framefactory-worker healthcheck >/dev/null
+      interval: 30s
+      timeout: 25s
+      start_period: 45s
+      retries: 3
+    pids_limit: 256
+    cpus: 1.5
+    mem_limit: 1536m
 
   postgres:
     <<: *hardened
@@ -113,7 +182,7 @@ services:
       - "/var/run/postgresql:size=16m,uid=999,gid=999,mode=0770"
     volumes:
       - postgres_data:/var/lib/postgresql/data:rw
-    networks: [backend]
+    networks: [backend, capture-backend]
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U framefactory -d framefactory"]
       interval: 10s
@@ -130,7 +199,7 @@ services:
     secrets: [redis_password]
     tmpfs: ["/tmp:size=64m,mode=1777"]
     volumes: [redis_data:/data:rw]
-    networks: [backend]
+    networks: [backend, capture-backend]
     healthcheck:
       test: [CMD-SHELL, "redis-cli --no-auth-warning -a \"$$(cat /run/secrets/redis_password)\" ping | grep -q PONG"]
       interval: 10s
@@ -149,7 +218,7 @@ services:
     secrets: [s3_access_key, s3_secret_key]
     tmpfs: ["/tmp:size=128m,mode=1777"]
     volumes: [s3_data:/data:rw]
-    networks: [backend]
+    networks: [backend, capture-backend]
     healthcheck:
       test: [CMD, curl, --fail, --silent, http://127.0.0.1:9000/minio/health/ready]
       interval: 10s
@@ -161,7 +230,12 @@ services:
 networks:
   ingress: {}
   backend: {internal: true}
+  capture-backend: {internal: true}
   egress: {}
+  # The host/orchestrator MUST firewall this network so capture containers can
+  # reach only the declared egress proxy plus backend services. Compose alone
+  # cannot enforce the DNS-rebinding/metadata-service deny policy.
+  capture-egress: {}
 volumes:
   postgres_data: {}
   redis_data: {}
@@ -173,3 +247,8 @@ secrets:
   redis_url: {file: "${FF_REDIS_URL_FILE:?required}"}
   s3_access_key: {file: "${FF_S3_ACCESS_KEY_FILE:?required}"}
   s3_secret_key: {file: "${FF_S3_SECRET_KEY_FILE:?required}"}
+  openai_api_key: {file: "${FF_OPENAI_API_KEY_FILE:?required}"}
+  capture_database_url: {file: "${FF_CAPTURE_DATABASE_URL_FILE:?required}"}
+  capture_redis_url: {file: "${FF_CAPTURE_REDIS_URL_FILE:?required}"}
+  capture_s3_access_key: {file: "${FF_CAPTURE_S3_ACCESS_KEY_FILE:?required}"}
+  capture_s3_secret_key: {file: "${FF_CAPTURE_S3_SECRET_KEY_FILE:?required}"}

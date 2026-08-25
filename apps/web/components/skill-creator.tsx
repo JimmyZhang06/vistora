@@ -2,30 +2,55 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { createFrameFactoryAdapter, type CreateSkillRequest, type Skill, type SkillSpec } from "@/lib/api";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { createFrameFactoryAdapter, type CreateSkillRequest, type Skill, type SkillPackage, type SkillSpec } from "@/lib/api";
 import { Badge, PageHeading } from "@/components/page-heading";
 import { UiSelect } from "@/components/ui-select";
 
 type Method = "blank" | "fork" | "distill" | "import";
 
-const methods: Array<{ id: Method; index: string; title: string; copy: string }> = [
+const methods: Array<{ id: Method; index: string; title: string; copy: string; available?: boolean }> = [
   { id: "blank", index: "01", title: "从空白创建", copy: "从目标、受众、事实边界和输出契约开始，建立完全属于工作区的草稿。" },
   { id: "fork", index: "02", title: "分叉官方 Skill", copy: "复制一个可查看的已发布版本为工作区草稿，不修改原 Skill。" },
-  { id: "distill", index: "03", title: "从示例蒸馏", copy: "提交文本、链接或文件示例，先形成研究报告，再生成同构草稿。" },
-  { id: "import", index: "04", title: "导入 Skill 包", copy: "仅导入声明式 JSON / Markdown 规格；校验 schema，不执行任意代码。" },
+  { id: "distill", index: "03", title: "从示例蒸馏", copy: "蒸馏服务尚未接入，暂不创建内容与示例无关的空白草稿。", available: false },
+  { id: "import", index: "04", title: "导入 Skill 包", copy: "读取声明式 JSON 规格；校验结构，不执行任意代码。" },
 ];
 
 const starterSpec: SkillSpec = {
   inputSchema: { type: "object", required: ["topic"], properties: { topic: { type: "string" } } },
-  researchPolicy: { factBoundary: "balanced", requireCitations: true, preferredSources: ["一手资料"], excludedSources: [] },
+  researchPolicy: { factBoundary: "balanced", requireCitations: true, preferredSources: ["primary", "official"], excludedSources: [] },
   writingInstructions: "围绕主题建立清晰论点，区分事实、判断与建议。",
   visualPolicy: { direction: "克制的信息编辑风格", shotGuidance: ["优先使用可溯源画面"], forbiddenTreatments: ["误导性重演"] },
-  assetPolicy: { strategy: "workspace_libraries", requiredTags: [], allowExternalAcquisition: false },
+  assetPolicy: { strategy: "workspace_libraries", requiredTags: ["image", "video"], allowExternalAcquisition: false },
   qcRubric: { criteria: [{ id: "clarity", label: "清晰度", description: "核心观点可准确复述", minimumScore: 0.8 }] },
-  outputContract: { format: "video_script", fields: ["title", "hook", "sections", "sources"], constraints: { maxDurationSeconds: 90 } },
+  outputContract: { format: "script", fields: ["script"], constraints: {} },
   modelRequirements: { capabilities: ["text.structured_output"] },
 };
+
+function parseSkillPackage(source: string): { value?: SkillPackage; error?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    return { error: "Skill 包不是有效的 JSON 文件。" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "Skill 包顶层必须是 JSON 对象。" };
+  const value = parsed as Record<string, unknown>;
+  const identity = value.identity;
+  const spec = value.spec;
+  if (value.schemaVersion !== "1.0") return { error: "当前仅支持 schemaVersion 为 1.0 的 Skill 包。" };
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return { error: "Skill 包缺少 identity 对象。" };
+  const identityRecord = identity as Record<string, unknown>;
+  if (typeof identityRecord.name !== "string" || typeof identityRecord.description !== "string") return { error: "Skill 包 identity 必须包含名称和说明。" };
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) return { error: "Skill 包缺少声明式 spec 对象。" };
+  const specRecord = spec as Record<string, unknown>;
+  const requiredSpecFields = ["inputSchema", "researchPolicy", "writingInstructions", "visualPolicy", "assetPolicy", "qcRubric", "outputContract", "modelRequirements"];
+  const missing = requiredSpecFields.filter((field) => !(field in specRecord));
+  if (missing.length) return { error: `Skill 包 spec 缺少字段：${missing.join("、")}。` };
+  if (value.testTopics !== undefined && (!Array.isArray(value.testTopics) || value.testTopics.some((item) => typeof item !== "string"))) return { error: "testTopics 必须是字符串数组。" };
+  if (value.releaseNotes !== undefined && typeof value.releaseNotes !== "string") return { error: "releaseNotes 必须是字符串。" };
+  return { value: parsed as SkillPackage };
+}
 
 export function SkillCreator() {
   const searchParams = useSearchParams();
@@ -35,12 +60,14 @@ export function SkillCreator() {
   const [sourceSkillId, setSourceSkillId] = useState("");
   const [method, setMethod] = useState<Method>(() => {
     const requested = searchParams.get("method");
-    return methods.some((item) => item.id === requested) ? requested as Method : "blank";
+    return methods.some((item) => item.id === requested && item.available !== false) ? requested as Method : "blank";
   });
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [audience, setAudience] = useState("");
   const [example, setExample] = useState("");
+  const [importPackage, setImportPackage] = useState<SkillPackage | null>(null);
+  const [importFileName, setImportFileName] = useState("");
   const [created, setCreated] = useState<Skill | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -59,6 +86,30 @@ export function SkillCreator() {
     return () => { cancelled = true; };
   }, [adapter, searchParams]);
 
+  async function selectImportPackage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    setImportPackage(null);
+    setImportFileName("");
+    setCreated(null);
+    if (!file) return;
+    if (file.size > 1_048_576) {
+      setError("Skill 包不能超过 1 MB。");
+      event.target.value = "";
+      return;
+    }
+    const parsed = parseSkillPackage(await file.text());
+    if (!parsed.value) {
+      setError(parsed.error ?? "无法解析 Skill 包。");
+      event.target.value = "";
+      return;
+    }
+    setImportPackage(parsed.value);
+    setImportFileName(file.name);
+    setName(parsed.value.identity.name);
+    setDescription(parsed.value.identity.description);
+    setError("");
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (name.trim().length < 2 || description.trim().length < 8) {
@@ -69,6 +120,10 @@ export function SkillCreator() {
     const identity = { name: name.trim(), description: description.trim(), visibility: "private" as const };
     if (!workspaceId) {
       setError("创作空间仍在载入，请稍后重试。");
+      return;
+    }
+    if (method === "distill") {
+      setError("示例蒸馏服务尚未接入，请改用空白创建、官方分叉或 JSON 导入。");
       return;
     }
     let request: CreateSkillRequest;
@@ -87,10 +142,14 @@ export function SkillCreator() {
         examples: [{ id: "local-example", kind: "text", label: "示例内容", value: example || "一段用于本地交互演示的示例。" }],
       };
     } else if (method === "import") {
+      if (!importPackage) {
+        setError("请先选择并通过校验的 Skill JSON 包。");
+        return;
+      }
       request = {
         kind: "import",
         workspaceId,
-        package: { schemaVersion: "1.0", identity, spec: starterSpec, testTopics: [] },
+        package: { ...importPackage, identity },
       };
     } else {
       request = { kind: "blank", workspaceId, identity, initialSpec: { ...starterSpec, writingInstructions: `${starterSpec.writingInstructions}\n目标受众：${audience || "待补充"}` } };
@@ -120,6 +179,8 @@ export function SkillCreator() {
             type="button"
             key={item.id}
             aria-pressed={method === item.id}
+            disabled={item.available === false}
+            title={item.available === false ? "该能力尚未接入生产服务" : undefined}
             onClick={() => { setMethod(item.id); setCreated(null); setError(""); }}
           >
             <span className="method-index">{item.index}</span>
@@ -166,8 +227,8 @@ export function SkillCreator() {
             {method === "import" ? (
               <div className="field field--full">
                 <label htmlFor="skill-package">Skill 包</label>
-                <input id="skill-package" className="input" type="file" accept=".json,.md,application/json,text/markdown" aria-describedby="package-help" />
-                <span id="package-help" className="field-help">仅解析受控字段；拒绝脚本、服务端路径和未知 schema。</span>
+                <input id="skill-package" className="input" type="file" accept=".json,application/json" aria-describedby="package-help" onChange={(event) => void selectImportPackage(event)} />
+                <span id="package-help" className="field-help">{importFileName ? `已读取并校验：${importFileName}` : "仅解析不超过 1 MB 的 JSON 声明式规格；拒绝未知 schema，不执行任何代码。"}</span>
               </div>
             ) : null}
           </div>

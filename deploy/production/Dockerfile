@@ -21,9 +21,12 @@ RUN python -m pip install --require-hashes --only-binary=:all: \
        -r services/worker/requirements-build.txt \
     && python -m pip wheel --require-hashes --only-binary=:all: \
        --wheel-dir /wheels -r services/worker/requirements-prod.txt \
+    && python -m pip wheel --require-hashes --only-binary=:all: \
+       --wheel-dir /wheels -r services/worker/requirements-browser.txt \
     && python -m pip wheel --no-build-isolation --no-deps \
        --wheel-dir /wheels ./services/worker \
-    && install -D -m 0444 services/worker/requirements-prod.txt /locks/worker-prod.txt
+    && install -D -m 0444 services/worker/requirements-prod.txt /locks/worker-prod.txt \
+    && install -D -m 0444 services/worker/requirements-browser.txt /locks/worker-browser.txt
 
 FROM ${PYTHON_BASE} AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FRAMEFACTORY_ENV=production
@@ -69,7 +72,8 @@ CMD ["python", "-m", "framefactory_api.migrate", "--project-root", "/opt/framefa
 
 FROM runtime AS worker
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fontconfig fonts-noto-cjk \
+    && fc-match "Noto Sans CJK SC" | grep -qi "NotoSansCJK" \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=worker-wheels /wheels /wheels
 COPY --from=worker-wheels /locks/worker-prod.txt /locks/worker-prod.txt
@@ -80,4 +84,30 @@ RUN python -m pip install --no-index --find-links=/wheels --require-hashes \
     && python -m pip check \
     && rm -rf /wheels /locks
 USER 10001:10001
+CMD ["framefactory-worker", "run"]
+
+# The Playwright package version and preinstalled Chromium revision must match.
+# Production egress isolation is supplied by the deployment firewall/proxy, not
+# by this image or Playwright request routing.
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble AS browser-capture
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FRAMEFACTORY_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /opt/framefactory
+RUN test "$(id -u pwuser)" = "1000" && test "$(id -g pwuser)" = "1000"
+COPY --from=worker-wheels /wheels /wheels
+COPY --from=worker-wheels /locks/worker-prod.txt /locks/worker-prod.txt
+COPY --from=worker-wheels /locks/worker-browser.txt /locks/worker-browser.txt
+RUN python -m pip install --no-index --find-links=/wheels --require-hashes \
+       -r /locks/worker-prod.txt \
+    && python -m pip install --no-index --find-links=/wheels --require-hashes \
+       -r /locks/worker-browser.txt \
+    && python -m pip install --no-index --find-links=/wheels --no-deps \
+       framefactory-worker==0.1.0 \
+    && python -m pip check \
+    && python -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); assert Path(p.chromium.executable_path).is_file(); p.stop()" \
+    && rm -rf /wheels /locks
+USER pwuser
+RUN python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True, chromium_sandbox=True, args=['--disable-dev-shm-usage','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--webrtc-ip-handling-policy=disable_non_proxied_udp']); page=b.new_page(); page.set_content('<title>sandbox-smoke</title>'); assert page.title() == 'sandbox-smoke'; b.close(); p.stop()"
 CMD ["framefactory-worker", "run"]

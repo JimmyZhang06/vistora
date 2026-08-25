@@ -33,6 +33,13 @@ src/agent/blockchain/config.json
 /playwright-report/
 /coverage/
 /htmlcov/
+/.tmp/
+/tmp/
+/artifacts/
+/output/
+/.pytest_cache/
+/.ruff_cache/
+/.pytest-*/
 /src/frontend/public/
 /src/frontend/dist/
 /src/frontend/node_modules/
@@ -72,8 +79,11 @@ FrameFactory_Handoff_Package.zip
 
 # Python, Node, editor, and OS caches
 .venv/
+.venv.invalid-*
 **/.venv/
 **/__pycache__/
+.pytest-*/
+**/.pytest_cache/
 *.py[cod]
 *.log
 .DS_Store

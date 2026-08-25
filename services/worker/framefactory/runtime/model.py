@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from framefactory.skills.canonical import FrozenMap, normalize_json
-
-UTC = timezone.utc
 
 
 def utc_now() -> datetime:
@@ -137,6 +135,13 @@ class ReviewRecord:
     comment: str | None = None
     requested_at: datetime | None = None
     decided_at: datetime | None = None
+    metadata: FrozenMap = field(default_factory=FrozenMap)
+
+    def __post_init__(self) -> None:
+        normalized = normalize_json(self.metadata, path="$.review.metadata")
+        if not isinstance(normalized, FrozenMap):
+            raise TypeError("review metadata must be an object")
+        object.__setattr__(self, "metadata", normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +167,9 @@ class RunStep:
             raise ValueError("priority must be between -100 and 100")
         if self.key in self.dependencies:
             raise ValueError("a step cannot depend on itself")
-        object.__setattr__(self, "dependencies", tuple(dict.fromkeys(self.dependencies)))
+        object.__setattr__(
+            self, "dependencies", tuple(dict.fromkeys(self.dependencies))
+        )
         object.__setattr__(
             self,
             "required_capabilities",
@@ -202,12 +209,22 @@ class StepRecord:
     revision: int = 0
 
     def __post_init__(self) -> None:
-        for name in ("workspace_id", "run_id", "step_id", "step_key", "step_type", "queue_name"):
+        for name in (
+            "workspace_id",
+            "run_id",
+            "step_id",
+            "step_key",
+            "step_type",
+            "queue_name",
+        ):
             if not getattr(self, name):
                 raise ValueError(f"{name} must not be empty")
         if not -100 <= self.priority <= 100:
             raise ValueError("priority must be between -100 and 100")
-        if self.attempt_count < 0 or self.attempt_count > self.retry_policy.max_attempts:
+        if (
+            self.attempt_count < 0
+            or self.attempt_count > self.retry_policy.max_attempts
+        ):
             raise ValueError("attempt_count is outside retry policy")
         if self.revision < 0:
             raise ValueError("revision must not be negative")
@@ -220,8 +237,14 @@ class StepRecord:
         object.__setattr__(self, "input_snapshot", freeze_snapshot(self.input_snapshot))
         if self.step_key in self.dependencies:
             raise ValueError("a step cannot depend on itself")
-        object.__setattr__(self, "dependencies", tuple(dict.fromkeys(self.dependencies)))
-        object.__setattr__(self, "required_capabilities", tuple(sorted(set(self.required_capabilities))))
+        object.__setattr__(
+            self, "dependencies", tuple(dict.fromkeys(self.dependencies))
+        )
+        object.__setattr__(
+            self,
+            "required_capabilities",
+            tuple(sorted(set(self.required_capabilities))),
+        )
         object.__setattr__(self, "output_artifacts", tuple(self.output_artifacts))
         self.require_consistent()
 
@@ -326,19 +349,42 @@ class StepCancelled(RuntimeErrorBase):
 
 
 class RetryableStepError(RuntimeErrorBase):
-    """Expected transient failure with an optional provider-safe retry floor."""
+    """Expected transient failure with stable machine-readable diagnostics."""
 
-    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+        code: str = "step_retryable_error",
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         if retry_after_seconds is not None and retry_after_seconds < 0:
             raise ValueError("retry_after_seconds must not be negative")
+        if not code:
+            raise ValueError("error code must not be empty")
         self.retry_after_seconds = retry_after_seconds
+        self.code = code
+        self.details = details or {}
 
 
 class PermanentStepError(RuntimeErrorBase):
-    pass
+    """Expected non-retryable failure with stable machine-readable diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "step_permanent_error",
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        if not code:
+            raise ValueError("error code must not be empty")
+        self.code = code
+        self.details = details or {}
 
 
 class CapabilityUnavailable(PermanentStepError):
     pass
-

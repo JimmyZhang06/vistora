@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0.0",
+  "id": "2110e922-329d-565f-ba7a-3616c9d5070b",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "多页面网页视频生产",
+  "slug": "webpage-video-production",
+  "description": "独立的公开站点定向发现、范围审核、批量截图、关键区域镜头审核与多素材视频生产流水线。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 2,
+  "nodes": [
+    {
+      "key": "discover",
+      "operation": "web.site.discover",
+      "depends_on": [],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 120,
+      "review_gate": true
+    },
+    {
+      "key": "capture_pages",
+      "operation": "web.page.capture_batch",
+      "depends_on": ["discover"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "analyze_regions",
+      "operation": "web.region.analyze",
+      "depends_on": ["capture_pages"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 300,
+      "review_gate": false
+    },
+    {
+      "key": "storyboard",
+      "operation": "web.storyboard.plan",
+      "depends_on": ["capture_pages", "analyze_regions"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 180,
+      "review_gate": true
+    },
+    {
+      "key": "write",
+      "operation": "writing.compose.webpage_story",
+      "depends_on": ["capture_pages", "storyboard"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 300,
+      "review_gate": false
+    },
+    {
+      "key": "materialize",
+      "operation": "web.materialize.regions",
+      "depends_on": ["capture_pages", "storyboard", "write"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 180,
+      "review_gate": false
+    },
+    {
+      "key": "tts",
+      "operation": "audio.synthesize",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "render",
+      "operation": "render.compose",
+      "depends_on": ["write", "materialize", "tts"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 3600,
+      "review_gate": false
+    },
+    {
+      "key": "quality",
+      "operation": "quality.evaluate",
+      "depends_on": ["render"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 900,
+      "review_gate": false
+    }
+  ],
+  "capability_requirements": [
+    "web.site.discover",
+    "web.page.capture_batch",
+    "web.region.analyze",
+    "web.storyboard.plan",
+    "writing.compose.webpage_story",
+    "web.materialize.regions",
+    "audio.synthesize",
+    "render.compose",
+    "quality.evaluate"
+  ],
+  "content_hash": "d310c9ee96a16341e7ef273d0043df35297aa316c5518b75fb429b1b439155d6",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-24T00:00:00Z",
+  "published_at": "2026-08-24T00:00:00Z"
+}

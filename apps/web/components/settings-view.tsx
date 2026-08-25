@@ -15,10 +15,18 @@ import {
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
 import { UiSelect } from "@/components/ui-select";
 import { useI18n } from "@/lib/i18n";
+import { useTheme, type ThemePreference } from "@/lib/theme";
+
+const themeOptions = [
+  { value: "system", icon: "AU", label: "settings.appearance.system", help: "settings.appearance.systemHelp" },
+  { value: "light", icon: "LT", label: "settings.appearance.light", help: "settings.appearance.lightHelp" },
+  { value: "dark", icon: "DK", label: "settings.appearance.dark", help: "settings.appearance.darkHelp" },
+] as const satisfies ReadonlyArray<{ value: ThemePreference; icon: string }>;
 
 export function SettingsView() {
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const { locale, setLocale, t } = useI18n();
+  const { preference: themePreference, resolvedTheme, setPreference: setThemePreference } = useTheme();
   const [session, setSession] = useState<SessionContext | null>(null);
   const [capabilities, setCapabilities] = useState<AccountCapabilities | null>(null);
   const [profile, setProfile] = useState<AccountProfile | null>(null);
@@ -238,6 +246,36 @@ export function SettingsView() {
         <StatePanel code="OFFLINE" title={t("settings.offline.title")} description={t("settings.offline.body")} error />
       ) : null}
 
+      <section className="settings-section settings-appearance" aria-labelledby="appearance-title">
+        <div className="settings-section-heading">
+          <div><p className="eyebrow">APPEARANCE</p><h2 id="appearance-title">{t("settings.appearance.title")}</h2></div>
+          <Badge>{resolvedTheme === "dark" ? t("settings.appearance.activeDark") : t("settings.appearance.activeLight")}</Badge>
+        </div>
+        <div className="panel settings-appearance-card">
+          <div className="settings-appearance-copy">
+            <span className="settings-icon" aria-hidden="true">UI</span>
+            <div><h3>{t("settings.appearance.theme")}</h3><p>{t("settings.appearance.help")}</p></div>
+          </div>
+          <div className="theme-preference-control" role="radiogroup" aria-label={t("settings.appearance.theme")}>
+            {themeOptions.map((option) => (
+              <label key={option.value} data-selected={themePreference === option.value ? "true" : undefined}>
+                <input
+                  type="radio"
+                  name="theme-preference"
+                  value={option.value}
+                  checked={themePreference === option.value}
+                  onChange={() => setThemePreference(option.value)}
+                />
+                <span aria-hidden="true">{option.icon}</span>
+                <strong>{t(option.label)}</strong>
+                <small>{t(option.help)}</small>
+              </label>
+            ))}
+          </div>
+          <p className="settings-appearance-storage">{t("settings.appearance.storage")}</p>
+        </div>
+      </section>
+
       {!loading && !error && profile && preferences ? (
         <>
           <section className="settings-section" aria-labelledby="account-profile-title">
@@ -278,7 +316,7 @@ export function SettingsView() {
                   <label className="field"><span className="field-label">{t("settings.defaults.duration")}</span><input className="input" type="number" min={15} max={3600} value={preferences.defaultDurationSeconds} onChange={(event) => setPreferences({ ...preferences, defaultDurationSeconds: Number(event.target.value) })} /></label>
                   <div className="field"><span className="field-label">{t("settings.visibility.label")}</span><div className="settings-locked-value" role="status"><strong>{t("settings.visibility.private")}</strong><span>LOCKED</span></div><small className="field-help">{t("settings.visibility.help")}</small></div>
                 </div>
-                <label className="check-row check-row--locked"><input aria-label={t("settings.defaults.qcAria")} type="checkbox" checked readOnly disabled /><span><strong>{t("settings.defaults.qc")}</strong><small>{t("settings.defaults.qcHelp")}</small></span><Badge>{t("settings.defaults.qcPolicy")}</Badge></label>
+                <div className="settings-policy-note" role="note" aria-label={t("settings.defaults.qcAria")}><span className="settings-policy-mark" aria-hidden="true">✓</span><span><strong>{t("settings.defaults.qc")}</strong><small>{t("settings.defaults.qcHelp")}</small></span><Badge>{t("settings.defaults.qcPolicy")}</Badge></div>
                 <div className="settings-form-actions">
                   <small>{t("settings.defaults.persisted")}</small>
                   <button className="button" type="submit" disabled={busy === "preferences"}>{busy === "preferences" ? t("settings.defaults.saving") : t("settings.defaults.save")}</button>

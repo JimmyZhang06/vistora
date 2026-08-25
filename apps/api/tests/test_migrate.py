@@ -11,6 +11,7 @@ from framefactory_api.migrate import (
     ADVISORY_LOCK_ID,
     Migration,
     MigrationError,
+    MigrationResult,
     discover_migrations,
     migrate_connection,
     migration_body,
@@ -182,6 +183,33 @@ async def test_checksum_drift_fails_before_any_migration_is_executed() -> None:
     with pytest.raises(MigrationError, match="checksum drift"):
         await migrate_connection(connection, [migration])
 
+    assert connection.transaction_count == 0
+
+
+@pytest.mark.asyncio
+async def test_known_webpage_migration_predecessor_is_accepted_exactly() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = next(
+        item
+        for item in discover_migrations(root)
+        if item.path == "db/migrations/0022_webpage_video_control_plane.sql"
+    )
+    connection = FakeConnection(
+        ledger_existed=True,
+        ledger=[
+            {
+                "version": migration.version,
+                "path": migration.path,
+                "checksum_sha256": (
+                    "f124c732997e5d52327201a4828054ea2bc8c518e79f126a814a7730d4bef00a"
+                ),
+            }
+        ],
+    )
+
+    results = await migrate_connection(connection, [migration])
+
+    assert results == (MigrationResult(migration.path, "unchanged"),)
     assert connection.transaction_count == 0
 
 

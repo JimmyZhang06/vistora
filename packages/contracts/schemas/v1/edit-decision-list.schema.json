@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/edit-decision-list.schema.json",
+  "title": "EditDecisionList",
+  "description": "Frame-quantized, timing-driven timeline consumed by render.edl; second fields remain for diagnostics and media tooling.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "operation", "time_base", "duration_seconds", "audio_duration_seconds",
+    "output_frame_rate", "audio_content_hash", "narration_timing_content_hash", "timing_estimated",
+    "timing_source", "title", "narration", "subtitle_cues", "edl_policy", "shots"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0.0" },
+    "operation": { "const": "timeline.align" },
+    "time_base": { "const": "seconds" },
+    "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "audio_duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "output_frame_rate": { "$ref": "#/$defs/FrameRate" },
+    "audio_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "narration_timing_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "timing_estimated": { "type": "boolean" },
+    "timing_source": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "title": { "type": "string", "maxLength": 1000 },
+    "narration": { "type": "string" },
+    "subtitle_cues": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/SubtitleCue" }
+    },
+    "edl_policy": { "$ref": "#/$defs/EdlPolicy" },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/Shot" }
+    }
+  },
+  "$defs": {
+    "FrameRate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["num", "den"],
+      "properties": {
+        "num": { "type": "integer", "minimum": 1 },
+        "den": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "SubtitleCue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "start_seconds", "end_seconds", "estimated"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "start_seconds": { "type": "number", "minimum": 0 },
+        "end_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "estimated": { "type": "boolean" }
+      }
+    },
+    "EdlPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["video_padding", "video_loop", "image_loop", "speed"],
+      "properties": {
+        "video_padding": { "const": "forbidden" },
+        "video_loop": { "const": "forbidden" },
+        "image_loop": { "const": "allowed" },
+        "speed": { "const": 1.0 }
+      }
+    },
+    "Shot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal", "beat_id", "beat_sequence", "selection_id", "artifact_id", "media_kind",
+        "timeline_start_frame", "timeline_end_frame", "timeline_start_seconds", "timeline_end_seconds",
+        "duration_seconds", "source_start_ms", "source_end_ms", "source_start_seconds",
+        "source_end_seconds", "padding_seconds", "speed", "loop", "narration", "semantic_score",
+        "story_path_score", "transition", "cut_evidence"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "beat_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "beat_sequence": { "type": "integer", "minimum": 1 },
+        "selection_id": { "type": "string", "pattern": "^selection-[a-f0-9]{20}$" },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "media_kind": { "type": "string", "enum": ["image", "video"] },
+        "timeline_start_frame": { "type": "integer", "minimum": 0 },
+        "timeline_end_frame": { "type": "integer", "minimum": 1 },
+        "timeline_start_seconds": { "type": "number", "minimum": 0 },
+        "timeline_end_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "source_start_ms": { "type": "integer", "minimum": 0 },
+        "source_end_ms": { "type": "integer", "minimum": 0 },
+        "source_start_seconds": { "type": "number", "minimum": 0 },
+        "source_end_seconds": { "type": "number", "minimum": 0 },
+        "padding_seconds": { "const": 0 },
+        "speed": { "const": 1.0 },
+        "loop": { "type": "boolean" },
+        "narration": { "type": "string" },
+        "semantic_score": { "type": ["number", "null"] },
+        "story_path_score": { "type": ["number", "null"] },
+        "transition": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "cut_evidence": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "media_kind": { "const": "video" } },
+            "required": ["media_kind"]
+          },
+          "then": { "properties": { "loop": { "const": false } } }
+        },
+        {
+          "if": {
+            "properties": { "media_kind": { "const": "image" } },
+            "required": ["media_kind"]
+          },
+          "then": { "properties": { "loop": { "const": true } } }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "2.0.0",
+      "operation": "timeline.align",
+      "time_base": "seconds",
+      "duration_seconds": 4.2,
+      "audio_duration_seconds": 4.2,
+      "output_frame_rate": {"num": 30, "den": 1},
+      "audio_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "narration_timing_content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "timing_estimated": false,
+      "timing_source": "edge_word_boundary",
+      "title": "天空为什么是蓝色",
+      "narration": "阳光在大气中发生散射。",
+      "subtitle_cues": [
+        {"text": "阳光在大气中发生散射。", "start_seconds": 0, "end_seconds": 4.2, "estimated": false}
+      ],
+      "edl_policy": {
+        "video_padding": "forbidden",
+        "video_loop": "forbidden",
+        "image_loop": "allowed",
+        "speed": 1.0
+      },
+      "shots": [
+        {
+          "ordinal": 0,
+          "beat_id": "beat-001",
+          "beat_sequence": 1,
+          "selection_id": "selection-0123456789abcdefabcd",
+          "artifact_id": "22222222-2222-4222-8222-222222222222",
+          "media_kind": "video",
+          "timeline_start_frame": 0,
+          "timeline_end_frame": 126,
+          "timeline_start_seconds": 0,
+          "timeline_end_seconds": 4.2,
+          "duration_seconds": 4.2,
+          "source_start_ms": 1000,
+          "source_end_ms": 5200,
+          "source_start_seconds": 1,
+          "source_end_seconds": 5.2,
+          "padding_seconds": 0,
+          "speed": 1,
+          "loop": false,
+          "narration": "阳光在大气中发生散射。",
+          "semantic_score": 0.88,
+          "story_path_score": 0.8,
+          "transition": "continuity_cut",
+          "cut_evidence": "verified"
+        }
+      ]
+    }
+  ]
+}

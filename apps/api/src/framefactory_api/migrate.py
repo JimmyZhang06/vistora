@@ -14,6 +14,18 @@ from .environment import environment_value
 ADVISORY_LOCK_ID = 0x4652414D45464143  # "FRAMEFAC", within PostgreSQL's signed bigint range.
 MIGRATION_DIRECTORIES = ("db/migrations", "services/worker/migrations")
 
+# A deployed pre-release build applied the webpage control-plane migration
+# before its status comment was added and before the active-run index was moved
+# into a convergence migration.  Accept exactly that one immutable predecessor
+# only while the packaged successor checksum also matches.  Migration 0023
+# makes fresh and upgraded databases converge on the same schema.
+_COMPATIBLE_CHECKSUM_TRANSITIONS = {
+    "db/migrations/0022_webpage_video_control_plane.sql": (
+        "f124c732997e5d52327201a4828054ea2bc8c518e79f126a814a7730d4bef00a",
+        "43f75b1cc2125e02f29b571df0c72837d7ee752cd600f95301e15972d3d503bd",
+    )
+}
+
 
 class MigrationError(RuntimeError):
     """Raised when migrations cannot be applied without risking schema corruption."""
@@ -263,10 +275,17 @@ async def migrate_connection(
                 )
             recorded_checksum = str(recorded["checksum_sha256"]).strip()
             if recorded_checksum != migration.checksum_sha256:
-                raise MigrationError(
-                    f"migration checksum drift detected for {migration.path}: "
-                    f"database={recorded_checksum} file={migration.checksum_sha256}"
+                compatible_transition = _COMPATIBLE_CHECKSUM_TRANSITIONS.get(
+                    migration.path
                 )
+                if compatible_transition != (
+                    recorded_checksum,
+                    migration.checksum_sha256,
+                ):
+                    raise MigrationError(
+                        f"migration checksum drift detected for {migration.path}: "
+                        f"database={recorded_checksum} file={migration.checksum_sha256}"
+                    )
 
         present = await _present_columns(connection) if not ledger_existed else set()
         results: list[MigrationResult] = []

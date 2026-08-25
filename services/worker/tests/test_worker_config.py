@@ -86,6 +86,40 @@ class WorkerSettingsTests(unittest.TestCase):
         self.assertIsNotNone(settings.openai_compatible)
         self.assertNotIn("do-not-print-this", repr(settings))
 
+    def test_research_search_is_optional_https_only_and_secret_safe(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "test",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+        }
+        settings = WorkerSettings.from_environment(
+            {
+                **base,
+                "FRAMEFACTORY_RESEARCH_SEARCH_URL": "https://search.example/v1/search",
+                "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN": "search-secret",
+                "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS": "12",
+                "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES": "8192",
+            }
+        )
+
+        self.assertIsNotNone(settings.research_search)
+        self.assertEqual(12, settings.research_search.timeout_seconds)
+        self.assertEqual(8192, settings.research_search.maximum_response_bytes)
+        self.assertNotIn("search-secret", repr(settings))
+        with self.assertRaisesRegex(ValueError, "configured together"):
+            WorkerSettings.from_environment(
+                {**base, "FRAMEFACTORY_RESEARCH_SEARCH_URL": "https://search.example/v1"}
+            )
+        with self.assertRaisesRegex(ValueError, "credential-free HTTPS"):
+            WorkerSettings.from_environment(
+                {
+                    **base,
+                    "FRAMEFACTORY_RESEARCH_SEARCH_URL": "http://search.example/v1",
+                    "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN": "secret",
+                }
+            )
+
     def test_provider_secrets_support_files_and_reject_ambiguous_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             secret_file = Path(directory) / "model-key"
@@ -142,6 +176,98 @@ class WorkerSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot promise timestamp"):
             WorkerSettings.from_environment(
                 {**base, "FRAMEFACTORY_ASR_RESPONSE_FORMAT": "json"}
+            )
+
+    def test_runway_configuration_is_explicit_secret_safe_and_storage_backed(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "test",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+            "FRAMEFACTORY_RUNWAY_BASE_URL": "https://api.dev.runwayml.com",
+            "FRAMEFACTORY_RUNWAY_API_KEY": "runway-secret-for-test",
+            "FRAMEFACTORY_RUNWAY_MODEL": "gen4.5",
+            "FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS": "45",
+        }
+        with self.assertRaisesRegex(ValueError, "S3_BUCKET"):
+            WorkerSettings.from_environment(base)
+
+        settings = WorkerSettings.from_environment(
+            {**base, "FRAMEFACTORY_S3_BUCKET": "artifacts"}
+        )
+
+        self.assertIsNotNone(settings.runway)
+        self.assertEqual("gen4.5", settings.runway.model)
+        self.assertEqual(45, settings.runway.timeout_seconds)
+        self.assertNotIn("runway-secret-for-test", repr(settings))
+
+    def test_runway_partial_or_unsupported_configuration_is_rejected(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "test",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+            "FRAMEFACTORY_S3_BUCKET": "artifacts",
+        }
+        with self.assertRaisesRegex(ValueError, "must be configured together"):
+            WorkerSettings.from_environment(
+                {**base, "FRAMEFACTORY_RUNWAY_API_KEY": "incomplete"}
+            )
+        with self.assertRaisesRegex(ValueError, "must be gen4.5"):
+            WorkerSettings.from_environment(
+                {
+                    **base,
+                    "FRAMEFACTORY_RUNWAY_BASE_URL": "https://api.dev.runwayml.com",
+                    "FRAMEFACTORY_RUNWAY_API_KEY": "secret",
+                    "FRAMEFACTORY_RUNWAY_MODEL": "gen4_turbo",
+                }
+            )
+
+    def test_runway_requires_https_in_every_environment(self) -> None:
+        with self.assertRaisesRegex(ValueError, "credential-free HTTPS URL"):
+            WorkerSettings.from_environment(
+                {
+                    "FRAMEFACTORY_ENV": "production",
+                    "FRAMEFACTORY_DATABASE_URL": (
+                        "postgresql://user:pass@db/framefactory?sslmode=require"
+                    ),
+                    "FRAMEFACTORY_REDIS_URL": "rediss://redis/0",
+                    "FRAMEFACTORY_WORKER_ID": "worker-test",
+                    "FRAMEFACTORY_S3_BUCKET": "artifacts",
+                    "FRAMEFACTORY_RUNWAY_BASE_URL": "http://runway-proxy.local",
+                    "FRAMEFACTORY_RUNWAY_API_KEY": "secret",
+                    "FRAMEFACTORY_RUNWAY_MODEL": "gen4.5",
+                }
+            )
+
+    def test_full_ai_vision_is_dedicated_https_and_secret_safe(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "test",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+            "FRAMEFACTORY_S3_BUCKET": "artifacts",
+            "FRAMEFACTORY_FULL_AI_VISION_BASE_URL": "https://vision.example/v1",
+            "FRAMEFACTORY_FULL_AI_VISION_API_KEY": "full-ai-vision-secret",
+            "FRAMEFACTORY_FULL_AI_VISION_MODEL": "generated-video-verifier",
+            "FRAMEFACTORY_FULL_AI_VISION_TIMEOUT_SECONDS": "75",
+        }
+        settings = WorkerSettings.from_environment(base)
+
+        self.assertIsNotNone(settings.full_ai_vision)
+        self.assertIsNone(settings.asset_analysis)
+        self.assertEqual(75, settings.full_ai_vision.timeout_seconds)
+        self.assertNotIn("full-ai-vision-secret", repr(settings))
+        with self.assertRaisesRegex(ValueError, "configured together"):
+            WorkerSettings.from_environment(
+                {**base, "FRAMEFACTORY_FULL_AI_VISION_MODEL": ""}
+            )
+        with self.assertRaisesRegex(ValueError, "credential-free HTTPS"):
+            WorkerSettings.from_environment(
+                {
+                    **base,
+                    "FRAMEFACTORY_FULL_AI_VISION_BASE_URL": "http://vision.example/v1",
+                }
             )
 
 

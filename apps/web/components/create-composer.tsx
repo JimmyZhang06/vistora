@@ -264,6 +264,8 @@ export function CreateComposer() {
           <h1 id="create-title" tabIndex={-1}>把一个想法，变成可发布的内容</h1>
           <p>从选题到成片，调用你的 Skill、素材与制作流程。每次运行都保存独立版本快照，过程可追踪、可恢复。</p>
           <div className="create-intro-actions">
+            <Link className="button" href="/create/ai">进入全 AI 影片</Link>
+            <Link className="button-ghost" href="/create/webpage-video">网页截图成片</Link>
             <Link className="button-ghost" href="/projects">查看制作队列</Link>
             <span><i aria-hidden="true" /> CONTROLLED WORKFLOW</span>
           </div>
@@ -287,7 +289,7 @@ export function CreateComposer() {
       ) : null}
 
       {!loading && loadError ? (
-        <StatePanel code="OFFLINE" title="创作服务暂时不可用" description={`${loadError}。你的输入尚未提交，也不会丢失。`} error>
+        <StatePanel code="OFFLINE" title="创作服务暂时不可用" description="无法连接到控制服务。你的输入尚未提交，也不会丢失。" error>
           <button className="button" type="button" onClick={() => void loadComposer()}>重新连接</button>
           <Link className="button-ghost" href="/settings">查看连接状态</Link>
         </StatePanel>
@@ -307,7 +309,7 @@ export function CreateComposer() {
       {!loading && options && hasOptions ? (
         <form className="composer-workbench" onSubmit={submit}>
           <div className="composer-main">
-            <section className="panel composer-hero">
+            <section className="panel composer-hero theme-inverse">
               <div className="composer-section-label">
                 <span>01</span>
                 <p>创作主题</p>

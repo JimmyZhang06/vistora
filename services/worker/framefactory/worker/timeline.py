@@ -210,6 +210,8 @@ def plan_edit_timeline(
                 "narrative_role": fragment.narrative_role,
                 "time_shift": fragment.time_shift,
                 "transition": _transition_label(previous, asset_index, fragment),
+                "motion": str(entry.get("motion") or "static")[:32],
+                "motion_focus": _motion_focus(entry.get("motion_focus")),
                 "cut_evidence": (
                     "semantic_safe"
                     if entry.get("semantic_complete") is True
@@ -222,7 +224,47 @@ def plan_edit_timeline(
         usage[asset_index] += 1
         previous = asset_index
         cursor = end
-    return result
+    return _coalesce_continuous_image_motion(result)
+
+
+def _coalesce_continuous_image_motion(
+    shots: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge adjacent holds so one image motion never resets mid-sentence."""
+
+    merged: list[dict[str, Any]] = []
+    for source in shots:
+        shot = dict(source)
+        previous = merged[-1] if merged else None
+        same_motion_hold = (
+            previous is not None
+            and shot.get("motion") == "zoom_in"
+            and previous.get("motion") == shot.get("motion")
+            and previous.get("artifact_id") == shot.get("artifact_id")
+            and previous.get("motion_focus") == shot.get("motion_focus")
+            and previous.get("narration") == shot.get("narration")
+            and abs(
+                _number(previous.get("timeline_end_seconds"))
+                - _number(shot.get("timeline_start_seconds"))
+            )
+            <= 0.002
+        )
+        if not same_motion_hold:
+            merged.append(shot)
+            continue
+        assert previous is not None
+        end = _number(shot.get("timeline_end_seconds"))
+        start = _number(previous.get("timeline_start_seconds"))
+        duration = max(0.001, end - start)
+        previous["timeline_end_seconds"] = round(end, 3)
+        previous["duration_seconds"] = round(duration, 3)
+        source_start = _number(previous.get("source_start_seconds"))
+        previous["source_end_seconds"] = round(source_start + duration, 3)
+        previous["source_duration_seconds"] = round(duration, 3)
+        previous["padding_seconds"] = 0.0
+    for ordinal, shot in enumerate(merged):
+        shot["ordinal"] = ordinal
+    return merged
 
 
 def _shot_count(duration: float, *, minimum: float, target: float, maximum: float) -> int:
@@ -583,3 +625,13 @@ def _number(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return number if math.isfinite(number) else 0.0
+
+
+def _motion_focus(value: object) -> dict[str, float]:
+    focus = value if isinstance(value, Mapping) else {}
+    x = _number(focus.get("x", 0.5)) if focus else 0.5
+    y = _number(focus.get("y", 0.5)) if focus else 0.5
+    return {
+        "x": round(min(1.0, max(0.0, x)), 6),
+        "y": round(min(1.0, max(0.0, y)), 6),
+    }

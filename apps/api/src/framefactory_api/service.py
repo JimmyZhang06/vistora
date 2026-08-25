@@ -4,10 +4,11 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import rfc8785
@@ -31,6 +32,7 @@ from .models import (
     ForkSkillRequest,
     GenerationBatchCreate,
     GenerationBatchRetryFailed,
+    LibraryBuildJobCreate,
     RunCompositionInput,
     RunCreate,
     SkillIdentityInput,
@@ -64,6 +66,29 @@ _ASPECT_RESOLUTIONS = {
     "1:1": (1080, 1080),
     "4:3": (1440, 1080),
 }
+_FULL_AI_ONLY_OPERATIONS = frozenset(
+    {"media.generate", "writing.compose.generated"}
+)
+_WEBPAGE_VIDEO_ONLY_OPERATIONS = frozenset(
+    {
+        "web.capture.validate",
+        "web.capture.screenshot",
+        "web.site.discover",
+        "web.page.capture_batch",
+        "web.region.analyze",
+        "web.storyboard.plan",
+        "web.materialize",
+        "web.materialize.regions",
+        "writing.compose.webpage",
+        "writing.compose.webpage_story",
+    }
+)
+_WEBPAGE_VIDEO_PIPELINE_VERSION_IDS = frozenset(
+    {
+        "eaf69761-8571-5404-a50a-8ef5c0aa90d3",
+        "2110e922-329d-565f-ba7a-3616c9d5070b",
+    }
+)
 
 
 def _now() -> str:
@@ -101,6 +126,32 @@ def _reference_fingerprint(kind: str, resource_id: UUID) -> str:
     return hashlib.sha256(rfc8785.dumps(value)).hexdigest()
 
 
+def _deduplicated_https_sources(value: Any) -> set[str]:
+    """Return stable source identities without treating arbitrary input text as research."""
+
+    if not isinstance(value, list):
+        return set()
+    sources: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            continue
+        if parsed.scheme.casefold() != "https" or not parsed.hostname:
+            continue
+        sources.add(
+            parsed._replace(
+                scheme="https",
+                netloc=parsed.netloc.casefold(),
+                fragment="",
+            ).geturl()
+        )
+    return sources
+
+
 class ControlService:
     def __init__(
         self,
@@ -135,6 +186,179 @@ class ControlService:
                 )
         return gaps
 
+    @staticmethod
+    def _pipeline_requires_asset_library(pipeline: Resource) -> bool:
+        return any(
+            node.get("operation") == "media.retrieve" and node.get("required") is True
+            for node in pipeline.get("nodes", [])
+        )
+
+    @staticmethod
+    def _pipeline_requires_research(pipeline: Resource) -> bool:
+        return any(
+            str(node.get("operation", "")).startswith("research.")
+            and node.get("required") is True
+            for node in pipeline.get("nodes", [])
+        )
+
+    @staticmethod
+    def _pipeline_requires_full_ai_endpoint(pipeline: Resource) -> bool:
+        return any(
+            node.get("operation") in _FULL_AI_ONLY_OPERATIONS
+            for node in pipeline.get("nodes", [])
+            if isinstance(node, Mapping)
+        )
+
+    @classmethod
+    def _reject_full_ai_pipeline_on_standard_endpoint(
+        cls, pipeline: Resource
+    ) -> None:
+        if not cls._pipeline_requires_full_ai_endpoint(pipeline):
+            return
+        operations = sorted(
+            {
+                str(node.get("operation"))
+                for node in pipeline.get("nodes", [])
+                if isinstance(node, Mapping)
+                and node.get("operation") in _FULL_AI_ONLY_OPERATIONS
+            }
+        )
+        raise ApiError(
+            422,
+            "FULL_AI_ENDPOINT_REQUIRED",
+            "Paid generated-media Pipelines must use the dedicated Full-AI endpoint",
+            details={
+                "required_endpoint": "/v1/full-ai/runs",
+                "estimate_endpoint": "/v1/full-ai/estimate",
+                "operations": operations,
+            },
+        )
+
+    @staticmethod
+    def _pipeline_requires_webpage_video_endpoint(pipeline: Resource) -> bool:
+        return any(
+            node.get("operation") in _WEBPAGE_VIDEO_ONLY_OPERATIONS
+            for node in pipeline.get("nodes", [])
+            if isinstance(node, Mapping)
+        )
+
+    @classmethod
+    def _reject_webpage_video_pipeline_on_standard_endpoint(
+        cls, pipeline: Resource
+    ) -> None:
+        if not cls._pipeline_requires_webpage_video_endpoint(pipeline):
+            return
+        operations = sorted(
+            {
+                str(node.get("operation"))
+                for node in pipeline.get("nodes", [])
+                if isinstance(node, Mapping)
+                and node.get("operation") in _WEBPAGE_VIDEO_ONLY_OPERATIONS
+            }
+        )
+        raise ApiError(
+            422,
+            "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
+            "Webpage capture Pipelines must use the dedicated webpage-video endpoint",
+            details={
+                "required_endpoint": "/v1/webpage-video/runs",
+                "operations": operations,
+            },
+        )
+
+    @staticmethod
+    def _reject_webpage_video_step_on_standard_endpoint(step: Resource) -> None:
+        if step.get("operation") not in _WEBPAGE_VIDEO_ONLY_OPERATIONS:
+            return
+        raise ApiError(
+            422,
+            "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
+            "Webpage capture steps must use the dedicated webpage-video endpoint",
+            details={
+                "required_endpoint": (
+                    "/v1/webpage-video/runs/{webpage_video_run_id}/capture/review"
+                ),
+                "operation": step.get("operation"),
+            },
+        )
+
+    @staticmethod
+    def _is_webpage_video_run(run: Resource) -> bool:
+        pipeline_version = run.get("composition_snapshot", {}).get(
+            "pipeline_version", {}
+        )
+        return str(pipeline_version.get("id")) in _WEBPAGE_VIDEO_PIPELINE_VERSION_IDS
+
+    @classmethod
+    def _reject_webpage_video_run_on_standard_endpoint(cls, run: Resource) -> None:
+        if not cls._is_webpage_video_run(run):
+            return
+        raise ApiError(
+            422,
+            "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
+            "Webpage-video resources must use the dedicated control-plane endpoint",
+            details={"required_endpoint": "/v1/webpage-video/runs/{webpage_video_run_id}"},
+        )
+
+    @classmethod
+    def _require_webpage_video_scope_for_run(
+        cls,
+        context: WorkspaceContext,
+        run: Resource,
+        permission: str,
+    ) -> None:
+        if not cls._is_webpage_video_run(run) or permission in context.permissions:
+            return
+        raise ApiError(
+            403,
+            "URL_CAPTURE_PERMISSION_DENIED",
+            f"Permission {permission} is required for webpage-video resources",
+            details={"required_permission": permission},
+        )
+
+    @classmethod
+    def _require_quality_operation_for_webpage_mutation(
+        cls, run: Resource, step: Resource
+    ) -> None:
+        if not cls._is_webpage_video_run(run):
+            return
+        cls._reject_webpage_video_step_on_standard_endpoint(step)
+        if step.get("operation") == "quality.evaluate":
+            return
+        raise ApiError(
+            422,
+            "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
+            "Only quality review/retry is available through the generic step endpoint",
+            details={
+                "required_endpoint": "/v1/webpage-video/runs/{webpage_video_run_id}",
+                "operation": step.get("operation"),
+            },
+        )
+
+    async def _validate_run_asset_libraries(
+        self,
+        context: WorkspaceContext,
+        composition: RunCompositionInput,
+        *,
+        required: bool,
+    ) -> None:
+        if required and not composition.asset_library_ids:
+            raise ValidationError(
+                "the selected Pipeline requires an asset library",
+                path="composition.asset_library_ids",
+            )
+        for library_id in composition.asset_library_ids:
+            library = await self.repository.get_asset_library(
+                context.workspace_id, library_id
+            )
+            if library.get("status") != "active":
+                raise ConflictError(
+                    "ASSET_LIBRARY_NOT_ACTIVE",
+                    "Runs require active asset libraries",
+                    asset_library_id=str(library_id),
+                    asset_library_status=library.get("status"),
+                )
+
     async def estimate_run(
         self, context: WorkspaceContext, command: RunCreate
     ) -> Resource:
@@ -145,6 +369,8 @@ class ControlService:
         pipeline = await self.repository.get_pipeline_version(
             context.workspace_id, composition.pipeline_version_id
         )
+        self._reject_full_ai_pipeline_on_standard_endpoint(pipeline)
+        self._reject_webpage_video_pipeline_on_standard_endpoint(pipeline)
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
@@ -371,6 +597,8 @@ class ControlService:
         pipeline = await self.repository.get_pipeline_version(
             context.workspace_id, composition.pipeline_version_id
         )
+        self._reject_full_ai_pipeline_on_standard_endpoint(pipeline)
+        self._reject_webpage_video_pipeline_on_standard_endpoint(pipeline)
         if pipeline["state"] != "published" or pipeline["status"] != "active":
             raise ConflictError(
                 "PIPELINE_VERSION_NOT_PUBLISHED",
@@ -493,6 +721,82 @@ class ControlService:
             lambda: self.repository.create_asset_library(resource),
         )
 
+    async def create_library_build_job(
+        self,
+        context: WorkspaceContext,
+        command: LibraryBuildJobCreate,
+        idempotency_key: str,
+    ) -> tuple[Resource, bool]:
+        library = await self.repository.get_asset_library(
+            context.workspace_id, command.library_id
+        )
+        if library.get("status") != "active":
+            raise ConflictError(
+                "ASSET_LIBRARY_NOT_ACTIVE",
+                "Library build jobs require an active asset library",
+                asset_library_id=str(command.library_id),
+                asset_library_status=library.get("status"),
+            )
+        timestamp = _now()
+        spec = {
+            "topic": command.topic.strip(),
+            "queries": [value.strip() for value in command.queries],
+            "sources": list(command.sources),
+            "max_assets": command.max_assets,
+            "copyright_status": command.copyright_status,
+            "rights_confirmed": command.rights_confirmed,
+        }
+        resource: Resource = {
+            "schema_version": CONTRACT_VERSION,
+            "id": str(uuid4()),
+            "workspace_id": str(context.workspace_id),
+            "library_id": str(command.library_id),
+            "status": "queued",
+            "stage": "discover",
+            "spec": spec,
+            "progress": {
+                "asset_ids": [],
+                "discovered": 0,
+                "transferred": 0,
+                "analyzed": 0,
+                "indexed": 0,
+                "failed": 0,
+            },
+            "error": None,
+            "revision": 1,
+            "created_by": str(context.user_id),
+            "created_at": timestamp,
+            "started_at": None,
+            "completed_at": None,
+            "updated_at": timestamp,
+        }
+        return await self.repository.create_library_build_job_idempotently(
+            resource,
+            operation_key=(
+                f"{context.workspace_id}:create_library_build_job:{idempotency_key}"
+            ),
+            request_fingerprint=_fingerprint(command.model_dump(mode="json")),
+        )
+
+    async def get_library_build_job(
+        self, context: WorkspaceContext, job_id: UUID
+    ) -> Resource:
+        return await self.repository.get_library_build_job(
+            context.workspace_id, job_id
+        )
+
+    async def cancel_library_build_job(
+        self,
+        context: WorkspaceContext,
+        job_id: UUID,
+        expected_revision: int,
+    ) -> Resource:
+        return await self.repository.cancel_library_build_job(
+            context.workspace_id,
+            job_id,
+            expected_revision=expected_revision,
+        )
+
     async def create_asset_upload(
         self,
         context: WorkspaceContext,
@@ -502,6 +806,7 @@ class ControlService:
         bucket: str,
         idempotency_key: str,
         idempotency_payload: Any | None = None,
+        verified_rights_evidence: Mapping[str, Any] | None = None,
     ) -> tuple[Resource, bool]:
         await self.repository.get_asset_library(context.workspace_id, command.library_id)
         timestamp = _now()
@@ -518,6 +823,11 @@ class ControlService:
                 "tags": list(dict.fromkeys(value.strip() for value in command.tags)),
                 "upload_schema": "presigned.v1",
                 **({"source": command.source} if command.source is not None else {}),
+                **(
+                    {"rights_evidence": dict(verified_rights_evidence)}
+                    if verified_rights_evidence is not None
+                    else {}
+                ),
             },
             "copyright_status": command.copyright_status,
             "status": "processing",
@@ -1361,10 +1671,18 @@ class ControlService:
         )
 
     async def list_runs(self, context: WorkspaceContext) -> list[Resource]:
-        return await self.repository.list_runs(context.workspace_id)
+        runs = await self.repository.list_runs(context.workspace_id)
+        return [
+            run
+            for run in runs
+            if not self._is_webpage_video_run(run)
+            or "url_capture:read" in context.permissions
+        ]
 
     async def get_run(self, context: WorkspaceContext, run_id: UUID) -> Resource:
-        return await self.repository.get_run(context.workspace_id, run_id)
+        run = await self.repository.get_run(context.workspace_id, run_id)
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
+        return run
 
     async def cancel_run(
         self,
@@ -1372,6 +1690,29 @@ class ControlService:
         run_id: UUID,
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
+        run = await self.repository.get_run(context.workspace_id, run_id)
+        pipeline_version = run.get("composition_snapshot", {}).get(
+            "pipeline_version", {}
+        )
+        if run.get("composition_snapshot", {}).get("visual_source_mode") == "generated_only":
+            raise ConflictError(
+                "FULL_AI_CANCELLATION_UNSUPPORTED",
+                (
+                    "Full-AI Runs cannot be cancelled through the standard Run endpoint; "
+                    "paid Provider reconciliation must be allowed to finish"
+                ),
+            )
+        if str(pipeline_version.get("id")) in _WEBPAGE_VIDEO_PIPELINE_VERSION_IDS:
+            raise ApiError(
+                422,
+                "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
+                "Webpage-video Runs must be cancelled through their dedicated endpoint",
+                details={
+                    "required_endpoint": (
+                        "/v1/webpage-video/runs/{webpage_video_run_id}/cancel"
+                    )
+                },
+            )
         return await self.repository.cancel_run_idempotently(
             context.workspace_id,
             run_id,
@@ -1382,12 +1723,19 @@ class ControlService:
     async def list_run_steps(
         self, context: WorkspaceContext, run_id: UUID
     ) -> list[Resource]:
+        run = await self.repository.get_run(context.workspace_id, run_id)
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return await self.repository.list_run_steps(context.workspace_id, run_id)
 
     async def get_run_step(
         self, context: WorkspaceContext, step_id: str
     ) -> Resource:
-        return await self.repository.get_run_step(context.workspace_id, step_id)
+        step = await self.repository.get_run_step(context.workspace_id, step_id)
+        run = await self.repository.get_run(
+            context.workspace_id, UUID(str(step["run_id"]))
+        )
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
+        return step
 
     async def retry_run_step(
         self,
@@ -1395,6 +1743,12 @@ class ControlService:
         step_id: str,
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
+        step = await self.repository.get_run_step(context.workspace_id, step_id)
+        run = await self.repository.get_run(
+            context.workspace_id, UUID(str(step["run_id"]))
+        )
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:review")
+        self._require_quality_operation_for_webpage_mutation(run, step)
         return await self.repository.retry_run_step_idempotently(
             context.workspace_id,
             step_id,
@@ -1410,6 +1764,12 @@ class ControlService:
         command: StepReviewRequest,
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
+        step = await self.repository.get_run_step(context.workspace_id, step_id)
+        run = await self.repository.get_run(
+            context.workspace_id, UUID(str(step["run_id"]))
+        )
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:review")
+        self._require_quality_operation_for_webpage_mutation(run, step)
         return await self.repository.review_run_step_idempotently(
             context.workspace_id,
             step_id,
@@ -1430,12 +1790,19 @@ class ControlService:
     async def list_artifacts(
         self, context: WorkspaceContext, run_id: UUID
     ) -> list[Resource]:
+        run = await self.repository.get_run(context.workspace_id, run_id)
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return await self.repository.list_artifacts(context.workspace_id, run_id)
 
     async def get_artifact(
         self, context: WorkspaceContext, artifact_id: UUID
     ) -> Resource:
-        return await self.repository.get_artifact(context.workspace_id, artifact_id)
+        artifact = await self.repository.get_artifact(context.workspace_id, artifact_id)
+        run = await self.repository.get_run(
+            context.workspace_id, UUID(str(artifact["run_id"]))
+        )
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
+        return artifact
 
     async def list_events(
         self,
@@ -1445,6 +1812,8 @@ class ControlService:
         after_sequence: int = 0,
         limit: int = 101,
     ) -> list[Resource]:
+        run = await self.repository.get_run(context.workspace_id, run_id)
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return await self.repository.list_events(
             context.workspace_id,
             run_id,
@@ -1453,7 +1822,12 @@ class ControlService:
         )
 
     async def get_event(self, context: WorkspaceContext, event_id: UUID) -> Resource:
-        return await self.repository.get_event(context.workspace_id, event_id)
+        event = await self.repository.get_event(context.workspace_id, event_id)
+        run = await self.repository.get_run(
+            context.workspace_id, UUID(str(event["run_id"]))
+        )
+        self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
+        return event
 
     async def create_run(
         self,
@@ -1472,6 +1846,8 @@ class ControlService:
         pipeline = await self.repository.get_pipeline_version(
             context.workspace_id, composition.pipeline_version_id
         )
+        self._reject_full_ai_pipeline_on_standard_endpoint(pipeline)
+        self._reject_webpage_video_pipeline_on_standard_endpoint(pipeline)
         if pipeline["state"] != "published" or pipeline["status"] != "active":
             raise ConflictError(
                 "PIPELINE_VERSION_NOT_PUBLISHED",
@@ -1487,15 +1863,14 @@ class ControlService:
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
-        if production_settings["asset_acquisition"]["enabled"]:
-            if not composition.asset_library_ids:
-                raise ValidationError(
-                    "automatic asset acquisition requires an asset library",
-                    path="composition.asset_library_ids",
-                )
-            await self.repository.get_asset_library(
-                context.workspace_id, composition.asset_library_ids[0]
-            )
+        await self._validate_run_asset_libraries(
+            context,
+            composition,
+            required=(
+                self._pipeline_requires_asset_library(pipeline)
+                or production_settings["asset_acquisition"]["enabled"]
+            ),
+        )
         timestamp = _now()
         render_preset = (
             {
@@ -1597,6 +1972,8 @@ class ControlService:
         pipeline = await self.repository.get_pipeline_version(
             context.workspace_id, composition.pipeline_version_id
         )
+        self._reject_full_ai_pipeline_on_standard_endpoint(pipeline)
+        self._reject_webpage_video_pipeline_on_standard_endpoint(pipeline)
         if pipeline["state"] != "published" or pipeline["status"] != "active":
             raise ConflictError(
                 "PIPELINE_VERSION_NOT_PUBLISHED",
@@ -1609,17 +1986,68 @@ class ControlService:
                 "The selected Pipeline has no configured production provider",
                 capability_gaps=capability_gaps,
             )
+        requested_acquisition = (
+            command.video_settings.asset_acquisition
+            if command.video_settings is not None
+            else None
+        )
+        if requested_acquisition is not None and requested_acquisition.enabled:
+            raise ApiError(
+                422,
+                "BATCH_ASSET_ACQUISITION_FORBIDDEN",
+                "Generation batches cannot acquire assets inside individual Runs",
+                details={"path": "video_settings.asset_acquisition.enabled"},
+            )
+        if command.research_mode == "off" and self._pipeline_requires_research(
+            pipeline
+        ):
+            minimum_sources = int(
+                (version.get("research_policy") or {}).get("minimum_sources", 0)
+            )
+            insufficient_items: list[Resource] = []
+            if minimum_sources > 0:
+                for ordinal, entry in enumerate(command.items):
+                    supplied = len(
+                        _deduplicated_https_sources(entry.inputs.get("source_urls"))
+                    )
+                    if supplied < minimum_sources:
+                        insufficient_items.append(
+                            {
+                                "ordinal": ordinal,
+                                "path": f"items[{ordinal}].inputs.source_urls",
+                                "required": minimum_sources,
+                                "provided": supplied,
+                            }
+                        )
+            if insufficient_items:
+                raise ApiError(
+                    422,
+                    "BATCH_RESEARCH_SOURCES_INSUFFICIENT",
+                    "research_mode=off requires enough supplied HTTPS source_urls for every item",
+                    details={
+                        "minimum_sources": minimum_sources,
+                        "items": insufficient_items,
+                    },
+                )
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
-        if production_settings["asset_acquisition"]["enabled"]:
-            if not composition.asset_library_ids:
-                raise ValidationError(
-                    "automatic asset acquisition requires an asset library",
-                    path="composition.asset_library_ids",
-                )
-            await self.repository.get_asset_library(
-                context.workspace_id, composition.asset_library_ids[0]
+        # Batch Runs consume a frozen catalog and never mutate it from within a
+        # single Run.
+        production_settings["asset_acquisition"]["enabled"] = False
+        await self._validate_run_asset_libraries(
+            context,
+            composition,
+            required=(
+                self._pipeline_requires_asset_library(pipeline)
+            ),
+        )
+        catalog_snapshot: Resource | None = None
+        if composition.asset_library_ids:
+            catalog_snapshot = await self.repository.create_or_reuse_catalog_snapshot(
+                context.workspace_id,
+                composition.asset_library_ids,
+                created_by=context.user_id,
             )
         timestamp = _now()
         batch_id = uuid4()
@@ -1653,6 +2081,11 @@ class ControlService:
             },
             "capabilities": composition.capabilities,
             "production_settings": production_settings,
+            **(
+                {"catalog_snapshot_id": catalog_snapshot["id"]}
+                if catalog_snapshot is not None
+                else {}
+            ),
         }
         batch: Resource = {
             "schema_version": CONTRACT_VERSION,
@@ -1660,6 +2093,11 @@ class ControlService:
             "workspace_id": str(context.workspace_id),
             "name": command.name.strip(),
             "composition_snapshot": composition_snapshot,
+            **(
+                {"catalog_snapshot_id": catalog_snapshot["id"]}
+                if catalog_snapshot is not None
+                else {}
+            ),
             "created_by": str(context.user_id),
             "created_at": timestamp,
             "updated_at": timestamp,
@@ -1668,7 +2106,11 @@ class ControlService:
         items: list[Resource] = []
         for ordinal, entry in enumerate(command.items):
             run_id = uuid4()
-            run_input = {**entry.inputs, "topic": entry.topic.strip()}
+            run_input = {
+                **entry.inputs,
+                "topic": entry.topic.strip(),
+                "research_mode": command.research_mode,
+            }
             run: Resource = {
                 "schema_version": CONTRACT_VERSION,
                 "id": str(run_id),
@@ -1787,6 +2229,23 @@ class ControlService:
         render = snapshot.get("render_preset")
         production = snapshot.get("production_settings", {})
         subtitle_settings = production.get("subtitles", {})
+        research_modes = {
+            str(item.get("input", {}).get("research_mode", "when_missing"))
+            for item in failed
+        }
+        if not research_modes <= {"off", "when_missing", "required"}:
+            raise ConflictError(
+                "BATCH_RESEARCH_MODE_INVALID",
+                "A failed Run has an unsupported frozen research mode",
+                research_modes=sorted(research_modes),
+            )
+        if len(research_modes) != 1:
+            raise ConflictError(
+                "BATCH_RESEARCH_MODE_MIXED",
+                "Failed Runs with different research modes cannot be retried as one batch",
+                research_modes=sorted(research_modes),
+            )
+        research_mode = next(iter(research_modes))
         retry_command = GenerationBatchCreate(
             name=(command.name or f"{source['name']} · retry")[:160],
             channel_id=first_run.get("channel_id"),
@@ -1796,7 +2255,7 @@ class ControlService:
                     inputs={
                         key: value
                         for key, value in item["input"].items()
-                        if key != "topic"
+                        if key not in {"topic", "research_mode"}
                     },
                 )
                 for item in failed
@@ -1828,6 +2287,7 @@ class ControlService:
                 frame_rate=production.get("frame_rate"),
                 subtitles=subtitle_settings or None,
             ),
+            research_mode=research_mode,
         )
         return await self.create_generation_batch(
             context,

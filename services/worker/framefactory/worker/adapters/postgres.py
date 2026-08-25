@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import psycopg
@@ -24,6 +25,7 @@ from framefactory.ports import RevisionConflictError
 from framefactory.runtime import (
     ExecutionState,
     Lease,
+    PermanentStepError,
     RetryPolicy,
     ReviewDecision,
     ReviewRecord,
@@ -34,6 +36,8 @@ from framefactory.runtime import (
 )
 from framefactory.skills.canonical import thaw_json
 from framefactory.steps import ArtifactRef
+from framefactory.worker.queue_routing import operation_queue_name
+from framefactory.worker.web_capture.security import redact_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +55,9 @@ class PostgresRunStore:
         self._connection = connection
 
     @classmethod
-    def connect(cls, database_url: str, *, timeout_seconds: float = 5.0) -> PostgresRunStore:
+    def connect(
+        cls, database_url: str, *, timeout_seconds: float = 5.0
+    ) -> PostgresRunStore:
         connection = psycopg.connect(
             database_url,
             connect_timeout=max(1, round(timeout_seconds)),
@@ -65,7 +71,9 @@ class PostgresRunStore:
 
     def healthcheck(self) -> None:
         row = self._connection.execute(
-            """SELECT count(*) = 14 AS healthy
+            """SELECT count(*) = 14
+                         AND to_regclass('public.webpage_capture_attempts') IS NOT NULL
+                         AS healthy
                  FROM information_schema.columns
                 WHERE (table_schema, table_name, column_name) IN (
                   ('public','runs','worker_revision'),
@@ -88,7 +96,8 @@ class PostgresRunStore:
             raise RuntimeError(
                 "PostgreSQL worker schema is unavailable; apply "
                 "services/worker/migrations/0001_runtime_state.sql and the "
-                "current db/migrations set"
+                "current db/migrations set, including "
+                "db/migrations/0022_webpage_video_control_plane.sql"
             )
 
     def get_run(self, workspace_id: str, run_id: str) -> RunRecord | None:
@@ -104,8 +113,12 @@ class PostgresRunStore:
         if expected_revision is None:
             # Run creation requires API-owned composition and identity fields.
             if self.get_run(run.workspace_id, run.run_id) is None:
-                raise RuntimeError("worker cannot create a run; create it through the control API")
-            raise RevisionConflictError(f"run already exists: {run.workspace_id}/{run.run_id}")
+                raise RuntimeError(
+                    "worker cannot create a run; create it through the control API"
+                )
+            raise RevisionConflictError(
+                f"run already exists: {run.workspace_id}/{run.run_id}"
+            )
         with self._transaction():
             current = self._connection.execute(
                 """SELECT status::text AS status FROM runs
@@ -127,14 +140,14 @@ class PostgresRunStore:
             RETURNING workspace_id, id, input_snapshot, status, cancel_requested_at,
                       started_at, completed_at, created_at, updated_at, worker_revision""",
                 (
-                self._database_run_status(run.status),
-                run.cancellation_requested_at,
-                run.started_at,
-                run.completed_at,
-                run.updated_at,
-                run.workspace_id,
-                run.run_id,
-                expected_revision,
+                    self._database_run_status(run.status),
+                    run.cancellation_requested_at,
+                    run.started_at,
+                    run.completed_at,
+                    run.updated_at,
+                    run.workspace_id,
+                    run.run_id,
+                    expected_revision,
                 ),
             ).fetchone()
             if row is not None and current["status"] != row["status"]:
@@ -224,6 +237,10 @@ class PostgresRunStore:
                     raise RevisionConflictError(
                         f"stale step revision: {step.workspace_id}/{step.step_id}/{expected_revision}"
                     )
+                self._record_webpage_capture_transition(
+                    step,
+                    capture_revision=expected_revision + 1,
+                )
                 self._write_review_action(step)
                 self._append_step_event(step, revision=expected_revision + 1)
         saved = self.get_step(step.workspace_id, step.step_id)
@@ -299,17 +316,23 @@ class PostgresRunStore:
                 snapshot = {
                     **run_input,
                     "_framefactory": {
-                        "composition_snapshot": self._json(row.get("composition_snapshot")) or {},
+                        "composition_snapshot": self._json(
+                            row.get("composition_snapshot")
+                        )
+                        or {},
                         "skill_version": {
                             "id": str(row.get("skill_version_id", "")),
                             "version": row.get("skill_version"),
                             "input_schema": self._json(row.get("input_schema")) or {},
-                            "research_policy": self._json(row.get("research_policy")) or {},
-                            "writing_policy": self._json(row.get("writing_policy")) or {},
+                            "research_policy": self._json(row.get("research_policy"))
+                            or {},
+                            "writing_policy": self._json(row.get("writing_policy"))
+                            or {},
                             "visual_policy": self._json(row.get("visual_policy")) or {},
                             "asset_policy": self._json(row.get("asset_policy")) or {},
                             "qc_policy": self._json(row.get("qc_policy")) or {},
-                            "output_contract": self._json(row.get("output_contract")) or {},
+                            "output_contract": self._json(row.get("output_contract"))
+                            or {},
                             "capability_requirements": (
                                 self._json(row.get("capability_requirements")) or []
                             ),
@@ -322,7 +345,7 @@ class PostgresRunStore:
                         step_type=str(node["operation"]),
                         input_snapshot=snapshot,
                         dependencies=tuple(node.get("depends_on", ())),
-                        queue_name="run-steps",
+                        queue_name=operation_queue_name(str(node["operation"])),
                         retry_policy=RetryPolicy(
                             max_attempts=int(node.get("maximum_attempts", 3))
                         ),
@@ -352,12 +375,18 @@ class PostgresRunStore:
                 )
         return tuple(pending)
 
-    def record_artifact(self, artifact: ArtifactRef, *, bucket: str) -> None:
+    def record_artifact(
+        self,
+        artifact: ArtifactRef,
+        *,
+        bucket: str,
+    ) -> None:
         """Idempotently persist an already-uploaded immutable object reference."""
 
-        with self._transaction():
-            inserted = self._connection.execute(
-                """INSERT INTO artifacts (
+        try:
+            with self._transaction():
+                inserted = self._connection.execute(
+                    """INSERT INTO artifacts (
                    id, workspace_id, run_id, step_id, kind, status, schema_version,
                    media_type, storage_provider, bucket, object_key, content_hash,
                    byte_size, metadata, created_at
@@ -365,41 +394,62 @@ class PostgresRunStore:
                    %s, %s, %s, %s, %s, 'available', %s,
                    %s, 's3', %s, %s, %s, %s, %s, %s
                ) ON CONFLICT (workspace_id, id) DO NOTHING RETURNING id""",
-                (
-                artifact.id,
-                artifact.workspace_id,
-                artifact.run_id,
-                self._database_step_id(artifact.step_id),
-                artifact.kind,
-                artifact.schema_version,
-                artifact.media_type,
-                bucket,
-                artifact.object_key,
-                artifact.content_hash,
-                artifact.byte_size,
-                Jsonb({"filename": artifact.filename}),
-                self._datetime(artifact.created_at),
-                ),
-            ).fetchone()
-            row = self._connection.execute(
-                """SELECT object_key, content_hash, byte_size FROM artifacts
-               WHERE workspace_id=%s AND id=%s""",
-                (artifact.workspace_id, artifact.id),
-            ).fetchone()
-            if inserted is not None:
-                self.append_event(
-                    artifact.workspace_id,
-                    artifact.run_id,
-                    event_type="artifact.created",
-                    deduplication_key=f"artifact:{artifact.id}",
-                    step_id=artifact.step_id,
-                    payload={
-                        "artifact_id": artifact.id,
-                        "kind": artifact.kind,
-                        "content_hash": artifact.content_hash,
-                    },
-                    occurred_at=self._datetime(artifact.created_at),
-                )
+                    (
+                        artifact.id,
+                        artifact.workspace_id,
+                        artifact.run_id,
+                        self._database_step_id(artifact.step_id),
+                        artifact.kind,
+                        artifact.schema_version,
+                        artifact.media_type,
+                        bucket,
+                        artifact.object_key,
+                        artifact.content_hash,
+                        artifact.byte_size,
+                        Jsonb({"filename": artifact.filename}),
+                        self._datetime(artifact.created_at),
+                    ),
+                ).fetchone()
+                row = self._connection.execute(
+                    """SELECT object_key, content_hash, byte_size FROM artifacts
+                   WHERE workspace_id=%s AND id=%s""",
+                    (artifact.workspace_id, artifact.id),
+                ).fetchone()
+                if inserted is not None:
+                    self.append_event(
+                        artifact.workspace_id,
+                        artifact.run_id,
+                        event_type="artifact.created",
+                        deduplication_key=f"artifact:{artifact.id}",
+                        step_id=artifact.step_id,
+                        payload={
+                            "artifact_id": artifact.id,
+                            "kind": artifact.kind,
+                            "content_hash": artifact.content_hash,
+                        },
+                        occurred_at=self._datetime(artifact.created_at),
+                    )
+        except psycopg.errors.UndefinedTable as exc:
+            raise RuntimeError(
+                "webpage capture audit storage is unavailable; apply "
+                "db/migrations/0022_webpage_video_control_plane.sql"
+            ) from exc
+        except psycopg.IntegrityError as exc:
+            constraint_name = getattr(
+                getattr(exc, "diag", None), "constraint_name", None
+            )
+            if (
+                constraint_name == "artifacts_tenant_key"
+                or "artifacts_tenant_key" in str(exc)
+            ):
+                raise PermanentStepError(
+                    "artifact object key violates tenant isolation",
+                    code="artifact_tenant_key_violation",
+                ) from exc
+            raise PermanentStepError(
+                "artifact record violates database integrity",
+                code="artifact_integrity_violation",
+            ) from exc
         if (
             row is None
             or row["object_key"] != artifact.object_key
@@ -408,14 +458,288 @@ class PostgresRunStore:
         ):
             raise RuntimeError("durable artifact record conflicts with uploaded object")
 
-    def record_initialization_error(self, workspace_id: str, run_id: str, error: str) -> None:
+    def _record_webpage_capture_transition(
+        self,
+        step: StepRecord,
+        *,
+        capture_revision: int,
+    ) -> None:
+        if step.step_type != "web.capture.screenshot":
+            return
+        captured = step.status is ExecutionState.AWAITING_REVIEW
+        execution_failed = step.status in {
+            ExecutionState.RETRYING,
+            ExecutionState.FAILED,
+        } and not (
+            step.review is not None
+            and step.review.decision is not None
+            and step.review.decided_at == step.updated_at
+        )
+        if not captured and not execution_failed:
+            return
+        snapshot = (
+            step.input_snapshot.to_dict()
+            if callable(getattr(step.input_snapshot, "to_dict", None))
+            else thaw_json(step.input_snapshot)
+        )
+        if not isinstance(snapshot, Mapping):
+            raise TypeError("capture attempt input snapshot is not an object")
+        webpage_video_run_id = str(snapshot.get("webpage_video_run_id") or "")
+        target_url = snapshot.get("target_url") or snapshot.get("requested_url")
+        if not isinstance(target_url, str):
+            raise TypeError("capture attempt is missing its requested URL")
+        width, height = _capture_viewport(snapshot.get("aspect_ratio"))
+        summary = thaw_json(step.output_summary)
+        if not isinstance(summary, Mapping):
+            summary = {}
+        artifact = None
+        final_url = None
+        captured_at = None
+        metadata: dict[str, Any] = {
+            "aspect_ratio": str(snapshot.get("aspect_ratio") or "16:9"),
+            "mode": "viewport",
+        }
+        error = None
+        requested_url = redact_url(target_url)
+        if captured:
+            images = tuple(
+                item
+                for item in step.output_artifacts
+                if isinstance(item, ArtifactRef)
+                and item.kind == "image"
+                and item.media_type == "image/png"
+            )
+            if len(images) != 1:
+                raise RuntimeError(
+                    "captured screenshot step must persist exactly one PNG image artifact"
+                )
+            artifact = images[0]
+            if str(summary.get("webpage_video_run_id") or "") != webpage_video_run_id:
+                raise RuntimeError(
+                    "capture output is bound to a different webpage-video run"
+                )
+            if summary.get("capture_sha256") != artifact.content_hash:
+                raise RuntimeError(
+                    "capture output hash does not match its PNG artifact"
+                )
+            requested_url = _capture_audit_url(summary.get("requested_url"))
+            final_url = _capture_audit_url(summary.get("final_url"))
+            captured_at = summary.get("captured_at")
+            metadata.update(
+                {
+                    "response_status": summary.get("response_status"),
+                    "resource_count": summary.get("resource_count"),
+                    "transferred_bytes": summary.get("transferred_bytes"),
+                    "redirect_count": summary.get("redirect_count"),
+                    "redirect_chain": summary.get("redirect_chain"),
+                    "engine": summary.get("engine"),
+                    "browser_version": summary.get("browser_version"),
+                    "playwright_version": summary.get("playwright_version"),
+                    "websocket_attempts": summary.get("websocket_attempts"),
+                    "blocked_non_idempotent_requests": summary.get(
+                        "blocked_non_idempotent_requests"
+                    ),
+                }
+            )
+        else:
+            step_error = step.error
+            error = {
+                "code": (
+                    step_error.code if step_error is not None else "capture_failed"
+                )[:128],
+                "retryable": bool(step_error.retryable)
+                if step_error is not None
+                else False,
+            }
+        evidence = {
+            "webpage_video_run_id": webpage_video_run_id,
+            "attempt_number": step.attempt_count,
+            "requested_url": requested_url,
+            "final_url": final_url,
+            "viewport_width": width,
+            "viewport_height": height,
+            "full_page": False,
+            "captured_at": captured_at,
+            "metadata": metadata,
+        }
+        self._record_webpage_capture_attempt(
+            workspace_id=step.workspace_id,
+            run_id=step.run_id,
+            step_id=self._database_step_id(step.step_id),
+            capture_revision=capture_revision,
+            evidence=evidence,
+            artifact=artifact,
+            error=error,
+        )
+
+    def _record_webpage_capture_attempt(
+        self,
+        *,
+        workspace_id: str,
+        run_id: str,
+        step_id: UUID,
+        capture_revision: int,
+        evidence: Mapping[str, Any],
+        artifact: ArtifactRef | None,
+        error: Mapping[str, Any] | None,
+    ) -> None:
+        webpage_video_run_id = str(evidence.get("webpage_video_run_id") or "")
+        attempt_number = _positive_capture_integer(
+            evidence.get("attempt_number"), "attempt_number"
+        )
+        viewport_width = _positive_capture_integer(
+            evidence.get("viewport_width"), "viewport_width"
+        )
+        viewport_height = _positive_capture_integer(
+            evidence.get("viewport_height"), "viewport_height"
+        )
+        if not 320 <= viewport_width <= 4096 or not 320 <= viewport_height <= 4096:
+            raise RuntimeError(
+                "capture attempt viewport is outside the database contract"
+            )
+        if evidence.get("full_page") is not False:
+            raise RuntimeError(
+                "capture attempt must use the approved viewport-only mode"
+            )
+        requested_url = _capture_audit_url(evidence.get("requested_url"))
+        final_url = (
+            _capture_audit_url(evidence.get("final_url"))
+            if artifact is not None
+            else None
+        )
+        metadata = evidence.get("metadata")
+        if not isinstance(metadata, Mapping):
+            raise TypeError("capture attempt metadata must be an object")
+        redirect_chain = metadata.get("redirect_chain")
+        if artifact is not None:
+            if (
+                not isinstance(redirect_chain, list)
+                or not 1 <= len(redirect_chain) <= 11
+            ):
+                raise RuntimeError("capture attempt redirect chain is outside policy")
+            if any(_capture_audit_url(item) != item for item in redirect_chain):
+                raise RuntimeError("capture attempt redirect chain is not sanitized")
+            if metadata.get("engine") != "chromium":
+                raise RuntimeError("capture attempt browser engine is not Chromium")
+            for field in ("browser_version", "playwright_version"):
+                value = metadata.get(field)
+                if not isinstance(value, str) or not 1 <= len(value) <= 128:
+                    raise RuntimeError(f"capture attempt {field} is missing")
+            websocket_attempts = metadata.get("websocket_attempts")
+            if not isinstance(websocket_attempts, int) or websocket_attempts < 0:
+                raise RuntimeError("capture attempt websocket count is invalid")
+            blocked_writes = metadata.get("blocked_non_idempotent_requests")
+            if not isinstance(blocked_writes, int) or blocked_writes < 0:
+                raise RuntimeError("capture attempt blocked-write count is invalid")
+        control = self._connection.execute(
+            """SELECT wvr.id, rs.worker_revision
+                 FROM webpage_video_runs wvr
+                 JOIN run_steps rs
+                   ON rs.workspace_id = wvr.workspace_id
+                  AND rs.run_id = wvr.underlying_run_id
+                  AND rs.id = %s
+                  AND rs.step_type = 'web.capture.screenshot'
+                WHERE wvr.workspace_id = %s
+                  AND wvr.underlying_run_id = %s
+                  AND wvr.id = %s
+                FOR SHARE""",
+            (step_id, workspace_id, run_id, webpage_video_run_id),
+        ).fetchone()
+        if control is None:
+            raise RuntimeError(
+                "capture attempt is not bound to a webpage-video run and screenshot step"
+            )
+        if int(control["worker_revision"]) != capture_revision:
+            raise RuntimeError(
+                "capture attempt revision does not match the durable screenshot step"
+            )
+        captured_at = (
+            self._datetime(str(evidence.get("captured_at")))
+            if artifact is not None
+            else None
+        )
+        if artifact is not None and captured_at is None:
+            raise RuntimeError("successful capture attempt requires captured_at")
+        normalized_error = dict(error) if error is not None else None
+        if artifact is None and not normalized_error:
+            raise RuntimeError(
+                "failed capture attempt requires a sanitized error object"
+            )
+        outcome = "captured" if artifact is not None else "failed"
+        expected = {
+            "outcome": outcome,
+            "capture_revision": capture_revision,
+            "requested_url": requested_url,
+            "final_url": final_url,
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+            "full_page": False,
+            "artifact_id": artifact.id if artifact is not None else None,
+            "sha256": artifact.content_hash if artifact is not None else None,
+            "media_type": artifact.media_type if artifact is not None else None,
+            "metadata": dict(metadata),
+            "error": normalized_error,
+            "captured_at": captured_at,
+        }
+        self._connection.execute(
+            """INSERT INTO webpage_capture_attempts (
+                   workspace_id, webpage_video_run_id, underlying_run_id,
+                   screenshot_step_id, attempt_number, capture_revision, outcome,
+                   requested_url, final_url, viewport_width, viewport_height, full_page,
+                   artifact_id, sha256, media_type, metadata, error, captured_at
+               ) VALUES (
+                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false,
+                   %s, %s, %s, %s, %s, %s
+               ) ON CONFLICT (workspace_id, webpage_video_run_id, attempt_number)
+                 DO NOTHING""",
+            (
+                workspace_id,
+                webpage_video_run_id,
+                run_id,
+                step_id,
+                attempt_number,
+                capture_revision,
+                outcome,
+                requested_url,
+                final_url,
+                viewport_width,
+                viewport_height,
+                artifact.id if artifact is not None else None,
+                artifact.content_hash if artifact is not None else None,
+                artifact.media_type if artifact is not None else None,
+                Jsonb(dict(metadata)),
+                Jsonb(normalized_error) if normalized_error is not None else None,
+                captured_at,
+            ),
+        )
+        stored = self._connection.execute(
+            """SELECT outcome, capture_revision, requested_url, final_url,
+                      viewport_width, viewport_height, full_page, artifact_id,
+                      sha256, media_type, metadata, error, captured_at
+                 FROM webpage_capture_attempts
+                WHERE workspace_id=%s AND webpage_video_run_id=%s
+                  AND attempt_number=%s""",
+            (workspace_id, webpage_video_run_id, attempt_number),
+        ).fetchone()
+        if stored is None or not _capture_attempt_matches(stored, expected):
+            raise RuntimeError(
+                "durable webpage capture attempt conflicts with this replay"
+            )
+
+    def record_initialization_error(
+        self, workspace_id: str, run_id: str, error: str
+    ) -> None:
         with self._transaction():
             row = self._connection.execute(
                 """UPDATE runs SET status='failed', completed_at=now(), updated_at=now(),
                                worker_error=%s, worker_revision=worker_revision+1
                 WHERE workspace_id=%s AND id=%s AND status='queued'
                 RETURNING worker_revision, updated_at""",
-                (Jsonb({"code": "pipeline_initialization_failed", "message": error}), workspace_id, run_id),
+                (
+                    Jsonb({"code": "pipeline_initialization_failed", "message": error}),
+                    workspace_id,
+                    run_id,
+                ),
             ).fetchone()
             if row is not None:
                 self.append_event(
@@ -423,7 +747,10 @@ class PostgresRunStore:
                     run_id,
                     event_type="run.failed",
                     deduplication_key=f"worker-run-status:{row['worker_revision']}:failed",
-                    payload={"status": "failed", "code": "pipeline_initialization_failed"},
+                    payload={
+                        "status": "failed",
+                        "code": "pipeline_initialization_failed",
+                    },
                     occurred_at=row["updated_at"],
                 )
 
@@ -665,6 +992,7 @@ class PostgresRunStore:
                 comment=review_value.get("comment"),
                 requested_at=cls._datetime(review_value.get("requested_at")),
                 decided_at=cls._datetime(review_value.get("decided_at")),
+                metadata=review_value.get("metadata") or {},
             )
         retry = cls._json(row["retry_policy"]) or {}
         artifacts = tuple(
@@ -710,7 +1038,7 @@ class PostgresRunStore:
     def _datetime(value: str | datetime | None) -> datetime | None:
         if value is None or isinstance(value, datetime):
             return value
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value)
 
     @staticmethod
     def _json(value: Any) -> Any:
@@ -730,15 +1058,22 @@ class PostgresRunStore:
         review = None
         if step.review:
             review = {
-                "decision": step.review.decision.value if step.review.decision else None,
+                "decision": step.review.decision.value
+                if step.review.decision
+                else None,
                 "actor_id": step.review.actor_id,
                 "comment": step.review.comment,
                 "requested_at": (
-                    step.review.requested_at.isoformat() if step.review.requested_at else None
+                    step.review.requested_at.isoformat()
+                    if step.review.requested_at
+                    else None
                 ),
                 "decided_at": (
-                    step.review.decided_at.isoformat() if step.review.decided_at else None
+                    step.review.decided_at.isoformat()
+                    if step.review.decided_at
+                    else None
                 ),
+                "metadata": thaw_json(step.review.metadata),
             }
         snapshot = (
             step.input_snapshot.to_dict()
@@ -755,7 +1090,9 @@ class PostgresRunStore:
             step.queue_name,
             list(step.required_capabilities),
             Jsonb(snapshot),
-            Jsonb(thaw_json(step.output_summary)) if step.output_summary is not None else None,
+            Jsonb(thaw_json(step.output_summary))
+            if step.output_summary is not None
+            else None,
             Jsonb(error) if error else None,
             step.priority,
             step.available_at,
@@ -790,3 +1127,76 @@ class PostgresRunStore:
             Jsonb(review) if review else None,
             step.cancellation_requested_at,
         )
+
+
+def _positive_capture_integer(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RuntimeError(f"capture attempt {field} must be a positive integer")
+    return value
+
+
+def _capture_viewport(aspect_ratio: object) -> tuple[int, int]:
+    viewports = {
+        "16:9": (1920, 1080),
+        "9:16": (1080, 1920),
+        "1:1": (1080, 1080),
+        "4:3": (1440, 1080),
+    }
+    try:
+        return viewports[str(aspect_ratio or "16:9")]
+    except KeyError as exc:
+        raise RuntimeError("capture attempt aspect ratio is outside policy") from exc
+
+
+def _capture_audit_url(value: object) -> str:
+    if not isinstance(value, str) or not 9 <= len(value) <= 2_048:
+        raise RuntimeError("capture audit URL length is outside policy")
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("capture audit URL is malformed") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (parsed.query and parsed.query != "redacted=1")
+    ):
+        raise RuntimeError("capture audit URL is not sanitized public HTTPS metadata")
+    return value
+
+
+def _capture_attempt_matches(
+    stored: Mapping[str, Any], expected: Mapping[str, Any]
+) -> bool:
+    scalar_fields = (
+        "outcome",
+        "capture_revision",
+        "requested_url",
+        "final_url",
+        "viewport_width",
+        "viewport_height",
+        "full_page",
+        "sha256",
+        "media_type",
+    )
+    for field in scalar_fields:
+        left = stored.get(field)
+        right = expected.get(field)
+        if field in {"capture_revision", "viewport_width", "viewport_height"}:
+            if left is None or int(left) != int(right):
+                return False
+        elif left != right:
+            return False
+    left_artifact = stored.get("artifact_id")
+    right_artifact = expected.get("artifact_id")
+    if (str(left_artifact) if left_artifact is not None else None) != right_artifact:
+        return False
+    for field in ("metadata", "error"):
+        if PostgresRunStore._json(stored.get(field)) != expected.get(field):
+            return False
+    return PostgresRunStore._datetime(stored.get("captured_at")) == expected.get(
+        "captured_at"
+    )

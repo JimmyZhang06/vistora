@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "id": "9767e7d7-446e-56f8-81b2-8187c8591041",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "publisher_type": "system",
+  "publisher_name": "Vistora",
+  "name": "网页截图视频导演（内部）",
+  "slug": "webpage-video-director",
+  "description": "仅供独立网页视频控制面绑定；支持公开 HTTPS 站点的定向发现、页面范围审核、关键区域镜头审核与多画面生产。",
+  "visibility": "public_readonly",
+  "status": "archived",
+  "current_version_id": "fd8b8458-2fb6-51e2-b8c0-64bb5f05b707",
+  "forked_from_skill_id": null,
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-24T00:00:00Z",
+  "updated_at": "2026-08-24T00:00:00Z"
+}

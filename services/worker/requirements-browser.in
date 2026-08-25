@@ -1,0 +1,3 @@
+# Isolated browser-capture runtime. Keep this version identical to the
+# mcr.microsoft.com/playwright/python image tag in deploy/production/Dockerfile.
+playwright==1.62.0

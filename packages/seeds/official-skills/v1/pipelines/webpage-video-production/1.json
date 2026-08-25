@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0.0",
+  "id": "eaf69761-8571-5404-a50a-8ef5c0aa90d3",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "网页截图视频生产",
+  "slug": "webpage-video-production",
+  "description": "独立的公开网页校验、隔离截图、人工审核、单画面写稿与视频生产流水线。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 1,
+  "nodes": [
+    {
+      "key": "validate",
+      "operation": "web.capture.validate",
+      "depends_on": [],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 30,
+      "review_gate": false
+    },
+    {
+      "key": "screenshot",
+      "operation": "web.capture.screenshot",
+      "depends_on": ["validate"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 90,
+      "review_gate": true
+    },
+    {
+      "key": "write",
+      "operation": "writing.compose.webpage",
+      "depends_on": ["screenshot"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 300,
+      "review_gate": false
+    },
+    {
+      "key": "materialize",
+      "operation": "web.materialize",
+      "depends_on": ["screenshot", "write"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 120,
+      "review_gate": false
+    },
+    {
+      "key": "tts",
+      "operation": "audio.synthesize",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "render",
+      "operation": "render.compose",
+      "depends_on": ["write", "tts", "materialize"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 3600,
+      "review_gate": false
+    },
+    {
+      "key": "quality",
+      "operation": "quality.evaluate",
+      "depends_on": ["render"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 900,
+      "review_gate": false
+    }
+  ],
+  "capability_requirements": [
+    "web.capture.validate",
+    "web.capture.screenshot",
+    "writing.compose.webpage",
+    "web.materialize",
+    "audio.synthesize",
+    "render.compose",
+    "quality.evaluate"
+  ],
+  "content_hash": "0e7d669e7479bd7dcdb283613581089130a9ad9282e3ba2d19979d7fc0eacdef",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-24T00:00:00Z",
+  "published_at": "2026-08-24T00:00:00Z"
+}

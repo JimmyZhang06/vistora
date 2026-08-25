@@ -1,4 +1,4 @@
-name: vistora-local
+name: vistora-framefactory-local
 
 # Local-only persistence stack. The credentials below are intentionally
 # non-secret development defaults and must not be reused outside this compose project.
@@ -91,5 +91,8 @@ services:
 
 volumes:
   vistora-postgres:
+    name: vistora-local_vistora-postgres
   vistora-redis:
+    name: vistora-local_vistora-redis
   vistora-minio:
+    name: vistora-local_vistora-minio

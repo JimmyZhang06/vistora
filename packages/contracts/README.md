@@ -10,6 +10,8 @@
 
 Worker 在投递前保存内容寻址的 `input_snapshot`；重试和崩溃恢复复用同一快照和幂等键。输出通过 Artifact 引用，而不是写入可变本地路径。Run 的组合快照包含实际 SkillVersion、PipelineVersion、素材库、声音、渲染预设与生产设置来源。
 
+定时驱动剪辑使用五个独立的不可变载荷契约：`narration-timing` 将脚本与音频哈希绑定；`generated-material-manifest` 仅在全 AI 模式下记录 Run 范围的付费生成任务、Provider 输出和费用审计；`candidate-manifest` 保存逐 Beat 候选、权利证据、冻结的 `catalog_snapshot_id` 与 coverage；`material-selection` 冻结实际选用素材窗口；`edit-decision-list` 以帧边界和毫秒源窗口供 `render.edl` 消费。`media.inventory` 生成 kind=`inventory`、media type=`application/json` 的素材盘点 Artifact，供脚本阶段先理解冻结目录覆盖面。付费审计与下游候选决策不合并；这些载荷仍作为普通 Artifact 持久化，不替代 Run、Step 或 Artifact 聚合根。
+
 `SkillVersion` 是声明式数据，不允许命令、模块、脚本、回调或本地路径。外部研究证据必须是 HTTPS URL，素材通过 UUID 和持久使用快照引用。
 
 ## 内容哈希

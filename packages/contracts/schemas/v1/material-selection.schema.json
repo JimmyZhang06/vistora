@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/material-selection.schema.json",
+  "title": "MaterialSelection",
+  "description": "Immutable selection revision binding chosen source windows to a candidate manifest and narration timing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "operation", "candidate_manifest_content_hash", "narration_timing_content_hash",
+    "audio_content_hash", "duration_seconds", "selections"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "operation": { "const": "timeline.align" },
+    "candidate_manifest_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "narration_timing_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "audio_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "selections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/Selection" }
+    }
+  },
+  "$defs": {
+    "Selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_id", "beat_id", "beat_sequence", "candidate_rank", "asset_id", "artifact_id",
+        "content_hash", "filename", "media_type", "media_kind", "source_start_seconds",
+        "source_end_seconds", "source_start_ms", "source_end_ms", "cut_safe", "semantic_complete"
+      ],
+      "properties": {
+        "selection_id": { "type": "string", "pattern": "^selection-[a-f0-9]{20}$" },
+        "beat_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "beat_sequence": { "type": "integer", "minimum": 1 },
+        "candidate_rank": { "type": "integer", "minimum": 1 },
+        "asset_id": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/Uuid" },
+            { "type": "null" }
+          ]
+        },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "filename": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "media_type": { "$ref": "common.schema.json#/$defs/MediaType" },
+        "media_kind": { "type": "string", "enum": ["image", "video"] },
+        "source_start_seconds": { "type": "number", "minimum": 0 },
+        "source_end_seconds": { "type": "number", "minimum": 0 },
+        "source_start_ms": { "type": "integer", "minimum": 0 },
+        "source_end_ms": { "type": "integer", "minimum": 0 },
+        "cut_safe": { "type": "boolean" },
+        "semantic_complete": { "type": "boolean" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "operation": "timeline.align",
+      "candidate_manifest_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "narration_timing_content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "audio_content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "duration_seconds": 4.2,
+      "selections": [
+        {
+          "selection_id": "selection-0123456789abcdefabcd",
+          "beat_id": "beat-001",
+          "beat_sequence": 1,
+          "candidate_rank": 1,
+          "asset_id": "11111111-1111-4111-8111-111111111111",
+          "artifact_id": "22222222-2222-4222-8222-222222222222",
+          "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "filename": "sky.mp4",
+          "media_type": "video/mp4",
+          "media_kind": "video",
+          "source_start_seconds": 1.25,
+          "source_end_seconds": 5.45,
+          "source_start_ms": 1250,
+          "source_end_ms": 5450,
+          "cut_safe": true,
+          "semantic_complete": true
+        }
+      ]
+    }
+  ]
+}

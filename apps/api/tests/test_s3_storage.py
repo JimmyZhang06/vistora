@@ -23,10 +23,11 @@ class FakeS3Error(Exception):
 
 
 class FakeS3Client:
-    def __init__(self) -> None:
+    def __init__(self, presign_origin: str = "https://objects.example.test") -> None:
         self.bucket_exists = True
         self.objects: dict[str, dict[str, Any]] = {}
         self.presign_calls: list[tuple[str, dict[str, Any]]] = []
+        self.presign_origin = presign_origin.rstrip("/")
 
     def generate_presigned_url(
         self, method: str, *, Params: dict[str, Any], ExpiresIn: int, HttpMethod: str
@@ -34,7 +35,7 @@ class FakeS3Client:
         self.presign_calls.append(
             (method, {"params": Params, "expires": ExpiresIn, "http_method": HttpMethod})
         )
-        return f"https://objects.example.test/{Params['Key']}?signed=1"
+        return f"{self.presign_origin}/{Params['Key']}?signed=1"
 
     def head_bucket(self, *, Bucket: str) -> dict[str, Any]:
         del Bucket
@@ -278,6 +279,167 @@ async def test_presign_download_accepts_worker_artifact_key(
     )
 
     assert download.url.endswith("final-video.mp4?signed=1")
+
+
+@pytest.mark.asyncio
+async def test_presign_download_accepts_browser_capture_artifact_key(
+    storage: S3ObjectStorage, fake_client: FakeS3Client
+) -> None:
+    workspace_id = uuid4()
+    run_id = uuid4()
+    artifact_id = uuid4()
+    content = b"browser-capture-png"
+    digest = hashlib.sha256(content).hexdigest()
+    key = (
+        f"browser-capture/workspaces/{workspace_id}/runs/{run_id}/artifacts/"
+        f"{artifact_id}/capture.png"
+    )
+    fake_client.objects[key] = {
+        "body": content,
+        "content_type": "image/png",
+        "metadata": {"sha256": digest, "workspace-id": str(workspace_id)},
+    }
+
+    download = await storage.presign_download(
+        workspace_id,
+        ObjectLocator(key=key, sha256=digest, content_type="image/png"),
+    )
+
+    assert download.url.endswith("capture.png?signed=1")
+
+
+@pytest.mark.asyncio
+async def test_public_https_client_signs_browser_download_and_upload(
+    fake_client: FakeS3Client,
+) -> None:
+    workspace_id = uuid4()
+    run_id = uuid4()
+    artifact_id = uuid4()
+    content = b"browser-public-delivery"
+    digest = hashlib.sha256(content).hexdigest()
+    key = (
+        f"browser-capture/workspaces/{workspace_id}/runs/{run_id}/artifacts/"
+        f"{artifact_id}/capture.png"
+    )
+    fake_client.objects[key] = {
+        "body": content,
+        "content_type": "image/png",
+        "metadata": {"sha256": digest, "workspace-id": str(workspace_id)},
+    }
+    public_client = FakeS3Client("https://media.example.test")
+    storage = S3ObjectStorage(
+        S3StorageSettings(
+            bucket="framefactory-test",
+            endpoint_url="http://s3:9000",
+            public_endpoint_url="https://media.example.test",
+            access_key_id="test-access",
+            secret_access_key="test-secret",
+        ),
+        client=fake_client,
+        presign_client=public_client,
+    )
+
+    download = await storage.presign_download(
+        workspace_id,
+        ObjectLocator(key=key, sha256=digest, content_type="image/png"),
+    )
+    upload = await storage.initiate_upload(
+        workspace_id, sha256="b" * 64, content_type="image/png"
+    )
+
+    assert download.url.startswith("https://media.example.test/")
+    assert upload.url.startswith("https://media.example.test/")
+    assert len(public_client.presign_calls) == 2
+    assert fake_client.presign_calls == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://media.example.test",
+        "https://user:secret@media.example.test",
+        "https://media.example.test/storage",
+        "https://s3:9000",
+        "https://localhost",
+        "https://127.0.0.1",
+        "https://10.0.0.8",
+    ],
+)
+def test_public_presign_endpoint_requires_clean_https_origin(value: str) -> None:
+    settings = S3StorageSettings(
+        bucket="framefactory-test",
+        public_endpoint_url=value,
+        access_key_id="test-access",
+        secret_access_key="test-secret",
+    )
+
+    with pytest.raises(S3StorageConfigurationError, match="public endpoint"):
+        settings.validate()
+
+
+def test_development_loopback_public_endpoint_is_explicit_and_still_validated() -> None:
+    settings = S3StorageSettings(
+        bucket="framefactory-test",
+        public_endpoint_url="http://127.0.0.1:59000",
+        access_key_id="test-access",
+        secret_access_key="test-secret",
+        allow_insecure_loopback_public_endpoint=True,
+    )
+    settings.validate()
+
+    with pytest.raises(S3StorageConfigurationError, match="either both"):
+        S3StorageSettings(
+            bucket="framefactory-test",
+            public_endpoint_url="http://127.0.0.1:59000",
+            access_key_id="test-access",
+            allow_insecure_loopback_public_endpoint=True,
+        ).validate()
+
+
+def test_loopback_public_endpoint_flag_is_development_only(monkeypatch) -> None:
+    monkeypatch.setenv("FRAMEFACTORY_ENV", "production")
+    monkeypatch.setenv("FRAMEFACTORY_S3_BUCKET", "framefactory-test")
+    monkeypatch.setenv("FRAMEFACTORY_S3_PUBLIC_ENDPOINT_URL", "http://127.0.0.1:59000")
+    monkeypatch.setenv(
+        "FRAMEFACTORY_S3_ALLOW_INSECURE_LOOPBACK_PUBLIC_ENDPOINT", "true"
+    )
+    with pytest.raises(S3StorageConfigurationError, match="development-only"):
+        S3StorageSettings.from_environment()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["browser-captures/", "x/browser-capture/"])
+async def test_presign_download_rejects_similar_browser_capture_prefixes(
+    storage: S3ObjectStorage, prefix: str
+) -> None:
+    workspace_id = uuid4()
+    key = (
+        f"{prefix}workspaces/{workspace_id}/runs/{uuid4()}/artifacts/"
+        f"{uuid4()}/capture.png"
+    )
+
+    with pytest.raises(ObjectNotFound, match="does not belong"):
+        await storage.presign_download(
+            workspace_id,
+            ObjectLocator(key=key, sha256="a" * 64, content_type="image/png"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_presign_download_rejects_cross_workspace_browser_capture_key(
+    storage: S3ObjectStorage,
+) -> None:
+    workspace_id = uuid4()
+    key = (
+        f"browser-capture/workspaces/{uuid4()}/runs/{uuid4()}/artifacts/"
+        f"{uuid4()}/capture.png"
+    )
+
+    with pytest.raises(ObjectNotFound, match="does not belong"):
+        await storage.presign_download(
+            workspace_id,
+            ObjectLocator(key=key, sha256="a" * 64, content_type="image/png"),
+        )
 
 
 @pytest.mark.asyncio

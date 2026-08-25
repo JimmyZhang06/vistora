@@ -27,6 +27,8 @@ tags:
   - name: Render presets
   - name: Pipelines
   - name: Runs
+  - name: Full AI
+  - name: Webpage Video
   - name: Steps
   - name: Artifacts
   - name: Events
@@ -43,6 +45,278 @@ paths:
           $ref: '#/components/responses/CurrentContext'
         default:
           $ref: '#/components/responses/Error'
+  /v1/full-ai/options:
+    get:
+      tags: [Full AI]
+      operationId: getFullAiOptions
+      summary: Inspect the isolated generated-only pipeline and its fail-closed readiness
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Full-AI options and blockers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullAiOptions' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/full-ai/estimate:
+    post:
+      tags: [Full AI]
+      operationId: estimateFullAiRun
+      summary: Freeze scene, candidate, billable-second, and provider quote bounds
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FullAiVideoSpec' }
+      responses:
+        '200':
+          description: Ready quote or explicit blockers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullAiEstimate' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/full-ai/runs:
+    post:
+      tags: [Full AI]
+      operationId: createFullAiRun
+      summary: Atomically create a generated-only record and its scheduler Run
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FullAiRunCreate' }
+      responses:
+        '201':
+          description: Full-AI Run queued on the durable scheduler
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullAiRun' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/full-ai/runs/{full_ai_run_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: full_ai_run_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Full AI]
+      operationId: getFullAiRun
+      summary: Get a Full-AI Run and mapped scheduler/billing status
+      responses:
+        '200':
+          description: Full-AI Run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullAiRun' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/webpage-video/options:
+    get:
+      tags: [Webpage Video]
+      operationId: getWebpageVideoOptions
+      summary: Inspect fail-closed readiness and fixed viewport limits
+      x-required-permission: url_capture:read
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Webpage-video options and explicit blockers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageVideoOptions' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs:
+    post:
+      tags: [Webpage Video]
+      operationId: createWebpageVideoRun
+      summary: Create an isolated public-HTTPS capture and video Run
+      x-required-permission: url_capture:write
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebpageVideoRunCreate' }
+      responses:
+        '201':
+          description: Webpage-video Run atomically bound to a scheduler Run
+          headers:
+            Location: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageVideoRun' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    get:
+      tags: [Webpage Video]
+      operationId: getWebpageVideoRun
+      summary: Get independently mapped capture, composition, render, and QC status
+      x-required-permission: url_capture:read
+      responses:
+        '200':
+          description: Webpage-video Run; capture URLs are issued only by the capture endpoint
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageVideoRun' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/capture:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    get:
+      tags: [Webpage Video]
+      operationId: getWebpageVideoCapture
+      summary: Get immutable screenshot evidence and a short-lived preview URL
+      x-required-permission: url_capture:read
+      responses:
+        '200':
+          description: Current capture evidence
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageCapture' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/capture/review:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    post:
+      tags: [Webpage Video]
+      operationId: reviewWebpageVideoCapture
+      summary: Review screenshot bytes with revision and SHA-256 compare-and-swap binding
+      x-required-permission: url_capture:review
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebpageCaptureReviewRequest' }
+      responses:
+        '202':
+          description: Review durably recorded or semantically replayed
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageVideoRun' }
+        '409': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/site:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    get:
+      tags: [Webpage Video]
+      operationId: getWebpageVideoSite
+      summary: Get the discovered page scope, capture evidence, and proposed storyboard
+      x-required-permission: url_capture:read
+      responses:
+        '200':
+          description: Current site-discovery and storyboard state
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageSite' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/scope/review:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    post:
+      tags: [Webpage Video]
+      operationId: reviewWebpageVideoScope
+      summary: Approve or revise the discovered page scope with compare-and-swap binding
+      x-required-permission: url_capture:review
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebpageScopeReviewRequest' }
+      responses:
+        '202':
+          description: Scope review durably recorded or semantically replayed
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageSite' }
+        '409': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/storyboard/review:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    post:
+      tags: [Webpage Video]
+      operationId: reviewWebpageVideoStoryboard
+      summary: Approve or revise the shot plan with compare-and-swap binding
+      x-required-permission: url_capture:review
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebpageStoryboardReviewRequest' }
+      responses:
+        '202':
+          description: Storyboard review durably recorded or semantically replayed
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageSite' }
+        '409': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    post:
+      tags: [Webpage Video]
+      operationId: cancelWebpageVideoRun
+      summary: Request cancellation through the independent control plane
+      x-required-permission: url_capture:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Cancellation requested
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpageVideoRun' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/account/capabilities:
     get:
       tags: [Account]
@@ -324,6 +598,76 @@ paths:
       summary: Get an asset library and its readiness counts
       responses:
         '200': { description: Asset library }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/library-build-jobs:
+    post:
+      tags: [Assets]
+      operationId: createLibraryBuildJob
+      summary: Persist and enqueue an out-of-Run topic-driven asset-library build
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LibraryBuildJobCreate' }
+      responses:
+        '202':
+          description: Durable library build accepted for asynchronous discovery, transfer, analysis, and indexing
+          headers:
+            Location: { schema: { type: string } }
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LibraryBuildJob' }
+        '503': { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/library-build-jobs/{job_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: job_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Assets]
+      operationId: getLibraryBuildJob
+      summary: Get durable library-build state and stage progress
+      x-required-scopes: [assets:read]
+      responses:
+        '200':
+          description: Library build job
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LibraryBuildJob' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/library-build-jobs/{job_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: job_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Assets]
+      operationId: cancelLibraryBuildJob
+      summary: Revision-fence cancellation of a queued or running library build
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '202':
+          description: Cancellation persisted
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LibraryBuildJob' }
+        '412': { $ref: '#/components/responses/Error' }
         default: { $ref: '#/components/responses/Error' }
   /v1/asset-libraries/{library_id}/assets:
     parameters:
@@ -989,7 +1333,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object }
+            schema: { $ref: '#/components/schemas/GenerationBatchCreate' }
       responses:
         '202':
           description: Durable batch accepted for dispatch
@@ -1489,6 +1833,11 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    WebpageVideoRunId:
+      name: webpage_video_run_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     StepId:
       name: step_id
       in: path
@@ -1520,6 +1869,430 @@ components:
       required: true
       schema: { type: string, format: uuid }
   schemas:
+    FullAiVideoSpec:
+      type: object
+      additionalProperties: false
+      required: [brief, direction, aspect_ratio, duration_seconds, variants_per_scene, continuity, ai_disclosure]
+      properties:
+        brief: { type: string, minLength: 1, maxLength: 1600 }
+        direction: { type: string, enum: [cinematic, graphic, illustrated] }
+        aspect_ratio: { type: string, enum: ['9:16', '16:9'] }
+        duration_seconds: { type: integer, enum: [15, 30, 45, 60] }
+        variants_per_scene: { type: integer, enum: [1, 2, 3] }
+        continuity: { type: boolean }
+        ai_disclosure: { type: boolean }
+    FullAiRunCreate:
+      type: object
+      additionalProperties: false
+      required: [brief, direction, aspect_ratio, duration_seconds, variants_per_scene, continuity, ai_disclosure, estimate_fingerprint, max_cost_minor, currency]
+      properties:
+        brief: { type: string, minLength: 1, maxLength: 1600 }
+        direction: { type: string, enum: [cinematic, graphic, illustrated] }
+        aspect_ratio: { type: string, enum: ['9:16', '16:9'] }
+        duration_seconds: { type: integer, enum: [15, 30, 45, 60] }
+        variants_per_scene: { type: integer, enum: [1, 2, 3] }
+        continuity: { type: boolean }
+        ai_disclosure: { type: boolean }
+        estimate_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+        max_cost_minor: { type: integer, minimum: 0, maximum: 100000000 }
+        currency: { const: USD }
+    FullAiBlocker:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+    FullAiOptions:
+      type: object
+      additionalProperties: false
+      required: [schema_version, mode, status, pipeline, provider, limits, blockers]
+      properties:
+        schema_version: { const: 1.0.0 }
+        mode: { const: generated_only }
+        status: { type: string, enum: [ready, blocked] }
+        pipeline:
+          type: object
+          additionalProperties: false
+          required: [slug, version, visual_source_mode]
+          properties:
+            slug: { const: full-ai-production }
+            version: { const: 1 }
+            visual_source_mode: { const: generated_only }
+        provider:
+          type: object
+          additionalProperties: false
+          required: [name, model_id, status, supports_reconciliation, submit_unknown_policy, continuity_modes]
+          properties:
+            name: { type: [string, 'null'] }
+            model_id: { type: [string, 'null'] }
+            status: { type: string, enum: [ready, unconfigured, incomplete] }
+            supports_reconciliation: { const: false }
+            submit_unknown_policy: { const: manual_only }
+            continuity_modes:
+              type: array
+              prefixItems: [{ const: prompt_pack }, { const: none }]
+              minItems: 2
+              maxItems: 2
+        limits:
+          type: object
+          additionalProperties: false
+          required: [brief_max_length, duration_seconds, aspect_ratios, directions, variants_per_scene, clip_seconds]
+          properties:
+            brief_max_length: { const: 1600 }
+            duration_seconds:
+              type: array
+              items: { type: integer }
+            aspect_ratios:
+              type: array
+              items: { type: string, enum: ['9:16', '16:9'] }
+            directions:
+              type: array
+              items: { type: string, enum: [cinematic, graphic, illustrated] }
+            variants_per_scene:
+              type: array
+              items: { type: integer, enum: [1, 2, 3] }
+            clip_seconds: { const: 5 }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/FullAiBlocker' }
+    FullAiEstimate:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, request_fingerprint, plan, quote, blockers]
+      properties:
+        schema_version: { const: 1.0.0 }
+        status: { type: string, enum: [ready, blocked] }
+        request_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+        plan:
+          type: object
+          additionalProperties: false
+          required: [scene_count, clip_seconds, candidate_count, billable_seconds]
+          properties:
+            scene_count: { type: integer, minimum: 1, maximum: 12 }
+            clip_seconds: { const: 5 }
+            candidate_count: { type: integer, minimum: 1, maximum: 36 }
+            billable_seconds: { type: integer, minimum: 5, maximum: 180 }
+        quote:
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [currency, amount_minor, expires_at]
+              properties:
+                currency: { const: USD }
+                amount_minor: { type: integer, minimum: 0 }
+                expires_at: { type: string, format: date-time }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/FullAiBlocker' }
+    FullAiRun:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, project_run_id, workspace_id, status, mode, provider, spec, quote, billing, created_at, updated_at]
+      properties:
+        schema_version: { const: 1.0.0 }
+        id: { type: string, format: uuid }
+        project_run_id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Underlying scheduler Run id used by the standard project detail route.
+        workspace_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [queued, planning, generating, assembling, quality_check, succeeded, failed, cancelled, reconciliation_required]
+        mode: { const: generated_only }
+        provider:
+          type: object
+          additionalProperties: false
+          required: [name, model_id]
+          properties:
+            name: { type: string }
+            model_id: { type: string }
+        spec: { $ref: '#/components/schemas/FullAiVideoSpec' }
+        quote:
+          type: object
+          additionalProperties: false
+          required: [currency, amount_minor, expires_at]
+          properties:
+            currency: { const: USD }
+            amount_minor: { type: integer, minimum: 0 }
+            expires_at: { type: string, format: date-time }
+        billing:
+          type: object
+          additionalProperties: false
+          required: [status, authorized_amount_minor, incurred_amount_minor, requires_reconciliation]
+          properties:
+            status: { type: string, enum: [not_started, submitting, submitted, submit_unknown, settled, failed] }
+            authorized_amount_minor: { type: integer, minimum: 0 }
+            incurred_amount_minor: { type: integer, minimum: 0 }
+            requires_reconciliation: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WebpageVideoBlocker:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+    WebpageVideoOptions:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, pipeline, limits, voice_profiles, subtitles, blockers]
+      properties:
+        schema_version: { const: 1.0.0 }
+        status: { type: string, enum: [ready, blocked] }
+        pipeline:
+          type: object
+          additionalProperties: false
+          required: [slug, version]
+          properties:
+            slug: { const: webpage-video-production }
+            version: { const: 1 }
+        limits:
+          type: object
+          additionalProperties: false
+          required: [capture_modes, full_page, viewports, aspect_ratios, duration_seconds, topic_max_length, url_max_length, voice_profile_id_optional, max_active_runs_per_workspace]
+          properties:
+            capture_modes:
+              type: array
+              prefixItems: [{ const: viewport }]
+              minItems: 1
+              maxItems: 1
+            full_page:
+              type: array
+              prefixItems: [{ const: false }]
+              minItems: 1
+              maxItems: 1
+            viewports:
+              type: array
+              minItems: 4
+              maxItems: 4
+              items: { $ref: '#/components/schemas/WebpageViewport' }
+            aspect_ratios:
+              type: array
+              items: { type: string, enum: ['16:9', '9:16', '1:1', '4:3'] }
+            duration_seconds:
+              type: array
+              items: { type: integer, enum: [15, 30, 45, 60] }
+            topic_max_length: { const: 1600 }
+            url_max_length: { const: 2048 }
+            voice_profile_id_optional: { const: true }
+            max_active_runs_per_workspace: { const: 4 }
+        voice_profiles:
+          type: array
+          maxItems: 0
+          description: Empty in the MVP; only the system-default voice is accepted.
+          items: { type: object }
+        subtitles:
+          type: object
+          additionalProperties: false
+          required: [supported, default_enabled]
+          properties:
+            supported: { const: true }
+            default_enabled: { const: true }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/WebpageVideoBlocker' }
+    WebpageViewport:
+      type: object
+      additionalProperties: false
+      required: [aspect_ratio, width, height]
+      properties:
+        aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3'] }
+        width: { type: integer, minimum: 320, maximum: 4096 }
+        height: { type: integer, minimum: 320, maximum: 4096 }
+    WebpageVideoRunCreate:
+      type: object
+      additionalProperties: false
+      required: [target_url, capture, video, rights]
+      properties:
+        target_url:
+          type: string
+          format: uri
+          minLength: 9
+          maxLength: 2048
+          pattern: '^https://'
+          description: Public HTTPS URL without credentials; port 443 only.
+        capture:
+          type: object
+          additionalProperties: false
+          required: [mode, aspect_ratio, full_page]
+          properties:
+            mode: { const: viewport }
+            aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1', '4:3'] }
+            full_page: { const: false }
+        video:
+          type: object
+          additionalProperties: false
+          required: [topic, duration_seconds, subtitles_enabled, voice_profile_id]
+          properties:
+            topic: { type: string, minLength: 1, maxLength: 1600 }
+            duration_seconds: { type: integer, enum: [15, 30, 45, 60] }
+            subtitles_enabled: { type: boolean }
+            voice_profile_id:
+              type: [string, 'null']
+              format: uuid
+              description: Must be null in the MVP because no voice profile is advertised.
+        rights:
+          type: object
+          additionalProperties: false
+          required: [public_page_confirmed, rights_confirmed]
+          properties:
+            public_page_confirmed: { const: true }
+            rights_confirmed: { const: true }
+    WebpageArtifact:
+      type: object
+      additionalProperties: false
+      required: [id, kind, media_type, filename, byte_size, sha256, preview_url, download_url, url_expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        media_type: { type: string }
+        filename: { type: string }
+        byte_size: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        preview_url: { type: [string, 'null'], format: uri }
+        download_url: { type: [string, 'null'], format: uri }
+        url_expires_at: { type: [string, 'null'], format: date-time }
+    WebpageCaptureReview:
+      type: object
+      additionalProperties: false
+      required: [decision, comment, issue_codes, reviewed_revision, decided_at]
+      properties:
+        decision: { type: string, enum: [approve, request_changes, reject] }
+        comment: { type: [string, 'null'], maxLength: 2000 }
+        issue_codes: { type: array, items: { type: string } }
+        reviewed_revision: { type: integer, minimum: 1 }
+        decided_at: { type: [string, 'null'], format: date-time }
+    WebpageCapture:
+      type: object
+      additionalProperties: false
+      required: [schema_version, webpage_video_run_id, status, revision, attempt_number, attempt_recorded, requested_url, target_url, final_url, viewport, artifact, review, captured_at, updated_at]
+      properties:
+        schema_version: { const: 1.0.0 }
+        webpage_video_run_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, capturing, awaiting_review, approved, changes_requested, rejected, failed, cancelled] }
+        revision: { type: integer, minimum: 0 }
+        attempt_number: { type: integer, minimum: 0 }
+        attempt_recorded: { type: boolean }
+        requested_url: { type: string, format: uri }
+        target_url: { type: string, format: uri }
+        final_url: { type: [string, 'null'], format: uri }
+        viewport: { $ref: '#/components/schemas/WebpageViewport' }
+        artifact:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WebpageArtifact'
+        review:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WebpageCaptureReview'
+        captured_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    WebpageVideoFailure:
+      type: object
+      additionalProperties: false
+      required: [stage, code, message, retryable]
+      properties:
+        stage: { type: string, enum: [pipeline, validate, screenshot, write, materialize, tts, render, quality] }
+        code: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$' }
+        message: { type: string }
+        retryable: { type: boolean }
+    WebpageVideoRun:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, project_run_id, workspace_id, status, revision, requested_url, target_url, final_url, spec, capture, final_video, failure, created_at, updated_at]
+      properties:
+        schema_version: { const: 1.0.0 }
+        id: { type: string, format: uuid }
+        project_run_id: { type: string, format: uuid, readOnly: true }
+        workspace_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, validating, capturing, awaiting_capture_review, composing, rendering, quality_check, quality_review_required, cancelling, succeeded, failed, cancelled] }
+        revision: { type: integer, minimum: 0 }
+        requested_url: { type: string, format: uri }
+        target_url: { type: string, format: uri }
+        final_url: { type: [string, 'null'], format: uri }
+        spec: { $ref: '#/components/schemas/WebpageVideoRunCreate' }
+        capture: { $ref: '#/components/schemas/WebpageCapture' }
+        final_video:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WebpageArtifact'
+        failure:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WebpageVideoFailure'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WebpageCaptureReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, expected_revision, expected_sha256]
+      properties:
+        decision: { type: string, enum: [approve, recapture, reject] }
+        expected_revision: { type: integer, minimum: 1 }
+        expected_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        comment: { type: [string, 'null'], maxLength: 2000 }
+    WebpageSite:
+      type: object
+      additionalProperties: false
+      required: [schema_version, webpage_video_run_id, crawl, scope, storyboard]
+      properties:
+        schema_version: { const: 2.0.0 }
+        webpage_video_run_id: { type: string, format: uuid }
+        crawl:
+          type: object
+          description: Immutable crawl specification and discovered-page set.
+        scope:
+          type: [object, 'null']
+          description: Revisioned scope manifest, its artifact evidence, content, and review.
+        storyboard:
+          type: [object, 'null']
+          description: Revisioned storyboard manifest, its artifact evidence, content, and review.
+    WebpageSiteReviewBase:
+      type: object
+      additionalProperties: false
+      required: [decision, expected_revision, expected_sha256]
+      properties:
+        decision: { type: string, enum: [approve, request_changes, reject] }
+        expected_revision: { type: integer, minimum: 1 }
+        expected_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        comment: { type: [string, 'null'], maxLength: 2000 }
+    WebpageScopeReviewRequest:
+      allOf:
+        - $ref: '#/components/schemas/WebpageSiteReviewBase'
+        - type: object
+          required: [selected_page_ids]
+          properties:
+            selected_page_ids:
+              type: array
+              minItems: 1
+              maxItems: 12
+              uniqueItems: true
+              items: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
+    WebpageStoryboardReviewRequest:
+      allOf:
+        - $ref: '#/components/schemas/WebpageSiteReviewBase'
+        - type: object
+          required: [shots]
+          properties:
+            shots:
+              type: array
+              minItems: 1
+              maxItems: 64
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, enabled, order]
+                properties:
+                  id: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
+                  enabled: { type: boolean }
+                  order: { type: integer, minimum: 1, maximum: 64 }
     AssetStatus:
       type: string
       enum: [processing, quarantined, ready, disabled, deleted]
@@ -1743,7 +2516,7 @@ components:
         key_prefix: { type: string }
         scopes:
           type: array
-          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write'] }
+          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write', 'url_capture:read', 'url_capture:write', 'url_capture:review'] }
         created_at: { type: string, format: date-time }
         expires_at: { type: [string, 'null'], format: date-time }
         last_used_at: { type: [string, 'null'], format: date-time }
@@ -1760,7 +2533,7 @@ components:
           maxItems: 16
           uniqueItems: true
           default: [skills:read]
-          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write'] }
+          items: { type: string, enum: ['account:read', 'skills:read', 'skills:write', 'runs:read', 'runs:write', 'url_capture:read', 'url_capture:write', 'url_capture:review'] }
         expires_at: { type: [string, 'null'], format: date-time }
     ApiKeyCreated:
       type: object
@@ -1870,6 +2643,12 @@ components:
       $ref: '../schemas/v1/skill-test-execution-create.schema.json'
     AssetLibrary:
       $ref: '../schemas/v1/asset-library.schema.json'
+    GenerationBatchCreate:
+      $ref: '../schemas/v1/generation-batch-create.schema.json'
+    LibraryBuildJobCreate:
+      $ref: '../schemas/v1/library-build-job-create.schema.json'
+    LibraryBuildJob:
+      $ref: '../schemas/v1/library-build-job.schema.json'
     RenderPreset:
       $ref: '../schemas/v1/render-preset.schema.json'
     Pipeline:

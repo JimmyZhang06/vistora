@@ -3,6 +3,7 @@ import test from "node:test";
 
 const routes = [
   ["/create", "创作"],
+  ["/create/ai", "全 AI 影片"],
   ["/projects", "项目"],
   ["/projects/99999999-9999-4999-8999-999999999999", "项目执行状态"],
   ["/skills", "Skill"],
@@ -55,6 +56,13 @@ test("renders product-specific creation, Skill, channel, and state copy", async 
   const worker = await loadWorker();
   const createHtml = await (await render(worker, "/create")).text();
   assert.match(createHtml, /把一个想法，变成可发布的内容/);
+  assert.match(createHtml, /进入全 AI 影片/);
+
+  const aiCreateHtml = await (await render(worker, "/create/ai")).text();
+  assert.match(aiCreateHtml, /从一句话，生成一支完整影片/);
+  assert.match(aiCreateHtml, /正在读取生成服务/);
+  assert.match(aiCreateHtml, /正在读取服务状态/);
+  assert.match(aiCreateHtml, /服务端报价/);
 
   const skillHtml = await (await render(worker, "/skills")).text();
   assert.match(skillHtml, /我的 Skill/);

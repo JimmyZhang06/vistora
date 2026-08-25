@@ -24,6 +24,7 @@ export function ProjectsView() {
   const [filter, setFilter] = useState<Filter>("all");
   const [projects, setProjects] = useState<Run[] | null>(null);
   const [error, setError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
   const visible = (projects ?? []).filter((project) => filter === "all" || project.status === filter);
 
   useEffect(() => {
@@ -37,18 +38,24 @@ export function ProjectsView() {
     void refresh();
     const interval = window.setInterval(() => void refresh(), 5_000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [adapter]);
+  }, [adapter, reloadToken]);
+
+  function retry() {
+    setError("");
+    setProjects(null);
+    setReloadToken((value) => value + 1);
+  }
 
   return (
-    <div className="page">
+    <div className="page projects-page">
       <PageHeading
         eyebrow="02 / PROJECTS"
-        title="项目保留每次组合快照"
-        description="每个项目记录实际使用的 SkillVersion、素材库、声音、渲染预设和 Pipeline，服务重启后仍可继续。"
+        title="项目快照"
+        description="查看每次创作实际使用的 Skill、素材、声音与 Pipeline。每个运行都可追踪、可恢复。"
         actions={<Link className="button" href="/create">开始创作</Link>}
       />
 
-      <div className="skill-toolbar">
+      {projects !== null ? <div className="skill-toolbar projects-toolbar">
         <div className="toolbar" aria-label="项目状态筛选">
           {filters.map((value) => (
             <button
@@ -63,27 +70,47 @@ export function ProjectsView() {
           ))}
         </div>
         <span className="muted">{visible.length} 个项目</span>
-      </div>
+      </div> : null}
 
-      {projects === null ? <div className="loading-grid" aria-label="正在加载项目"><div className="loading-card" /><div className="loading-card" /></div> : null}
-      {error && projects === null ? <StatePanel code="ERR" title="项目列表暂时不可用" description={error} error /> : null}
+      {projects === null && !error ? (
+        <section className="projects-loading" aria-label="正在加载项目" aria-live="polite">
+          <header><span aria-hidden="true" /><div><strong>正在读取项目</strong><small>同步运行状态与组合快照…</small></div></header>
+          <div className="project-loading-row" aria-hidden="true" />
+          <div className="project-loading-row" aria-hidden="true" />
+          <div className="project-loading-row" aria-hidden="true" />
+        </section>
+      ) : null}
+      {error && projects === null ? (
+        <StatePanel code="!" title="暂时无法读取项目" description="控制服务没有响应。你的项目数据不会受到影响，可以在服务恢复后重新加载。" error>
+          <button className="button-secondary" type="button" onClick={retry}>重新加载</button>
+        </StatePanel>
+      ) : null}
       {error && projects !== null ? <p className="alert alert--error" role="status">刷新失败，正在保留上次读取的真实状态：{error}</p> : null}
       {projects !== null && visible.length ? (
         <section className="project-list" aria-label="项目列表">
           {visible.map((project) => (
             <article className="project-row" key={project.id}>
-              <div><h2>{project.topic}</h2><p>{project.channelId ? `频道 ${project.channelId.slice(0, 8)}` : "未绑定频道"}</p></div>
+              <div><h2>{project.topic}</h2><p>{project.projectKind === "webpage_video" ? "网页视频" : project.projectKind === "full_ai" ? "AI 影片" : project.channelId ? `频道 ${project.channelId.slice(0, 8)}` : "未绑定频道"}</p></div>
               <Badge tone={project.status === "succeeded" ? "success" : ["failed", "cancelled"].includes(project.status) ? "warning" : "accent"}>{labels[project.status]}</Badge>
               <p>Skill {project.composition.skillVersionId.slice(0, 8)} · Pipeline {project.composition.pipelineVersionId.slice(0, 8)}</p>
               <time dateTime={project.updatedAt}>{new Date(project.updatedAt).toLocaleString("zh-CN")}</time>
-              <Link className="button-ghost button-small" href={`/projects/${project.id}`}>查看状态</Link>
+              <Link
+                className="button-ghost button-small"
+                href={project.projectKind === "webpage_video" && project.controlRunId
+                  ? `/webpage-video/${project.controlRunId}`
+                  : `/projects/${project.id}`}
+              >查看状态</Link>
             </article>
           ))}
         </section>
       ) : null}
       {!error && projects !== null && visible.length === 0 ? (
-        <StatePanel code="00" title="这个筛选下还没有项目" description="换一个状态，或从一个主题开始新的创作任务。">
-          <button className="button-secondary" type="button" onClick={() => setFilter("all")}>清除筛选</button>
+        <StatePanel
+          code="00"
+          title={filter === "all" ? "还没有项目" : "这个筛选下还没有项目"}
+          description={filter === "all" ? "从一个主题开始创作，首个项目会出现在这里。" : "换一个状态，或开始新的创作任务。"}
+        >
+          {filter !== "all" ? <button className="button-secondary" type="button" onClick={() => setFilter("all")}>清除筛选</button> : null}
           <Link className="button" href="/create">开始创作</Link>
         </StatePanel>
       ) : null}

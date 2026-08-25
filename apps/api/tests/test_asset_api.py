@@ -183,6 +183,59 @@ class FakeFallbackRemoteAssetGateway(FakeDiverseRemoteAssetGateway):
         )
 
 
+class FakeVerifiedWikimediaGateway:
+    source_url = (
+        "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/a1/"
+        "Apollo_11_Landing_first_steps.ogv/"
+        "Apollo_11_Landing_first_steps.ogv.720p.webm"
+    )
+    evidence_locator = (
+        "https://commons.wikimedia.org/wiki/"
+        "File:Apollo_11_Landing_first_steps.ogv"
+    )
+
+    async def search(
+        self, platform: str, query: str, *, limit: int = 3
+    ) -> tuple[RemoteSearchResult, ...]:
+        del query, limit
+        assert platform == "wikimedia"
+        return (
+            RemoteSearchResult(
+                platform="wikimedia",
+                source_url=self.source_url,
+                external_id="123",
+                title="Apollo 11 Landing first steps",
+                author="NASA",
+                duration_seconds=61.5,
+            ),
+        )
+
+    async def download(self, source_url: str, destination: Path) -> DownloadedAsset:
+        assert source_url == self.source_url
+        path = destination / "apollo-11.webm"
+        data = b"verified-wikimedia-public-domain-video"
+        path.write_bytes(data)
+        return DownloadedAsset(
+            path=path,
+            platform="wikimedia",
+            source_url=source_url,
+            canonical_url=self.evidence_locator,
+            external_id="123",
+            title="Apollo 11 Landing first steps",
+            description="NASA Apollo 11 public-domain footage",
+            author="NASA",
+            license_name="Public domain",
+            filename=path.name,
+            media_type="video/webm",
+            byte_size=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            duration_seconds=61.5,
+            rights_evidence_type="verified_public_domain",
+            rights_evidence_locator=self.evidence_locator,
+            rights_verified_at="2026-08-22T12:00:00Z",
+        )
+
+
 def test_asset_library_upload_and_completion_are_a_real_control_loop() -> None:
     repository = InMemoryControlRepository()
     storage = FakeAssetStorage()
@@ -212,7 +265,7 @@ def test_asset_library_upload_and_completion_are_a_real_control_loop() -> None:
                 "title": "AI 视频工作室",
                 "description": "创作者在电脑前使用 AI 视频工具",
                 "kind": "video",
-                "content_type": "video/mp4",
+                "content_type": " Video/MP4 ",
                 "byte_size": 12,
                 "sha256": digest,
                 "copyright_status": "owned",
@@ -223,13 +276,15 @@ def test_asset_library_upload_and_completion_are_a_real_control_loop() -> None:
         pending = initiated.json()
         assert pending["status"] == "processing"
         assert pending["upload"]["method"] == "PUT"
+        assert pending["file"]["media_type"] == "video/mp4"
+        assert pending["upload"]["headers"]["Content-Type"] == "video/mp4"
 
         completed = client.post(
             f"/v1/asset-uploads/{pending['id']}/complete",
             json={
                 "object_key": pending["file"]["object_key"],
                 "sha256": digest,
-                "content_type": "video/mp4",
+                "content_type": "VIDEO/MP4",
             },
         )
         assert completed.status_code == 200
@@ -412,6 +467,62 @@ def test_topic_acquisition_searches_and_imports_material_before_editing() -> Non
         assert asset["status"] == "processing"
         assert asset["description"] == "宋代城市生活"
         assert "auto-acquired" in asset["metadata"]["tags"]
+        assert "youtube" in asset["metadata"]["tags"]
+        assert "宋代城市生活" not in asset["metadata"]["tags"]
+        assert "Example creator" not in asset["metadata"]["tags"]
+
+
+def test_wikimedia_acquisition_preserves_gateway_verified_public_domain_evidence() -> None:
+    repository = InMemoryControlRepository()
+    gateway = FakeVerifiedWikimediaGateway()
+    with TestClient(
+        create_app(
+            repository=repository,
+            object_storage=FakeAssetStorage(),
+            remote_asset_gateway=gateway,
+            job_queue=FakeQueue(),
+        )
+    ) as client:
+        library = client.post(
+            "/v1/asset-libraries",
+            headers={"Idempotency-Key": "apollo-rights-library"},
+            json={"name": "Apollo 公版素材", "slug": "apollo-pd", "description": ""},
+        ).json()
+
+        response = client.post(
+            "/v1/asset-acquisitions",
+            headers={"Idempotency-Key": "apollo-rights-acquisition"},
+            json={
+                "library_id": library["id"],
+                "queries": ["Apollo 11 moon landing"],
+                "sources": ["wikimedia"],
+                "max_assets": 1,
+                "copyright_status": "licensed",
+                "rights_confirmed": True,
+            },
+        )
+
+        assert response.status_code == 201
+        asset = response.json()["imported_assets"][0]
+        assert asset["copyright_status"] == "public_domain"
+        assert asset["metadata"]["source"]["rights_evidence_type"] == (
+            "verified_public_domain"
+        )
+        assert asset["metadata"]["rights_evidence"] == {
+            "source_type": "website",
+            "locator": gateway.evidence_locator,
+            "provider": "wikimedia",
+            "attribution": "NASA",
+            "license": "Public domain",
+            "evidence_type": "verified_public_domain",
+            "verified_at": "2026-08-22T12:00:00Z",
+            "verification_method": "commons_api_extmetadata",
+        }
+        rights = client.get(
+            f"/v1/assets/{asset['id']}/rights-evidence"
+        ).json()["data"]
+        assert rights[0]["evidence_type"] == "verified_public_domain"
+        assert rights[0]["locator"] == gateway.evidence_locator
 
 
 def test_topic_acquisition_distributes_budget_across_story_queries() -> None:

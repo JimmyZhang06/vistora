@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
@@ -31,7 +32,8 @@ _OBJECT_KEY_RE = re.compile(
     r"^workspaces/(?P<workspace>[0-9a-f-]{36})/objects/(?P<object>[0-9a-f]{32})$"
 )
 _ARTIFACT_KEY_RE = re.compile(
-    r"^workspaces/(?P<workspace>[0-9a-f-]{36})/runs/[0-9a-f-]{36}/"
+    r"^(?:browser-capture/)?workspaces/(?P<workspace>[0-9a-f-]{36})/"
+    r"runs/[0-9a-f-]{36}/"
     r"artifacts/[0-9a-f-]{36}/[^/]+$"
 )
 _ASSET_DERIVED_KEY_RE = re.compile(
@@ -69,12 +71,14 @@ class S3StorageSettings:
     bucket: str
     region: str = "us-east-1"
     endpoint_url: str | None = None
+    public_endpoint_url: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = field(default=None, repr=False)
     session_token: str | None = field(default=None, repr=False)
     addressing_style: AddressingStyle = "auto"
     signed_url_ttl_seconds: int = 900
     verify_tls: bool = True
+    allow_insecure_loopback_public_endpoint: bool = False
 
     @classmethod
     def from_environment(cls, *, prefix: str = "FRAMEFACTORY_S3_") -> S3StorageSettings:
@@ -87,10 +91,25 @@ class S3StorageSettings:
                 f"{prefix}SIGNED_URL_TTL_SECONDS must be an integer"
             ) from exc
 
+        allow_loopback_public_endpoint = _parse_bool(
+            os.getenv(
+                f"{prefix}ALLOW_INSECURE_LOOPBACK_PUBLIC_ENDPOINT", "false"
+            ),
+            prefix=prefix,
+        )
+        if (
+            allow_loopback_public_endpoint
+            and os.getenv("FRAMEFACTORY_ENV", "development").strip().lower()
+            != "development"
+        ):
+            raise S3StorageConfigurationError(
+                f"{prefix}ALLOW_INSECURE_LOOPBACK_PUBLIC_ENDPOINT is development-only"
+            )
         settings = cls(
             bucket=bucket,
             region=os.getenv(f"{prefix}REGION", "us-east-1"),
             endpoint_url=os.getenv(f"{prefix}ENDPOINT_URL") or None,
+            public_endpoint_url=os.getenv(f"{prefix}PUBLIC_ENDPOINT_URL") or None,
             access_key_id=environment_value(f"{prefix}ACCESS_KEY_ID"),
             secret_access_key=environment_value(f"{prefix}SECRET_ACCESS_KEY"),
             session_token=environment_value(f"{prefix}SESSION_TOKEN"),
@@ -99,6 +118,7 @@ class S3StorageSettings:
             ),
             signed_url_ttl_seconds=ttl,
             verify_tls=_parse_bool(os.getenv(f"{prefix}VERIFY_TLS", "true"), prefix=prefix),
+            allow_insecure_loopback_public_endpoint=allow_loopback_public_endpoint,
         )
         settings.validate()
         return settings
@@ -124,6 +144,56 @@ class S3StorageSettings:
                 raise S3StorageConfigurationError(
                     "S3 endpoint URL cannot contain embedded credentials"
                 )
+        if self.public_endpoint_url is not None:
+            public_endpoint = urlparse(self.public_endpoint_url)
+            loopback_http = (
+                self.allow_insecure_loopback_public_endpoint
+                and public_endpoint.scheme == "http"
+                and (public_endpoint.hostname or "").rstrip(".").lower()
+                in {"127.0.0.1", "::1", "localhost"}
+            )
+            if (
+                (public_endpoint.scheme != "https" and not loopback_http)
+                or not public_endpoint.netloc
+            ):
+                raise S3StorageConfigurationError(
+                    "S3 public endpoint URL must be an absolute https:// URL or an "
+                    "explicitly enabled development loopback HTTP origin"
+                )
+            if public_endpoint.path not in {"", "/"}:
+                raise S3StorageConfigurationError(
+                    "S3 public endpoint URL must be an origin without a path"
+                )
+            if public_endpoint.query or public_endpoint.fragment:
+                raise S3StorageConfigurationError(
+                    "S3 public endpoint URL cannot contain a query string or fragment"
+                )
+            if public_endpoint.username is not None or public_endpoint.password is not None:
+                raise S3StorageConfigurationError(
+                    "S3 public endpoint URL cannot contain embedded credentials"
+                )
+            hostname = (public_endpoint.hostname or "").rstrip(".").lower()
+            if not loopback_http:
+                try:
+                    address = ipaddress.ip_address(hostname)
+                except ValueError:
+                    if "." not in hostname or hostname.endswith(
+                        (".localhost", ".local", ".internal", ".home", ".lan")
+                    ):
+                        raise S3StorageConfigurationError(
+                            "S3 public endpoint hostname must be a public DNS name"
+                        ) from None
+                    try:
+                        hostname.encode("idna")
+                    except UnicodeError as exc:
+                        raise S3StorageConfigurationError(
+                            "S3 public endpoint hostname is invalid"
+                        ) from exc
+                else:
+                    if not address.is_global:
+                        raise S3StorageConfigurationError(
+                            "S3 public endpoint IP address must be globally routable"
+                        )
         if bool(self.access_key_id) != bool(self.secret_access_key):
             raise S3StorageConfigurationError(
                 "S3 access key ID and secret access key must either both be set or both be absent"
@@ -148,10 +218,24 @@ class S3ObjectStorage:
     bytes before the object is accepted as durable.
     """
 
-    def __init__(self, settings: S3StorageSettings, *, client: S3Client | None = None) -> None:
+    def __init__(
+        self,
+        settings: S3StorageSettings,
+        *,
+        client: S3Client | None = None,
+        presign_client: S3Client | None = None,
+    ) -> None:
         settings.validate()
         self.settings = settings
         self._client = client or _build_s3_client(settings)
+        self._presign_client = presign_client or (
+            client
+            if client is not None
+            else _build_s3_client(
+                settings,
+                endpoint_url=settings.public_endpoint_url or settings.endpoint_url,
+            )
+        )
 
     async def initiate_upload(
         self,
@@ -173,7 +257,7 @@ class S3ObjectStorage:
             "Metadata": metadata,
         }
         try:
-            url = self._client.generate_presigned_url(
+            url = self._presign_client.generate_presigned_url(
                 "put_object", Params=params, ExpiresIn=ttl, HttpMethod="PUT"
             )
         except Exception as exc:
@@ -251,7 +335,7 @@ class S3ObjectStorage:
         await self._head_and_validate(workspace_id, object)
         ttl = self._validate_ttl(expires_in)
         try:
-            url = self._client.generate_presigned_url(
+            url = self._presign_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.settings.bucket, "Key": object.key},
                 ExpiresIn=ttl,
@@ -407,7 +491,9 @@ class S3ObjectStorage:
         return ObjectStorageUnavailable(f"S3 {action} at {endpoint} ({code})")
 
 
-def _build_s3_client(settings: S3StorageSettings) -> S3Client:
+def _build_s3_client(
+    settings: S3StorageSettings, *, endpoint_url: str | None = None
+) -> S3Client:
     try:
         import boto3
         from botocore.config import Config
@@ -418,7 +504,7 @@ def _build_s3_client(settings: S3StorageSettings) -> S3Client:
 
     kwargs: dict[str, Any] = {
         "region_name": settings.region,
-        "endpoint_url": settings.endpoint_url,
+        "endpoint_url": settings.endpoint_url if endpoint_url is None else endpoint_url,
         "verify": settings.verify_tls,
         "config": Config(
             signature_version="s3v4", s3={"addressing_style": settings.addressing_style}

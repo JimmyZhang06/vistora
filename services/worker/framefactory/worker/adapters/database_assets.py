@@ -54,6 +54,7 @@ class AssetAcquisitionResult:
     imported_count: int
     unresolved_queries: tuple[str, ...]
     provider_errors: tuple[Mapping[str, Any], ...] = ()
+    asset_ids: tuple[str, ...] = ()
 
 
 class AssetAcquirer(Protocol):
@@ -61,13 +62,14 @@ class AssetAcquirer(Protocol):
         self,
         *,
         workspace_id: str,
-        run_id: str,
-        step_id: str,
+        run_id: str | None,
+        step_id: str | None,
         library_id: str,
         queries: tuple[str, ...],
         sources: tuple[str, ...],
         max_assets: int,
         copyright_status: str,
+        idempotency_scope: str | None = None,
     ) -> AssetAcquisitionResult: ...
 
 
@@ -82,13 +84,14 @@ class ControlApiAssetAcquirer:
         self,
         *,
         workspace_id: str,
-        run_id: str,
-        step_id: str,
+        run_id: str | None,
+        step_id: str | None,
         library_id: str,
         queries: tuple[str, ...],
         sources: tuple[str, ...],
         max_assets: int,
         copyright_status: str,
+        idempotency_scope: str | None = None,
     ) -> AssetAcquisitionResult:
         payload = {
             "library_id": library_id,
@@ -97,11 +100,25 @@ class ControlApiAssetAcquirer:
             "max_assets": max_assets,
             "copyright_status": copyright_status,
             "rights_confirmed": True,
-            "run_id": run_id,
-            "step_id": step_id,
         }
+        if run_id is not None:
+            payload["run_id"] = run_id
+        if step_id is not None:
+            payload["step_id"] = step_id
+        if idempotency_scope is not None and (
+            not idempotency_scope.strip() or len(idempotency_scope) > 255
+        ):
+            raise ValueError("asset acquisition idempotency scope is invalid")
+        digest_input: Mapping[str, Any] = payload
+        if idempotency_scope is not None:
+            # The scope separates independent durable jobs without leaking a
+            # worker-only coordination key into the public request contract.
+            digest_input = {
+                "payload": payload,
+                "idempotency_scope": idempotency_scope,
+            }
         digest = hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            json.dumps(digest_input, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()[:32]
         request = urllib.request.Request(
             self._url,
@@ -128,10 +145,18 @@ class ControlApiAssetAcquirer:
             raise PermanentStepError("automatic asset acquisition returned an invalid response")
         unresolved = value.get("unresolved_queries", [])
         errors = value.get("provider_errors", [])
+        imported_assets = value.get("imported_assets", [])
         return AssetAcquisitionResult(
             imported_count=max(0, int(value.get("imported_count", 0))),
             unresolved_queries=tuple(str(item) for item in unresolved if str(item).strip()),
             provider_errors=tuple(item for item in errors if isinstance(item, Mapping)),
+            asset_ids=tuple(
+                dict.fromkeys(
+                    str(item.get("id") or "").strip()
+                    for item in imported_assets
+                    if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+                )
+            ),
         )
 
     def _send(self, request: urllib.request.Request) -> bytes:

@@ -101,6 +101,7 @@ const evidenceLabels: Record<string, string> = {
   topic: "创作主题",
   audience: "目标受众",
   sources: "可靠来源",
+  source_urls: "来源链接",
   provider_protocol: "服务协议",
   width: "画面宽度",
   height: "画面高度",
@@ -110,6 +111,14 @@ const evidenceLabels: Record<string, string> = {
   duration_seconds: "成片时长",
   voice: "配音音色",
   segments: "内容片段",
+  operation: "执行操作",
+  total_beats: "镜头需求",
+  covered_beats: "已覆盖镜头",
+  rights_status: "权利状态",
+  acquired_assets: "已获取素材",
+  action_required: "建议操作",
+  blocking_reason: "阻塞原因",
+  missing_beat_ids: "缺失镜头",
 };
 
 function evidenceLabel(name: string): string {
@@ -123,6 +132,64 @@ function evidenceValue(name: string, value: JsonValue): string {
   if (name === "frame_rate") return `${rendered} fps`;
   if (name === "duration_seconds") return `${rendered} 秒`;
   return rendered;
+}
+
+const technicalSummaryFields = new Set([
+  "acquisition",
+  "acquisition_attempted",
+  "auto_acquisition_enabled",
+  "auto_resume_pending",
+  "candidate_manifest_artifact_id",
+  "external_acquisition_involved",
+  "local_catalog_only",
+  "materialized_assets",
+  "missing_beat_ids",
+  "missing_scenes",
+  "operation",
+  "provider_errors",
+  "provider_errors_total",
+  "provider_errors_truncated",
+  "queried_beat_ids",
+  "queries",
+  "saved_candidates",
+]);
+
+function compositeSummary(name: string, value: JsonValue[] | JsonObject): string {
+  if (Array.isArray(value)) {
+    if (!value.length) return "暂无记录";
+    if (name === "missing_beat_ids" || name === "missing_scenes") return `缺失 ${value.length} 项`;
+    return `共 ${value.length} 项`;
+  }
+  const entries = Object.keys(value);
+  if (!entries.length) return "暂无配置";
+  if (name === "acquisition") {
+    const enabled = value.enabled === true ? "已启用" : "未启用";
+    const attempted = value.attempted === true ? "已尝试" : "未尝试";
+    const imported = typeof value.imported_count === "number" ? ` · 导入 ${value.imported_count} 个` : "";
+    return `${enabled} · ${attempted}${imported}`;
+  }
+  return `共 ${entries.length} 项配置`;
+}
+
+function EvidenceValue({ name, value }: { name: string; value: JsonValue }) {
+  if (Array.isArray(value) || (value !== null && typeof value === "object")) {
+    return (
+      <details className="review-value-details">
+        <summary><span>{compositeSummary(name, value)}</span><em>查看</em></summary>
+        <pre>{displayValue(value)}</pre>
+      </details>
+    );
+  }
+  const rendered = evidenceValue(name, value);
+  if (typeof value === "string" && rendered.length > 180) {
+    return (
+      <details className="review-value-details review-value-details--text">
+        <summary><span>{rendered.slice(0, 150)}…</span><em>展开全文</em></summary>
+        <p>{rendered}</p>
+      </details>
+    );
+  }
+  return <span className="review-value-scalar">{rendered}</span>;
 }
 
 function stepStatusMessage(step: RunStep): string {
@@ -356,6 +423,8 @@ export function RunDetail({ runId }: { runId: string }) {
   const inputEntries = Object.entries(reviewing?.inputSnapshot ?? {})
     .filter(([name]) => !name.startsWith("_"));
   const summaryEntries = Object.entries(reviewing?.outputSummary ?? {});
+  const summaryPrimaryEntries = summaryEntries.filter(([name]) => !technicalSummaryFields.has(name));
+  const summaryTechnicalEntries = summaryEntries.filter(([name]) => technicalSummaryFields.has(name));
   const framefactory = record(reviewing?.inputSnapshot?._framefactory);
   const skillVersion = record(framefactory.skill_version);
   const qcPolicy = record(skillVersion.qc_policy);
@@ -518,11 +587,14 @@ export function RunDetail({ runId }: { runId: string }) {
           <div className="review-evidence">
             <section>
               <div className="review-section-heading"><span>01</span><h3>本步输入</h3></div>
-              {inputEntries.length ? <dl>{inputEntries.map(([name, value]) => <div key={name}><dt>{evidenceLabel(name)}</dt><dd>{evidenceValue(name, value)}</dd></div>)}</dl> : <p>没有额外业务输入。</p>}
+              {inputEntries.length ? <dl>{inputEntries.map(([name, value]) => <div key={name}><dt>{evidenceLabel(name)}</dt><dd><EvidenceValue name={name} value={value} /></dd></div>)}</dl> : <p>没有额外业务输入。</p>}
             </section>
             <section>
               <div className="review-section-heading"><span>02</span><h3>输出摘要</h3></div>
-              {summaryEntries.length ? <dl>{summaryEntries.map(([name, value]) => <div key={name}><dt>{evidenceLabel(name)}</dt><dd>{evidenceValue(name, value)}</dd></div>)}</dl> : <p>执行器没有提供结构化摘要，请直接检查产物。</p>}
+              {summaryEntries.length ? <>
+                {summaryPrimaryEntries.length ? <dl>{summaryPrimaryEntries.map(([name, value]) => <div key={name}><dt>{evidenceLabel(name)}</dt><dd><EvidenceValue name={name} value={value} /></dd></div>)}</dl> : null}
+                {summaryTechnicalEntries.length ? <details className="review-technical-details"><summary>查看技术详情 <span>{summaryTechnicalEntries.length} 项</span></summary><dl>{summaryTechnicalEntries.map(([name, value]) => <div key={name}><dt>{evidenceLabel(name)}</dt><dd><EvidenceValue name={name} value={value} /></dd></div>)}</dl></details> : null}
+              </> : <p>执行器没有提供结构化摘要，请直接检查产物。</p>}
             </section>
             {qcRules.length ? <section className="review-policy"><div className="review-section-heading"><span>03</span><h3>本次适用的检查规则</h3></div><ul>{qcRules.map((rule, index) => <li key={String(rule.id ?? index)}><span className="review-policy-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{String(rule.description ?? rule.id ?? "检查规则")}</strong><small>{String(rule.category ?? "general")} · {String(rule.severity ?? "info")}</small></div><span className="review-policy-action">{String(rule.action ?? "review") === "fail" ? "必须拦截" : "需要复核"}</span></li>)}</ul></section> : null}
           </div>

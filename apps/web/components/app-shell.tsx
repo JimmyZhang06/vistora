@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createFrameFactoryAdapter, type SessionContext } from "@/lib/api";
 import { useI18n, type MessageKey } from "@/lib/i18n";
+import { useTheme } from "@/lib/theme";
 
 const navigation: ReadonlyArray<{ href: string; label: MessageKey; eyebrow: string }> = [
   { href: "/create", label: "shell.nav.create", eyebrow: "01" },
@@ -25,6 +26,7 @@ function isCurrent(pathname: string, href: string) {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { setLocale, t } = useI18n();
+  const { resolvedTheme, toggleResolvedTheme } = useTheme();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -114,6 +116,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="topbar-actions">
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={toggleResolvedTheme}
+            aria-label={resolvedTheme === "dark" ? t("shell.theme.switchToLight") : t("shell.theme.switchToDark")}
+            title={resolvedTheme === "dark" ? t("shell.theme.switchToLight") : t("shell.theme.switchToDark")}
+          >
+            <span className="theme-toggle-icon" aria-hidden="true">{resolvedTheme === "dark" ? "☼" : "◐"}</span>
+            <span className="theme-toggle-label">{resolvedTheme === "dark" ? t("shell.theme.dark") : t("shell.theme.light")}</span>
+          </button>
           <button
             className={`sync-state sync-state--${connection}`}
             type="button"

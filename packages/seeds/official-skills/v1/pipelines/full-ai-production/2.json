@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "id": "6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "全 AI 影片生产",
+  "slug": "full-ai-production",
+  "description": "以真实旁白时序驱动逐镜头生成；生成节点独立发布限定于本 Run 的资产与候选，再进入 Selection、EDL、渲染与最终质检链。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 2,
+  "nodes": [
+    {"key": "write", "operation": "writing.compose.generated", "depends_on": [], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false},
+    {"key": "tts", "operation": "audio.synthesize", "depends_on": ["write"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false},
+    {"key": "generate", "operation": "media.generate", "depends_on": ["write", "tts"], "required": true, "maximum_attempts": 6, "timeout_seconds": 7200, "review_gate": false},
+    {"key": "timeline", "operation": "timeline.align", "depends_on": ["write", "tts", "generate"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false},
+    {"key": "render", "operation": "render.edl", "depends_on": ["tts", "generate", "timeline"], "required": true, "maximum_attempts": 2, "timeout_seconds": 3600, "review_gate": false},
+    {"key": "quality", "operation": "quality.evaluate", "depends_on": ["render"], "required": true, "maximum_attempts": 2, "timeout_seconds": 900, "review_gate": false}
+  ],
+  "capability_requirements": [
+    "model.text_generation",
+    "model.video_generation",
+    "model.generated_video_verification",
+    "writing.compose.generated",
+    "audio.synthesize",
+    "media.generate",
+    "timeline.align",
+    "render.edl",
+    "render.subtitle_sentence",
+    "quality.evaluate"
+  ],
+  "content_hash": "131f77fb42a28c5478af59f5c8b3d238f86fae6496dd4451cc087561d398bebd",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-24T00:00:00Z",
+  "published_at": "2026-08-24T00:00:00Z"
+}

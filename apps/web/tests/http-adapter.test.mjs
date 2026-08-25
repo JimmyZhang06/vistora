@@ -18,6 +18,37 @@ test("production runtime factory is HTTP-only", async () => {
   assert.doesNotMatch(exports, /mock-adapter|createMockAdapter/);
 });
 
+test("Skill creation rejects unavailable distillation and rolls back a partial create", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const requests = [];
+  const skillId = "44444444-4444-4444-8444-444444444444";
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = async (url, init = {}) => {
+    const request = { url: String(url), method: init.method ?? "GET" };
+    requests.push(request);
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/v1/skills" && request.method === "POST") return json({ id: skillId }, 201);
+    if (pathname === "/v1/skill-versions" && request.method === "POST") return json({ code: "INVALID_SKILL_SPEC", message: "invalid spec" }, 422);
+    if (pathname === `/v1/skills/${skillId}` && request.method === "DELETE") return new Response(null, { status: 204 });
+    return json({ code: "NOT_FOUND", message: pathname }, 404);
+  };
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+  const identity = { name: "Creation safety", slug: "creation-safety", description: "Creation rollback fixture.", visibility: "private" };
+
+  const distill = await adapter.createSkill({ kind: "distill", workspaceId: "workspace-1", identity, examples: [] });
+  assert.equal(distill.ok, false);
+  assert.equal(!distill.ok && distill.error.code, "distill_not_available");
+  assert.equal(requests.length, 0, "an unavailable method must not create a substitute Skill");
+
+  const created = await adapter.createSkill({ kind: "blank", workspaceId: "workspace-1", identity, initialSpec: { writingInstructions: "Write clearly." } });
+  assert.equal(created.ok, false);
+  assert.deepEqual(requests.map(({ method, url }) => [method, new URL(url).pathname]), [
+    ["POST", "/v1/skills"],
+    ["POST", "/v1/skill-versions"],
+    ["DELETE", `/v1/skills/${skillId}`],
+  ]);
+});
+
 test("HTTP transport covers control-plane lifecycle and concurrency headers", async () => {
   const adapter = await source("lib/api/http-adapter.ts");
   for (const endpoint of [
@@ -142,6 +173,155 @@ test("asset operations adapter maps cursor pages and all durable asset commands"
   for (const key of ["asset-review-key", "asset-reanalyze-key", "asset-delete-key", "asset-restore-key", "asset-bulk-key"]) {
     assert.ok(requests.some((item) => item.headers.get("Idempotency-Key") === key), key);
   }
+});
+
+test("project list preserves specialized control-plane identities", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const now = "2026-08-24T07:00:00Z";
+  const baseRun = {
+    workspace_id: "22222222-2222-4222-8222-222222222222",
+    channel_id: null,
+    status: "queued",
+    composition_snapshot: {
+      skill_version: { id: "33333333-3333-4333-8333-333333333333" },
+      pipeline_version: { id: "44444444-4444-4444-8444-444444444444" },
+      asset_library_ids: [],
+    },
+    created_by: "11111111-1111-4111-8111-111111111111",
+    created_at: now,
+    updated_at: now,
+  };
+  const fetcher = async () => new Response(JSON.stringify({
+    data: [
+      { ...baseRun, id: "55555555-5555-4555-8555-555555555555", input: { topic: "网页任务", webpage_video_run_id: "66666666-6666-4666-8666-666666666666" } },
+      { ...baseRun, id: "77777777-7777-4777-8777-777777777777", input: { topic: "AI 任务", full_ai_run_id: "88888888-8888-4888-8888-888888888888" } },
+    ],
+    page: { has_more: false, next_cursor: null },
+  }), { headers: { "Content-Type": "application/json" } });
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+
+  const result = await adapter.listRuns();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.data[0].projectKind, "webpage_video");
+  assert.equal(result.ok && result.data[0].controlRunId, "66666666-6666-4666-8666-666666666666");
+  assert.equal(result.ok && result.data[1].projectKind, "full_ai");
+  assert.equal(result.ok && result.data[1].controlRunId, "88888888-8888-4888-8888-888888888888");
+});
+
+test("directory upload keeps relative paths inside the existing source metadata contract", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const requests = [];
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const request = {
+      pathname,
+      method: init.method ?? "GET",
+      body: typeof init.body === "string" ? JSON.parse(init.body) : init.body,
+    };
+    requests.push(request);
+    if (pathname === "/v1/asset-uploads") return json({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      file: { object_key: "workspaces/test/assets/upload.bin" },
+      upload: { url: "https://storage.test/upload.bin", method: "PUT", headers: {} },
+    }, 201);
+    if (String(url) === "https://storage.test/upload.bin") return new Response(null, { status: 200 });
+    if (pathname.endsWith("/complete")) return json({ status: "processing" });
+    return json({ code: "NOT_FOUND", message: pathname }, 404);
+  };
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+  const bytes = new Uint8Array([0, 1, 2, 3]);
+  const file = {
+    name: "clip.mp4",
+    type: "video/mp4",
+    size: bytes.byteLength,
+    arrayBuffer: async () => bytes.buffer,
+  };
+
+  const result = await adapter.uploadAsset({
+    libraryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    file,
+    title: "Clip",
+    description: "Directory clip",
+    copyrightStatus: "owned",
+    tags: [],
+    relativePath: "campaign/day-01/clip.mp4",
+  });
+
+  assert.equal(result.ok, true);
+  const createRequest = requests.find((request) => request.pathname === "/v1/asset-uploads");
+  assert.deepEqual(createRequest.body.source, { type: "local_directory", relative_path: "campaign/day-01/clip.mp4" });
+  assert.equal("relative_path" in createRequest.body, false, "AssetUploadCreate is strict; relative_path must not be a top-level unknown field");
+});
+
+test("library build jobs preserve progress and batch payload separates research from material acquisition", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const requests = [];
+  const now = "2026-08-23T12:00:00Z";
+  const workspaceId = "22222222-2222-4222-8222-222222222222";
+  const libraryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const jobId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const buildJob = {
+    schema_version: "1.0.0", id: jobId, workspace_id: workspaceId, library_id: libraryId,
+    status: "running", stage: "analyze", revision: 4,
+    spec: { topic: "电池生产线", queries: ["battery factory"], sources: ["wikimedia"], max_assets: 6, copyright_status: "public_domain", rights_confirmed: true },
+    progress: { asset_ids: ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"], discovered: 6, transferred: 3, analyzed: 1, indexed: 0, failed: 1 },
+    error: null, created_by: "11111111-1111-4111-8111-111111111111", created_at: now, started_at: now, completed_at: null, updated_at: now,
+  };
+  const batch = {
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", workspace_id: workspaceId, name: "研究批次", status: "queued", total_count: 1,
+    status_counts: { queued: 1, running: 0, awaiting_review: 0, succeeded: 0, failed: 0, cancelled: 0 },
+    composition_snapshot: { skill_version: { id: "skill-version" }, pipeline_version: { id: "pipeline-version" }, asset_library_ids: [libraryId], voice_profile_id: null, render_preset: null },
+    created_by: "11111111-1111-4111-8111-111111111111", created_at: now, updated_at: now,
+  };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const request = { pathname, method: init.method ?? "GET", headers: new Headers(init.headers), body: init.body ? JSON.parse(String(init.body)) : undefined };
+    requests.push(request);
+    if (pathname === "/v1/library-build-jobs" && request.method === "POST") return json(buildJob, 202);
+    if (pathname === `/v1/library-build-jobs/${jobId}/cancel`) return json({ ...buildJob, status: "cancelled", revision: 5, completed_at: now }, 202);
+    if (pathname === `/v1/library-build-jobs/${jobId}`) return json(buildJob);
+    if (pathname === "/v1/generation-batches") return json(batch, 202);
+    return json({ code: "NOT_FOUND", message: pathname }, 404);
+  };
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+
+  const created = await adapter.createLibraryBuildJob({
+    libraryId, topic: "电池生产线", queries: ["battery factory"], sources: ["wikimedia"],
+    maxAssets: 6, copyrightStatus: "public_domain", rightsConfirmed: true,
+  }, "library-build-fixed-key");
+  assert.equal(created.ok && created.data.stage, "analyze");
+  assert.equal(created.ok && created.data.progress.assetIds.length, 1);
+  assert.equal(created.ok && created.data.progress.failed, 1);
+  await adapter.getLibraryBuildJob(jobId);
+  const cancelled = await adapter.cancelLibraryBuildJob(jobId, 4);
+  assert.equal(cancelled.ok && cancelled.data.revision, 5);
+
+  await adapter.createGenerationBatch({
+    workspaceId, name: "研究批次", researchMode: "when_missing", items: [{ topic: "电池产业", inputs: { source_urls: ["https://example.com/report"] } }],
+    composition: { skillVersionId: "skill-version", pipelineVersionId: "pipeline-version", assetLibraryIds: [libraryId] },
+    videoSettings: {
+      language: "zh-CN", aspectRatio: "16:9", targetDurationSeconds: 180, visibility: "private",
+      autoQualityCheck: true, layout: "full_frame", mediaFit: "cover", frameRate: 30,
+      subtitles: { enabled: true, position: "bottom", size: "medium", maxLines: 2 },
+      assetAcquisition: { enabled: true, sources: ["youtube"], maxAssets: 6, copyrightStatus: "licensed", rightsConfirmed: true },
+    },
+  }, "batch-fixed-key");
+
+  const createJobRequest = requests.find((item) => item.pathname === "/v1/library-build-jobs" && item.method === "POST");
+  assert.equal(createJobRequest.headers.get("Idempotency-Key"), "library-build-fixed-key");
+  assert.deepEqual(createJobRequest.body.sources, ["wikimedia"]);
+  assert.equal(createJobRequest.body.rights_confirmed, true);
+  const cancelRequest = requests.find((item) => item.pathname.endsWith("/cancel"));
+  assert.equal(cancelRequest.headers.get("If-Match"), '"4"');
+  const batchRequest = requests.find((item) => item.pathname === "/v1/generation-batches");
+  assert.equal(batchRequest.body.research_mode, "when_missing");
+  assert.deepEqual(batchRequest.body.items[0].inputs.source_urls, ["https://example.com/report"]);
+  assert.deepEqual(batchRequest.body.composition.asset_library_ids, [libraryId]);
+  assert.equal(batchRequest.body.video_settings.asset_acquisition.enabled, false, "batch transport must fail closed even if a caller passes enabled=true");
+  assert.equal(batchRequest.body.video_settings.asset_acquisition.rights_confirmed, false);
 });
 
 test("HTTP adapter maps real resources and sends mutation control headers", async () => {
@@ -385,6 +565,8 @@ test("SkillSpec canonical mapping round-trips fields the form does not edit", as
   ]) assert.deepEqual(patch[key], canonical[key], key);
   assert.equal(ui.modelRequirements.preferredModel, undefined);
   assert.deepEqual(ui.visualPolicy.shotGuidance, ["measured"]);
+  const emptyKindsPatch = skillSpecToCanonicalPatch({ ...ui, assetPolicy: { ...ui.assetPolicy, requiredTags: [] } }, canonical);
+  assert.deepEqual(emptyKindsPatch.asset_policy.allowed_kinds, ["video", "audio"], "an empty editor value must preserve the valid canonical selection");
 });
 
 test("failed validation revision can immediately save the same mutable version", async () => {
@@ -636,4 +818,151 @@ test("Run detail transport reads durable steps and sends cancel and review comma
     issue_codes: ["factuality.unsupported"],
     expected_revision: 2,
   });
+});
+
+test("full-AI transport maps server options and quote without crossing into standard Run composition", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const requests = [];
+  const fullAiRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const projectRunId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const now = "2026-08-23T08:00:00Z";
+  const expiresAt = "2026-08-23T08:10:00Z";
+  const fingerprint = "a".repeat(64);
+  const specBody = {
+    brief: "一座云海城市在清晨苏醒",
+    direction: "cinematic",
+    aspect_ratio: "9:16",
+    duration_seconds: 30,
+    variants_per_scene: 2,
+    continuity: false,
+    ai_disclosure: true,
+  };
+  const run = {
+    schema_version: "1.0.0",
+    id: fullAiRunId,
+    project_run_id: projectRunId,
+    workspace_id: "22222222-2222-4222-8222-222222222222",
+    status: "queued",
+    mode: "generated_only",
+    provider: { name: "runway", model_id: "gen4.5" },
+    spec: specBody,
+    quote: { currency: "USD", amount_minor: 720, expires_at: expiresAt },
+    billing: { status: "not_started", authorized_amount_minor: 720, incurred_amount_minor: 0, requires_reconciliation: false },
+    created_at: now,
+    updated_at: now,
+  };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = async (url, init = {}) => {
+    const parsed = new URL(String(url));
+    const request = {
+      pathname: parsed.pathname,
+      method: init.method ?? "GET",
+      headers: new Headers(init.headers),
+      body: init.body ? JSON.parse(String(init.body)) : undefined,
+    };
+    requests.push(request);
+    if (parsed.pathname === "/v1/full-ai/options") return json({
+      schema_version: "1.0.0",
+      mode: "generated_only",
+      status: "ready",
+      pipeline: { slug: "full-ai-production", version: 1, visual_source_mode: "generated_only" },
+      provider: {
+        name: "runway",
+        model_id: "gen4.5",
+        status: "ready",
+        supports_reconciliation: false,
+        submit_unknown_policy: "manual_only",
+        continuity_modes: ["prompt_pack", "none"],
+      },
+      limits: {
+        brief_max_length: 1600,
+        duration_seconds: [15, 30, 45, 60],
+        aspect_ratios: ["9:16", "16:9"],
+        directions: ["cinematic", "graphic", "illustrated"],
+        variants_per_scene: [1, 2, 3],
+        clip_seconds: 5,
+      },
+      blockers: [],
+    });
+    if (parsed.pathname === "/v1/full-ai/estimate") return json({
+      schema_version: "1.0.0",
+      status: "ready",
+      request_fingerprint: fingerprint,
+      plan: { scene_count: 6, clip_seconds: 5, candidate_count: 12, billable_seconds: 60 },
+      quote: { currency: "USD", amount_minor: 720, expires_at: expiresAt },
+      blockers: [],
+    });
+    if (parsed.pathname === "/v1/full-ai/runs" && request.method === "POST") return json(run, 201);
+    if (parsed.pathname === `/v1/full-ai/runs/${fullAiRunId}`) return json(run);
+    return json({ code: "NOT_FOUND", message: parsed.pathname }, 404);
+  };
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+  const spec = {
+    brief: specBody.brief,
+    direction: specBody.direction,
+    aspectRatio: specBody.aspect_ratio,
+    durationSeconds: specBody.duration_seconds,
+    variantsPerScene: specBody.variants_per_scene,
+    continuity: specBody.continuity,
+    aiDisclosure: specBody.ai_disclosure,
+  };
+
+  const options = await adapter.getFullAiOptions();
+  assert.equal(options.ok && options.data.provider.modelId, "gen4.5");
+  assert.equal(options.ok && options.data.provider.supportsReconciliation, false);
+  assert.equal(options.ok && options.data.provider.submitUnknownPolicy, "manual_only");
+  assert.deepEqual(options.ok && options.data.limits.aspectRatios, ["9:16", "16:9"]);
+  const estimate = await adapter.estimateFullAiRun(spec);
+  assert.equal(estimate.ok && estimate.data.plan.sceneCount, 6);
+  assert.equal(estimate.ok && estimate.data.quote.amountMinor, 720);
+  const created = await adapter.createFullAiRun({
+    ...spec,
+    estimateFingerprint: fingerprint,
+    maxCostMinor: 720,
+    currency: "USD",
+  }, "full-ai-fixed-key");
+  assert.equal(created.ok && created.data.id, fullAiRunId);
+  assert.equal(created.ok && created.data.projectRunId, projectRunId);
+  const loaded = await adapter.getFullAiRun(fullAiRunId);
+  assert.equal(loaded.ok && loaded.data.billing.requiresReconciliation, false);
+
+  assert.deepEqual(requests[1].body, specBody);
+  assert.deepEqual(requests[2].body, {
+    ...specBody,
+    estimate_fingerprint: fingerprint,
+    max_cost_minor: 720,
+    currency: "USD",
+  });
+  assert.equal(requests[2].headers.get("Idempotency-Key"), "full-ai-fixed-key");
+  assert.equal(requests[3].pathname, `/v1/full-ai/runs/${fullAiRunId}`);
+  assert.equal(Object.hasOwn(requests[2].body, "asset_library_ids"), false);
+  assert.equal(Object.hasOwn(requests[2].body, "asset_acquisition"), false);
+});
+
+test("standard composer excludes archived system Skills used only by the full-AI control plane", async () => {
+  const { HttpFrameFactoryAdapter } = await import("../lib/api/http-adapter.ts");
+  const activeSkillId = "11111111-1111-4111-8111-111111111111";
+  const archivedSkillId = "22222222-2222-4222-8222-222222222222";
+  const activePipelineId = "33333333-3333-4333-8333-333333333333";
+  const archivedPipelineId = "44444444-4444-4444-8444-444444444444";
+  const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  const page = (data) => json({ data, page: { has_more: false, next_cursor: null } });
+  const fetcher = async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/v1/skills") return page([
+      { id: activeSkillId, name: "标准创作", status: "active", publisher_type: "system", publisher_name: "Vistora" },
+      { id: archivedSkillId, name: "Full AI director", status: "archived", publisher_type: "system", publisher_name: "Vistora" },
+    ]);
+    if (pathname === "/v1/skill-versions") return page([
+      { id: "active-version", skill_id: activeSkillId, version: "1.0.0", state: "published", default_pipeline_version_id: activePipelineId },
+      { id: "archived-version", skill_id: archivedSkillId, version: "1.0.0", state: "published", default_pipeline_version_id: archivedPipelineId },
+    ]);
+    if (pathname === "/v1/asset-libraries" || pathname === "/v1/channels") return page([]);
+    return new Response(JSON.stringify({ code: "NOT_FOUND", message: pathname }), { status: 404, headers: { "Content-Type": "application/json" } });
+  };
+  const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://api.test", fetch: fetcher });
+  const result = await adapter.getComposerOptions("workspace-1");
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.ok && result.data.skills.map((item) => item.skillName), ["标准创作"]);
+  assert.deepEqual(result.ok && result.data.pipelines.map((item) => item.id), [activePipelineId]);
 });

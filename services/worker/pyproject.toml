@@ -15,6 +15,11 @@ dependencies = [
   "redis>=5,<7",
 ]
 
+[project.optional-dependencies]
+browser-capture = [
+  "playwright==1.62.0",
+]
+
 [project.scripts]
 framefactory-worker = "framefactory.worker.__main__:main"
 framefactory-semantic-timeline-benchmark = "framefactory.worker.semantic_timeline_benchmark:main"

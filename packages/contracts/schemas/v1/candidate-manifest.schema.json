@@ -1,0 +1,578 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/candidate-manifest.schema.json",
+  "title": "CandidateManifest",
+  "description": "Auditable per-Beat candidates from either a frozen local retrieval snapshot or the current Run's generated-only outputs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "operation", "provider", "catalog_scope", "local_catalog_only",
+    "source_script_artifact_id", "coverage", "rights_status", "beats", "materialized_assets"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "operation": { "type": "string", "enum": ["media.retrieve", "media.generate"] },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "catalog_scope": { "type": "string", "enum": ["local", "run"] },
+    "local_catalog_only": { "type": "boolean" },
+    "catalog_snapshot_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "source_script_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "retrieval_policy": { "$ref": "#/$defs/RetrievalPolicy" },
+    "coverage": { "$ref": "#/$defs/Coverage" },
+    "rights_status": { "type": "string", "enum": ["verified", "requires_review"] },
+    "acquisition": { "$ref": "#/$defs/AcquisitionAudit" },
+    "generation": { "$ref": "#/$defs/GenerationAudit" },
+    "beats": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/Beat" }
+    },
+    "materialized_assets": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/MaterializedAsset" }
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "required": ["retrieval_policy", "acquisition"],
+          "properties": {
+            "operation": { "const": "media.retrieve" },
+            "provider": { "const": "database-asset-library" },
+            "catalog_scope": { "const": "local" },
+            "local_catalog_only": { "const": true },
+            "generation": false
+          }
+        },
+        {
+          "required": ["generation"],
+          "properties": {
+            "operation": { "const": "media.generate" },
+            "catalog_scope": { "const": "run" },
+            "local_catalog_only": { "const": false },
+            "catalog_snapshot_id": false,
+            "retrieval_policy": false,
+            "acquisition": false
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "GenerationAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode", "continuity_mode", "generated_material_manifest_artifact_id",
+        "generated_material_manifest_content_hash"
+      ],
+      "properties": {
+        "mode": { "const": "generated_only" },
+        "continuity_mode": { "type": "string", "enum": ["none", "prompt_pack", "reference_frame"] },
+        "generated_material_manifest_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "generated_material_manifest_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" }
+      }
+    },
+    "AcquisitionAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled", "attempted", "step_attempt", "resumed_after_asset_analysis",
+        "library_id", "missing_beat_ids_before", "queried_beat_ids", "queries",
+        "sources", "max_assets", "copyright_status", "imported_count",
+        "unresolved_queries", "provider_errors", "provider_errors_total",
+        "provider_errors_truncated", "auto_resume_pending", "skipped_reason"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "attempted": { "type": "boolean" },
+        "step_attempt": { "type": "integer", "minimum": 1 },
+        "resumed_after_asset_analysis": { "type": "boolean" },
+        "library_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "missing_beat_ids_before": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "queried_beat_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "queries": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "sources": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["youtube", "bilibili", "wikimedia"] }
+        },
+        "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
+        "imported_count": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "unresolved_queries": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "provider_errors": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "provider_errors_total": { "type": "integer", "minimum": 0 },
+        "provider_errors_truncated": { "type": "boolean" },
+        "auto_resume_pending": { "type": "boolean" },
+        "skipped_reason": { "type": ["string", "null"], "maxLength": 160 }
+      }
+    },
+    "RetrievalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_k", "materialize_per_beat", "recall_limit", "minimum_similarity", "tie_break"],
+      "properties": {
+        "top_k": { "type": "integer", "minimum": 1 },
+        "materialize_per_beat": { "type": "integer", "minimum": 1 },
+        "recall_limit": { "type": "integer", "minimum": 1 },
+        "minimum_similarity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "tie_break": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+        }
+      }
+    },
+    "Coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "total_beats", "covered_beats", "missing_beat_ids"],
+      "properties": {
+        "status": { "type": "string", "enum": ["complete", "requires_review"] },
+        "total_beats": { "type": "integer", "minimum": 0 },
+        "covered_beats": { "type": "integer", "minimum": 0 },
+        "missing_beat_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }
+      }
+    },
+    "Beat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "sequence", "narration", "visual_description", "query", "must_match",
+        "must_not_match", "coverage_status", "candidates"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "narration": { "type": "string", "minLength": 1 },
+        "visual_description": { "type": "string", "minLength": 1 },
+        "query": { "type": "string", "minLength": 1 },
+        "must_match": { "$ref": "#/$defs/Terms" },
+        "must_not_match": { "$ref": "#/$defs/Terms" },
+        "coverage_status": { "type": "string", "enum": ["covered", "missing"] },
+        "candidates": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/Candidate" }
+        }
+      }
+    },
+    "Terms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+    },
+    "Candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id", "rank", "eligible", "materialized", "artifact_id", "artifact_filename",
+        "asset_id", "asset_file_id", "analysis_id", "segment_id", "title", "description", "labels",
+        "source_transcript", "asset_kind", "media_type", "content_hash", "byte_size",
+        "source_duration_ms", "source_window", "score",
+        "score_breakdown", "hard_constraints", "rejection_codes", "cut_evidence", "rights_evidence"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "pattern": "^candidate-[a-f0-9]{20}$" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "eligible": { "type": "boolean" },
+        "materialized": { "type": "boolean" },
+        "artifact_id": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/Uuid" },
+            { "type": "null" }
+          ]
+        },
+        "artifact_filename": { "type": ["string", "null"], "maxLength": 255 },
+        "asset_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "asset_file_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "analysis_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "segment_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "title": { "type": "string", "maxLength": 1000 },
+        "description": { "type": "string" },
+        "labels": { "$ref": "#/$defs/Terms" },
+        "source_transcript": { "type": "string" },
+        "asset_kind": { "type": "string", "enum": ["image", "video"] },
+        "media_type": { "$ref": "common.schema.json#/$defs/MediaType" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "byte_size": { "type": "integer", "minimum": 0 },
+        "source_duration_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "source_window": { "$ref": "#/$defs/SourceWindow" },
+        "score": { "type": ["number", "null"] },
+        "score_breakdown": { "$ref": "#/$defs/ScoreBreakdown" },
+        "hard_constraints": { "$ref": "#/$defs/HardConstraints" },
+        "rejection_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "cut_evidence": { "$ref": "#/$defs/CutEvidence" },
+        "rights_evidence": { "$ref": "#/$defs/RightsEvidence" }
+      }
+    },
+    "SourceWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "end_ms", "duration_ms"],
+      "properties": {
+        "start_ms": { "type": "number", "minimum": 0 },
+        "end_ms": { "type": "number", "minimum": 0 },
+        "duration_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ScoreBreakdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lexical_similarity", "label_hits", "label_score", "cut_safe_bonus",
+        "semantic_complete_bonus", "total"
+      ],
+      "properties": {
+        "lexical_similarity": { "type": ["number", "null"] },
+        "label_hits": { "type": "integer", "minimum": 0 },
+        "label_score": { "type": ["number", "null"] },
+        "cut_safe_bonus": { "type": ["number", "null"] },
+        "semantic_complete_bonus": { "type": ["number", "null"] },
+        "total": { "type": ["number", "null"] }
+      }
+    },
+    "HardConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "must_match", "must_not_match"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "must_match": { "$ref": "#/$defs/ConstraintChecks" },
+        "must_not_match": { "$ref": "#/$defs/ConstraintChecks" }
+      }
+    },
+    "ConstraintChecks": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["term", "matched"],
+        "properties": {
+          "term": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "matched": { "type": "boolean" }
+        }
+      }
+    },
+    "CutEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cut_safe", "semantic_complete"],
+      "properties": {
+        "cut_safe": { "type": "boolean" },
+        "semantic_complete": { "type": "boolean" }
+      }
+    },
+    "RightsEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "copyright_status", "status_allowed", "evidence_required", "evidence_present",
+        "verified", "verification_basis", "rejection_codes", "sources"
+      ],
+      "properties": {
+        "copyright_status": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "status_allowed": { "type": "boolean" },
+        "evidence_required": { "type": "boolean" },
+        "evidence_present": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "verification_basis": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "rejection_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "MaterializedAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id", "kind", "filename", "media_type", "content_hash", "byte_size",
+        "asset_id", "asset_file_id"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "kind": { "const": "asset" },
+        "filename": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "media_type": { "$ref": "common.schema.json#/$defs/MediaType" },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "byte_size": { "type": "integer", "minimum": 0 },
+        "asset_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "asset_file_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "operation": "media.retrieve",
+      "provider": "database-asset-library",
+      "catalog_scope": "local",
+      "local_catalog_only": true,
+      "source_script_artifact_id": "11111111-1111-4111-8111-111111111111",
+      "retrieval_policy": {
+        "top_k": 4,
+        "materialize_per_beat": 1,
+        "recall_limit": 48,
+        "minimum_similarity": 0.35,
+        "tie_break": ["eligible", "score", "candidate_id"]
+      },
+      "coverage": {
+        "status": "complete",
+        "total_beats": 1,
+        "covered_beats": 1,
+        "missing_beat_ids": []
+      },
+      "rights_status": "verified",
+      "acquisition": {
+        "enabled": false,
+        "attempted": false,
+        "step_attempt": 1,
+        "resumed_after_asset_analysis": false,
+        "library_id": "77777777-7777-4777-8777-777777777777",
+        "missing_beat_ids_before": [],
+        "queried_beat_ids": [],
+        "queries": [],
+        "sources": ["wikimedia"],
+        "max_assets": 2,
+        "copyright_status": "public_domain",
+        "imported_count": 0,
+        "unresolved_queries": [],
+        "provider_errors": [],
+        "provider_errors_total": 0,
+        "provider_errors_truncated": false,
+        "auto_resume_pending": false,
+        "skipped_reason": "local_coverage_complete"
+      },
+      "beats": [
+        {
+          "id": "beat-001",
+          "sequence": 1,
+          "narration": "阳光在大气中发生散射。",
+          "visual_description": "蓝天与日光",
+          "query": "蓝天 日光",
+          "must_match": ["蓝天"],
+          "must_not_match": [],
+          "coverage_status": "covered",
+          "candidates": [
+            {
+              "candidate_id": "candidate-0123456789abcdefabcd",
+              "rank": 1,
+              "eligible": true,
+              "materialized": true,
+              "artifact_id": "22222222-2222-4222-8222-222222222222",
+              "artifact_filename": "sky.mp4",
+              "asset_id": "33333333-3333-4333-8333-333333333333",
+              "asset_file_id": "44444444-4444-4444-8444-444444444444",
+              "analysis_id": "55555555-5555-4555-8555-555555555555",
+              "segment_id": "66666666-6666-4666-8666-666666666666",
+              "title": "蓝天",
+              "description": "晴朗天空",
+              "labels": ["蓝天"],
+              "source_transcript": "",
+              "asset_kind": "video",
+              "media_type": "video/mp4",
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "byte_size": 2048,
+              "source_duration_ms": 10000,
+              "source_window": {"start_ms": 1000, "end_ms": 6000, "duration_ms": 5000},
+              "score": 0.88,
+              "score_breakdown": {
+                "lexical_similarity": 0.78,
+                "label_hits": 1,
+                "label_score": 0.05,
+                "cut_safe_bonus": 0.03,
+                "semantic_complete_bonus": 0.02,
+                "total": 0.88
+              },
+              "hard_constraints": {
+                "passed": true,
+                "must_match": [{"term": "蓝天", "matched": true}],
+                "must_not_match": []
+              },
+              "rejection_codes": [],
+              "cut_evidence": {"cut_safe": true, "semantic_complete": true},
+              "rights_evidence": {
+                "copyright_status": "owned",
+                "status_allowed": true,
+                "evidence_required": false,
+                "evidence_present": false,
+                "verified": true,
+                "verification_basis": ["copyright_status_owned"],
+                "rejection_codes": [],
+                "sources": []
+              }
+            }
+          ]
+        }
+      ],
+      "materialized_assets": [
+        {
+          "artifact_id": "22222222-2222-4222-8222-222222222222",
+          "kind": "asset",
+          "filename": "sky.mp4",
+          "media_type": "video/mp4",
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "byte_size": 2048,
+          "asset_id": "33333333-3333-4333-8333-333333333333",
+          "asset_file_id": "44444444-4444-4444-8444-444444444444"
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "operation": "media.generate",
+      "provider": "runway",
+      "catalog_scope": "run",
+      "local_catalog_only": false,
+      "source_script_artifact_id": "11111111-1111-4111-8111-111111111111",
+      "coverage": {
+        "status": "complete",
+        "total_beats": 1,
+        "covered_beats": 1,
+        "missing_beat_ids": []
+      },
+      "rights_status": "verified",
+      "generation": {
+        "mode": "generated_only",
+        "continuity_mode": "prompt_pack",
+        "generated_material_manifest_artifact_id": "22222222-2222-4222-8222-222222222222",
+        "generated_material_manifest_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "beats": [
+        {
+          "id": "beat-001",
+          "sequence": 1,
+          "narration": "阳光在大气中发生散射。",
+          "visual_description": "蓝天与日光",
+          "query": "蓝天 日光",
+          "must_match": ["蓝天"],
+          "must_not_match": [],
+          "coverage_status": "covered",
+          "candidates": [
+            {
+              "candidate_id": "candidate-0123456789abcdefabcd",
+              "rank": 1,
+              "eligible": true,
+              "materialized": true,
+              "artifact_id": "33333333-3333-4333-8333-333333333333",
+              "artifact_filename": "generated-beat-001-v01.mp4",
+              "asset_id": "44444444-4444-4444-8444-444444444444",
+              "asset_file_id": "55555555-5555-4555-8555-555555555555",
+              "analysis_id": "66666666-6666-4666-8666-666666666666",
+              "segment_id": "77777777-7777-4777-8777-777777777777",
+              "title": "蓝天",
+              "description": "蓝天与日光",
+              "labels": ["蓝天"],
+              "source_transcript": "",
+              "asset_kind": "video",
+              "media_type": "video/mp4",
+              "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "byte_size": 2048,
+              "source_duration_ms": 5000,
+              "source_window": {"start_ms": 0, "end_ms": 5000, "duration_ms": 5000},
+              "score": null,
+              "score_breakdown": {
+                "lexical_similarity": null,
+                "label_hits": 1,
+                "label_score": null,
+                "cut_safe_bonus": null,
+                "semantic_complete_bonus": null,
+                "total": null
+              },
+              "hard_constraints": {
+                "passed": true,
+                "must_match": [{"term": "蓝天", "matched": true}],
+                "must_not_match": []
+              },
+              "rejection_codes": [],
+              "cut_evidence": {"cut_safe": true, "semantic_complete": true},
+              "rights_evidence": {
+                "copyright_status": "licensed",
+                "status_allowed": true,
+                "evidence_required": true,
+                "evidence_present": true,
+                "verified": true,
+                "verification_basis": ["operator_confirmed_provider_terms_snapshot"],
+                "rejection_codes": [],
+                "sources": [
+                  {
+                    "evidence_type": "operator_confirmed_provider_terms",
+                    "license": "operator-confirmed provider output terms",
+                    "locator": "https://example.test/runway-terms-snapshot",
+                    "verified_at": "2026-08-23T10:00:00Z",
+                    "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "metadata": {
+                      "output_rights_confirmed": true,
+                      "output_rights_license_basis": "operator-confirmed provider output terms",
+                      "terms_content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "materialized_assets": [
+        {
+          "artifact_id": "33333333-3333-4333-8333-333333333333",
+          "kind": "asset",
+          "filename": "generated-beat-001-v01.mp4",
+          "media_type": "video/mp4",
+          "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byte_size": 2048,
+          "asset_id": "44444444-4444-4444-8444-444444444444",
+          "asset_file_id": "55555555-5555-4555-8555-555555555555"
+        }
+      ]
+    }
+  ]
+}

@@ -186,6 +186,7 @@ def load_official_catalog(
     pipeline_contract_validator = _pipeline_validator(validator)
     pipelines: list[OfficialPipelineSeed] = []
     pipeline_version_ids: set[str] = set()
+    pipeline_versions: set[tuple[str, int]] = set()
     for entry in pipeline_entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Official Pipeline manifest entries must be objects")
@@ -205,6 +206,10 @@ def load_official_catalog(
         if pipeline["workspace_id"] != workspace_id:
             raise RuntimeError("Official Pipelines must use the manifest system workspace")
         slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            raise RuntimeError("Official Pipeline manifest entries require a slug")
+        if pipeline["slug"] != slug:
+            raise RuntimeError("Official Pipeline slug differs from its manifest entry")
         version_number = pipeline["version"]
         expected_pipeline_id = str(uuid5(namespace, f"pipeline:{slug}"))
         expected_version_id = str(
@@ -218,11 +223,24 @@ def load_official_catalog(
         if pipeline["content_hash"] != digest or entry.get("expected_content_hash") != digest:
             raise RuntimeError("Official Pipeline content hash differs from canonical content")
         _validate_pipeline_graph(pipeline)
+        semantic_version = (expected_pipeline_id, version_number)
+        if pipeline["id"] in pipeline_version_ids or semantic_version in pipeline_versions:
+            raise RuntimeError("Official manifest repeats a PipelineVersion")
         pipeline_version_ids.add(pipeline["id"])
+        pipeline_versions.add(semantic_version)
         pipelines.append(OfficialPipelineSeed(str(entry.get("pipeline_id")), pipeline))
 
+    # PostgreSQL sets a Pipeline's current_version_id while inserting these seeds.
+    # A stable ascending order makes the highest packaged numeric version current,
+    # independent of the manifest array's presentation order.
+    pipelines.sort(key=lambda seed: (seed.pipeline_id, seed.version["version"]))
+
     skills: list[dict[str, Any]] = []
+    skills_by_id: dict[str, dict[str, Any]] = {}
     versions: list[dict[str, Any]] = []
+    version_ids: set[str] = set()
+    semantic_versions: set[tuple[str, str]] = set()
+    version_ids_by_skill: dict[str, set[str]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Official seed manifest entries must be objects")
@@ -236,12 +254,47 @@ def load_official_catalog(
             raise RuntimeError("Official catalog resources must use the manifest system workspace")
         if version["skill_id"] != skill["id"]:
             raise RuntimeError("Official SkillVersion does not belong to its manifest Skill")
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            raise RuntimeError("Official Skill manifest entries require a slug")
+        if skill["slug"] != slug:
+            raise RuntimeError("Official Skill slug differs from its manifest entry")
+        expected_skill_id = str(uuid5(namespace, f"skill:{slug}"))
+        expected_version_id = str(
+            uuid5(namespace, f"skill-version:{slug}:{version['version']}")
+        )
+        if skill["id"] != expected_skill_id or version["skill_id"] != expected_skill_id:
+            raise RuntimeError("Official Skill ID is not deterministic")
+        if version["id"] != expected_version_id:
+            raise RuntimeError("Official SkillVersion ID is not deterministic")
         if version["default_pipeline_version_id"] not in pipeline_version_ids:
             raise RuntimeError("Official SkillVersion must reference a packaged Pipeline")
         digest = _content_hash(version, SKILL_VERSION_HASH_FIELDS)
         if version["content_hash"] != digest or entry.get("expected_content_hash") != digest:
             raise RuntimeError("Official SkillVersion content hash differs from canonical content")
-        skills.append(skill)
+        existing_skill = skills_by_id.get(skill["id"])
+        if existing_skill is None:
+            skills_by_id[skill["id"]] = skill
+            skills.append(skill)
+        elif existing_skill != skill:
+            raise RuntimeError("Official manifest repeats a Skill with conflicting content")
+        semantic_version = (skill["id"], version["version"])
+        if semantic_version in semantic_versions:
+            raise RuntimeError("Official manifest repeats a Skill semantic version")
+        if version["id"] in version_ids:
+            raise RuntimeError("Official manifest repeats a SkillVersion")
+        semantic_versions.add(semantic_version)
+        version_ids.add(version["id"])
+        version_ids_by_skill.setdefault(skill["id"], set()).add(version["id"])
         versions.append(version)
+
+    for skill in skills:
+        current_version_id = skill.get("current_version_id")
+        if current_version_id is not None and current_version_id not in version_ids_by_skill.get(
+            skill["id"], set()
+        ):
+            raise RuntimeError(
+                "Official Skill current_version_id must reference a packaged SkillVersion"
+            )
 
     return skills, OfficialSkillVersions(versions, pipelines=tuple(pipelines))

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/library-build-job.schema.json",
+  "title": "LibraryBuildJob",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "workspace_id", "library_id", "status", "stage",
+    "spec", "progress", "error", "revision", "created_by", "created_at",
+    "started_at", "completed_at", "updated_at"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "workspace_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "library_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "running", "completed", "completed_with_errors", "failed", "cancelled"]
+    },
+    "stage": { "type": "string", "enum": ["discover", "transfer", "analyze", "index"] },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "queries", "sources", "max_assets", "copyright_status", "rights_confirmed"],
+      "properties": {
+        "topic": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "queries": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["youtube", "bilibili", "wikimedia"] }
+        },
+        "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
+        "rights_confirmed": { "const": true }
+      }
+    },
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_ids", "discovered", "transferred", "analyzed", "indexed", "failed"],
+      "properties": {
+        "asset_ids": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" }
+        },
+        "discovered": { "type": "integer", "minimum": 0 },
+        "transferred": { "type": "integer", "minimum": 0 },
+        "analyzed": { "type": "integer", "minimum": 0 },
+        "indexed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "additionalProperties": true }
+      ]
+    },
+    "revision": { "type": "integer", "minimum": 1 },
+    "created_by": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "started_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "completed_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  }
+}

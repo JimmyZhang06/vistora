@@ -45,10 +45,12 @@ export function StatePanel({
   children?: React.ReactNode;
   error?: boolean;
 }) {
+  const codeShape = code.length > 3 ? "pill" : "circle";
+
   return (
     <section className="state-panel" role={error ? "alert" : undefined}>
       <div>
-        <span className="state-code" aria-hidden="true">{code}</span>
+        <span className="state-code" data-shape={codeShape} aria-hidden="true">{code}</span>
         <h2>{title}</h2>
         <p>{description}</p>
         {children ? <div className="button-row" style={{ justifyContent: "center" }}>{children}</div> : null}

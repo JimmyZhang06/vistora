@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
@@ -17,6 +19,7 @@ from framefactory.runtime import PermanentStepError, RetryableStepError
 from framefactory.skills.canonical import thaw_json
 from framefactory.steps import ArtifactRef, StepContext, StepResult
 from framefactory.worker.providers import ArtifactStorage, ProviderArtifact
+from framefactory.worker.retrieval.beats import normalize_beats
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class HttpRequest:
     headers: Mapping[str, str] = field(repr=False)
     body: bytes = field(repr=False)
     timeout_seconds: float
+    maximum_response_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,106 @@ class HttpTransport(Protocol):
     def send(self, request: HttpRequest) -> HttpResponse: ...
 
 
+class ResearchSearchGateway(Protocol):
+    """Explicit web-search boundary; a text model is never treated as search."""
+
+    def search(
+        self,
+        *,
+        query: str,
+        limit: int,
+    ) -> Sequence[Mapping[str, Any]] | Awaitable[Sequence[Mapping[str, Any]]]: ...
+
+
+class HttpsJsonResearchSearchGateway:
+    """Bounded vendor-neutral search adapter; it never synthesizes source URLs."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        bearer_token: str,
+        timeout_seconds: float,
+        maximum_response_bytes: int = 1_048_576,
+        transport: HttpTransport | None = None,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("research search endpoint must be a credential-free HTTPS URL")
+        if not bearer_token:
+            raise ValueError("research search bearer token must not be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("research search timeout must be positive")
+        if not 1_024 <= maximum_response_bytes <= 4_194_304:
+            raise ValueError("research search response limit is outside the safe range")
+        self._url = url
+        self._bearer_token = bearer_token
+        self._timeout_seconds = timeout_seconds
+        self._maximum_response_bytes = maximum_response_bytes
+        self._transport = transport or UrllibTransport()
+
+    async def search(
+        self,
+        *,
+        query: str,
+        limit: int,
+    ) -> Sequence[Mapping[str, Any]]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise PermanentStepError("research search query must not be empty")
+        if len(normalized_query) > 2_000:
+            raise PermanentStepError("research search query exceeded 2000 characters")
+        if not 1 <= limit <= 10:
+            raise PermanentStepError("research search limit must be between 1 and 10")
+        request = HttpRequest(
+            url=self._url,
+            headers={
+                "Authorization": f"Bearer {self._bearer_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            body=json.dumps(
+                {"query": normalized_query, "limit": limit},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            timeout_seconds=self._timeout_seconds,
+            maximum_response_bytes=self._maximum_response_bytes,
+        )
+        response = await asyncio.to_thread(self._transport.send, request)
+        if response.status in {408, 409, 425, 429} or response.status >= 500:
+            raise RetryableStepError(
+                f"research search endpoint returned retryable HTTP {response.status}"
+            )
+        if response.status < 200 or response.status >= 300:
+            raise PermanentStepError(
+                f"research search endpoint rejected the request with HTTP {response.status}"
+            )
+        if len(response.body) > self._maximum_response_bytes:
+            raise PermanentStepError("research search response exceeded its configured limit")
+        try:
+            envelope = json.loads(response.body)
+            results = envelope["results"]
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PermanentStepError(
+                "research search endpoint returned an invalid JSON response"
+            ) from exc
+        if not isinstance(results, list) or any(
+            not isinstance(item, Mapping) for item in results
+        ):
+            raise PermanentStepError(
+                "research search endpoint results must be an array of objects"
+            )
+        return tuple(results[:limit])
+
+
 class UrllibTransport:
     def send(self, request: HttpRequest) -> HttpResponse:
         raw = urllib.request.Request(
@@ -45,11 +149,16 @@ class UrllibTransport:
             headers=dict(request.headers),
             method="POST",
         )
+        read_limit = (
+            request.maximum_response_bytes + 1
+            if request.maximum_response_bytes is not None
+            else -1
+        )
         try:
             with urllib.request.urlopen(raw, timeout=request.timeout_seconds) as response:
-                return HttpResponse(status=response.status, body=response.read())
+                return HttpResponse(status=response.status, body=response.read(read_limit))
         except urllib.error.HTTPError as exc:
-            return HttpResponse(status=exc.code, body=exc.read())
+            return HttpResponse(status=exc.code, body=exc.read(read_limit))
         except (TimeoutError, urllib.error.URLError) as exc:
             raise RetryableStepError("configured model provider is temporarily unreachable") from exc
 
@@ -102,6 +211,7 @@ class OpenAICompatibleClient:
             },
             body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             timeout_seconds=self._timeout_seconds,
+            maximum_response_bytes=4 * 1024 * 1024,
         )
         response = await asyncio.to_thread(self._transport.send, request)
         if response.status in {400, 422}:
@@ -127,6 +237,7 @@ class OpenAICompatibleClient:
                 headers=request.headers,
                 body=json.dumps(fallback_body, ensure_ascii=False).encode("utf-8"),
                 timeout_seconds=self._timeout_seconds,
+                maximum_response_bytes=4 * 1024 * 1024,
             )
             response = await asyncio.to_thread(self._transport.send, fallback_request)
         if response.status in {408, 409, 425, 429} or response.status >= 500:
@@ -154,15 +265,73 @@ class OpenAICompatibleClient:
 
 
 class OpenAIResearchCapability:
-    def __init__(self, client: OpenAICompatibleClient, storage: ArtifactStorage) -> None:
+    def __init__(
+        self,
+        client: OpenAICompatibleClient,
+        storage: ArtifactStorage,
+        *,
+        search_gateway: ResearchSearchGateway | None = None,
+    ) -> None:
         self.client = client
         self.storage = storage
+        self.search_gateway = search_gateway
 
     async def execute(self, context: StepContext) -> StepResult:
         await context.checkpoint()
         snapshot = context.input_snapshot.to_dict()
         supplied_urls = _supplied_https_urls(snapshot)
         minimum_sources = _minimum_research_sources(snapshot)
+        research_mode = _research_mode(snapshot)
+        if research_mode == "off":
+            if len(supplied_urls) < minimum_sources:
+                raise _research_sources_error(
+                    mode=research_mode,
+                    minimum_sources=minimum_sources,
+                    available_sources=len(supplied_urls),
+                    search_attempted=False,
+                )
+            return _offline_research_result(
+                context,
+                storage=self.storage,
+                snapshot=snapshot,
+                supplied_urls=supplied_urls,
+                minimum_sources=minimum_sources,
+            )
+
+        search_sources: tuple[dict[str, str], ...] = ()
+        search_attempted = False
+        if research_mode in {"when_missing", "required"} and (
+            research_mode == "required" or len(supplied_urls) < minimum_sources
+        ):
+            search_attempted = True
+            if self.search_gateway is None:
+                raise PermanentStepError(
+                    "research policy requires a configured web-search capability",
+                    code="research_search_unavailable",
+                    details={
+                        "research_mode": research_mode,
+                        "minimum_sources": minimum_sources,
+                        "supplied_sources": len(supplied_urls),
+                    },
+                )
+            search_sources = await _search_research_sources(
+                self.search_gateway,
+                snapshot=snapshot,
+                limit=max(1, minimum_sources),
+                research_mode=research_mode,
+            )
+        searched_urls = tuple(item["url"] for item in search_sources)
+        allowed_urls = _deduplicate_https_urls((*supplied_urls, *searched_urls))
+        if research_mode in {"when_missing", "required"} and (
+            len(allowed_urls) < minimum_sources
+            or (research_mode == "required" and not searched_urls)
+        ):
+            raise _research_sources_error(
+                mode=research_mode,
+                minimum_sources=minimum_sources,
+                available_sources=len(allowed_urls),
+                search_attempted=search_attempted,
+            )
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -189,47 +358,51 @@ class OpenAIResearchCapability:
             system=(
                 "Produce a research brief only from the supplied immutable run input and policy. "
                 "Do not invent sources; use an empty sources list when no verifiable source is supplied. "
-                "Every URL in supplied_source_urls was explicitly provided for this Run. When that "
-                "list is non-empty, cite only those exact URLs and connect each claim to its source. "
+                "Every URL in allowed_source_urls came from immutable Run input or the configured "
+                "search gateway. Cite only those exact URLs and connect each claim to its source. "
                 "A URL is not evidence for an unrelated event: keep the cited event, year and claim "
                 "consistent with the URL/title. Recalculate every stated day interval from its dates."
             ),
-            payload={"run": snapshot, "supplied_source_urls": list(supplied_urls)},
+            payload={
+                "run": snapshot,
+                "allowed_source_urls": list(allowed_urls),
+                "search_results": list(search_sources),
+            },
             schema=schema,
         )
-        if supplied_urls and not result.get("sources"):
+        valid_sources = _normalize_research_sources(
+            result.get("sources"), allowed_urls
+        )
+        result = {**dict(result), "sources": valid_sources}
+        required_supplied_sources = min(minimum_sources, len(allowed_urls))
+        if len(valid_sources) < required_supplied_sources:
             result = await self.client.structured(
                 operation="research.collect",
                 system=(
                     "Revise the research brief using the explicitly supplied HTTPS sources. "
-                    "Return at least one source entry per relevant supplied URL, preserve each "
-                    "URL exactly, and do not add any URL that is not supplied."
+                    "Return at least one source entry for each supplied URL needed to satisfy "
+                    "minimum_sources. Each source must use a different supplied URL, preserve "
+                    "that URL exactly, and never repeat one URL under multiple claims. Do not "
+                    "add any URL that is not supplied."
                 ),
                 payload={
                     "run": snapshot,
                     "draft": dict(result),
-                    "supplied_source_urls": list(supplied_urls),
+                    "supplied_source_urls": list(allowed_urls),
+                    "minimum_unique_sources": minimum_sources,
                 },
                 schema=schema,
             )
-        sources = result.get("sources", [])
-        valid_sources = [
-            item
-            for item in sources
-            if isinstance(item, Mapping)
-            and (
-                not supplied_urls
-                or str(item.get("url", "")).rstrip("/")
-                in {value.rstrip("/") for value in supplied_urls}
-            )
-        ]
+        valid_sources = _normalize_research_sources(
+            result.get("sources"), allowed_urls
+        )
         result = {**dict(result), "sources": valid_sources}
         validation_issues = _research_validation_issues(
             result,
-            supplied_urls,
+            allowed_urls,
             snapshot,
         )
-        if validation_issues and supplied_urls:
+        if validation_issues and allowed_urls:
             result = await self.client.structured(
                 operation="research.collect",
                 system=(
@@ -243,22 +416,17 @@ class OpenAIResearchCapability:
                     "run": snapshot,
                     "draft": dict(result),
                     "validation_issues": list(validation_issues),
-                    "supplied_source_urls": list(supplied_urls),
+                    "supplied_source_urls": list(allowed_urls),
                 },
                 schema=schema,
             )
-            sources = result.get("sources", [])
-            valid_sources = [
-                item
-                for item in sources
-                if isinstance(item, Mapping)
-                and str(item.get("url", "")).rstrip("/")
-                in {value.rstrip("/") for value in supplied_urls}
-            ]
+            valid_sources = _normalize_research_sources(
+                result.get("sources"), allowed_urls
+            )
             result = {**dict(result), "sources": valid_sources}
             validation_issues = _research_validation_issues(
                 result,
-                supplied_urls,
+                allowed_urls,
                 snapshot,
             )
         if validation_issues:
@@ -271,9 +439,43 @@ class OpenAIResearchCapability:
             )
             validation_issues = _research_validation_issues(
                 result,
-                supplied_urls,
+                allowed_urls,
                 snapshot,
             )
+        valid_sources = _normalize_research_sources(
+            result.get("sources"), allowed_urls
+        )
+        valid_sources, recovered_brief_sources = _recover_brief_citations(
+            valid_sources,
+            brief=result.get("brief"),
+            supplied_urls=allowed_urls,
+        )
+        result = {**dict(result), "sources": valid_sources}
+        validation_issues = _research_validation_issues(
+            result,
+            allowed_urls,
+            snapshot,
+        )
+        if research_mode in {"when_missing", "required"}:
+            used_keys = {
+                key
+                for item in valid_sources
+                if (key := _https_url_key(item.get("url"))) is not None
+            }
+            searched_keys = {
+                key
+                for value in searched_urls
+                if (key := _https_url_key(value)) is not None
+            }
+            if len(valid_sources) < minimum_sources or (
+                research_mode == "required" and not used_keys.intersection(searched_keys)
+            ):
+                raise _research_sources_error(
+                    mode=research_mode,
+                    minimum_sources=minimum_sources,
+                    available_sources=len(valid_sources),
+                    search_attempted=search_attempted,
+                )
         artifact = self.storage.publish(
             context,
             ProviderArtifact(
@@ -288,12 +490,21 @@ class OpenAIResearchCapability:
             output_summary={
                 "provider_protocol": "openai-compatible",
                 "sources": len(valid_sources),
+                "unique_sources": len(valid_sources),
                 "minimum_sources": minimum_sources,
                 "supplied_sources": len(supplied_urls),
+                "searched_sources": len(searched_urls),
+                "research_mode": research_mode or "legacy",
+                "search_attempted": search_attempted,
+                "recovered_brief_sources": recovered_brief_sources,
                 "validation_issues": list(validation_issues),
             },
             requires_review=(
-                len(valid_sources) < minimum_sources or bool(validation_issues)
+                bool(validation_issues)
+                or (
+                    research_mode is None
+                    and len(valid_sources) < minimum_sources
+                )
             ),
         )
 
@@ -305,10 +516,25 @@ class OpenAIWritingCapability:
 
     async def execute(self, context: StepContext) -> StepResult:
         research = _required_artifact(context, "research")
+        inventory = _optional_artifact(context, "inventory")
         snapshot = context.input_snapshot.to_dict()
         target_duration = _target_duration_seconds(snapshot)
         prompt_snapshot = _effective_writing_snapshot(snapshot, target_duration)
         research_payload = dict(self.storage.read_json(research))
+        inventory_payload = (
+            dict(self.storage.read_json(inventory)) if inventory is not None else None
+        )
+        inventory_coverage = (
+            inventory_payload.get("coverage")
+            if isinstance(inventory_payload, Mapping)
+            else None
+        )
+        inventory_missing_concepts = (
+            list(inventory_coverage.get("missing_concepts", []))
+            if isinstance(inventory_coverage, Mapping)
+            and isinstance(inventory_coverage.get("missing_concepts", []), list)
+            else []
+        )
         narration_bounds = (
             _narration_character_bounds(target_duration)
             if target_duration is not None
@@ -373,7 +599,10 @@ class OpenAIWritingCapability:
                 "occurred. When research has no sources, paraphrase only facts explicitly supplied "
                 "by the user and do not write direct quotations. Do not make a website, no-data "
                 "screen, data table or title card a required footage scene; express such information "
-                "as an overlay on conservative, searchable B-roll. Do not invent a point outcome, "
+                "as an overlay on conservative, searchable B-roll. When a frozen inventory summary "
+                "is supplied, keep required visual Beats within its covered concepts and representative "
+                "subjects; missing concepts are warnings, never evidence that footage exists. "
+                "Do not invent a point outcome, "
                 "opponent error, crowd reaction or coaching action."
                 " Return scenes as chronological atomic visual beats: each array item must describe "
                 "one independently retrievable subject, place, action or state. Never combine "
@@ -385,6 +614,7 @@ class OpenAIWritingCapability:
             payload={
                 "run": prompt_snapshot,
                 "research": research_payload,
+                "inventory": inventory_payload,
                 "human_review_feedback": context.review_feedback,
             },
             schema=schema,
@@ -420,6 +650,7 @@ class OpenAIWritingCapability:
                 payload={
                     "run": prompt_snapshot,
                     "research": research_payload,
+                    "inventory": inventory_payload,
                     "draft": dict(result),
                     "human_review_feedback": context.review_feedback,
                 },
@@ -447,6 +678,7 @@ class OpenAIWritingCapability:
                     payload={
                         "run": prompt_snapshot,
                         "research": research_payload,
+                        "inventory": inventory_payload,
                         "draft": dict(result),
                         "human_review_feedback": context.review_feedback,
                     },
@@ -492,6 +724,8 @@ class OpenAIWritingCapability:
                 "narration_character_bounds": list(narration_bounds or ()),
                 "duration_fit": duration_fit,
                 "grounding_issues": list(grounding_issues),
+                "inventory_constrained": inventory_payload is not None,
+                "inventory_missing_concepts": inventory_missing_concepts,
             },
             requires_review=not duration_fit or bool(grounding_issues),
         )
@@ -542,8 +776,182 @@ def _required_artifact(context: StepContext, kind: str) -> ArtifactRef:
         raise PermanentStepError(f"required {kind} artifact is unavailable") from exc
 
 
+def _optional_artifact(context: StepContext, kind: str) -> ArtifactRef | None:
+    return next((item for item in context.input_artifacts if item.kind == kind), None)
+
+
 def _json_bytes(value: Mapping[str, Any]) -> bytes:
     return json.dumps(thaw_json(value), ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def _research_mode(snapshot: Mapping[str, Any]) -> str | None:
+    value = snapshot.get("research_mode")
+    if value is None:
+        # Historical v1/v2 Runs did not freeze this policy and keep their
+        # existing provider/review behavior.
+        return None
+    mode = str(value).strip().casefold()
+    if mode not in {"off", "when_missing", "required"}:
+        raise PermanentStepError(
+            "run input contains an invalid research_mode",
+            code="research_policy_invalid",
+            details={"research_mode": str(value)},
+        )
+    return mode
+
+
+def _research_sources_error(
+    *,
+    mode: str,
+    minimum_sources: int,
+    available_sources: int,
+    search_attempted: bool,
+) -> PermanentStepError:
+    return PermanentStepError(
+        "research policy does not have enough verifiable HTTPS sources",
+        code="research_sources_required",
+        details={
+            "research_mode": mode,
+            "minimum_sources": minimum_sources,
+            "available_sources": available_sources,
+            "missing_sources": max(0, minimum_sources - available_sources),
+            "search_attempted": search_attempted,
+        },
+    )
+
+
+def _offline_research_result(
+    context: StepContext,
+    *,
+    storage: ArtifactStorage,
+    snapshot: Mapping[str, Any],
+    supplied_urls: tuple[str, ...],
+    minimum_sources: int,
+) -> StepResult:
+    """Publish only user-provided facts; this path performs no network call."""
+
+    fact_lines: list[str] = []
+    for key in ("topic", "angle", "brief", "facts", "context"):
+        value = snapshot.get(key)
+        if isinstance(value, str) and value.strip():
+            fact_lines.append(f"{key}: {value.strip()}")
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            if items:
+                fact_lines.append(f"{key}: {'; '.join(items[:100])}")
+    brief = "\n".join(fact_lines).strip()
+    if not brief:
+        brief = "No user-supplied factual brief was provided."
+    sources = [
+        {
+            "title": f"User-supplied source {index}",
+            "url": url,
+            "claim": (
+                "The user supplied this source URL; its contents were not fetched "
+                "because research_mode is off."
+            ),
+        }
+        for index, url in enumerate(supplied_urls, start=1)
+    ]
+    artifact = storage.publish(
+        context,
+        ProviderArtifact(
+            kind="research",
+            filename="research.json",
+            media_type="application/json",
+            data=_json_bytes(
+                {
+                    "brief": brief,
+                    "sources": sources,
+                    "research_mode": "off",
+                    "network_accessed": False,
+                }
+            ),
+        ),
+    )
+    return StepResult(
+        artifacts=(artifact,),
+        output_summary={
+            "provider_protocol": "offline",
+            "research_mode": "off",
+            "network_accessed": False,
+            "search_attempted": False,
+            "sources": len(sources),
+            "unique_sources": len(sources),
+            "minimum_sources": minimum_sources,
+            "supplied_sources": len(supplied_urls),
+            "validation_issues": [],
+        },
+    )
+
+
+async def _search_research_sources(
+    gateway: ResearchSearchGateway,
+    *,
+    snapshot: Mapping[str, Any],
+    limit: int,
+    research_mode: str,
+) -> tuple[dict[str, str], ...]:
+    query = str(snapshot.get("topic") or "").strip()
+    if not query:
+        query = _user_input_text(snapshot).strip()[:1000]
+    try:
+        result = gateway.search(query=query, limit=min(10, max(1, limit)))
+        if inspect.isawaitable(result):
+            result = await result
+    except RetryableStepError as exc:
+        raise RetryableStepError(
+            "configured research search is temporarily unavailable",
+            retry_after_seconds=exc.retry_after_seconds,
+            code="research_search_unavailable",
+            details={"research_mode": research_mode},
+        ) from exc
+    except PermanentStepError as exc:
+        raise PermanentStepError(
+            "configured research search rejected the request",
+            code="research_search_unavailable",
+            details={"research_mode": research_mode},
+        ) from exc
+    except Exception as exc:
+        raise RetryableStepError(
+            "configured research search is temporarily unavailable",
+            code="research_search_unavailable",
+            details={"research_mode": research_mode},
+        ) from exc
+    if not isinstance(result, Sequence) or isinstance(result, (str, bytes)):
+        raise PermanentStepError(
+            "configured research search returned an invalid result",
+            code="research_search_unavailable",
+            details={"research_mode": research_mode},
+        )
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in result:
+        if not isinstance(item, Mapping):
+            continue
+        url = str(item.get("url") or "").strip()
+        key = _https_url_key(url)
+        title = str(item.get("title") or "").strip()
+        claim = str(item.get("claim") or item.get("snippet") or "").strip()
+        if key is None or key in seen or not title or not claim:
+            continue
+        seen.add(key)
+        normalized.append({"title": title, "url": url, "claim": claim})
+        if len(normalized) == min(10, max(1, limit)):
+            break
+    return tuple(normalized)
+
+
+def _deduplicate_https_urls(values: Sequence[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = _https_url_key(value)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return tuple(result)
 
 
 def _supplied_https_urls(snapshot: Mapping[str, Any]) -> tuple[str, ...]:
@@ -553,9 +961,135 @@ def _supplied_https_urls(snapshot: Mapping[str, Any]) -> tuple[str, ...]:
     user_input = _user_input_text(snapshot)
     values = (
         match.rstrip(".,;:!?)]}，。；：！？）】》")
-        for match in re.findall(r"https://[^\s<>\"']+", user_input)
+        for match in re.findall(
+            r"https://[^\s<>\"']+", user_input, flags=re.IGNORECASE
+        )
     )
-    return tuple(dict.fromkeys(value for value in values if len(value) <= 2048))[:10]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = _https_url_key(value)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+        if len(result) == 10:
+            break
+    return tuple(result)
+
+
+def _normalize_research_sources(
+    value: object,
+    supplied_urls: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Return one source per unique, explicitly allowed HTTPS URL.
+
+    The model is not a source-discovery transport. A syntactically valid URL is
+    still evidence only when it was present in the immutable Run input. Keep the
+    exact supplied spelling in the artifact so downstream audits can compare it
+    without URL-rewrite ambiguity.
+    """
+
+    allowed = {
+        key: supplied
+        for supplied in supplied_urls
+        if (key := _https_url_key(supplied)) is not None
+    }
+    if not allowed or not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        key = _https_url_key(item.get("url"))
+        if key is None or key not in allowed or key in seen:
+            continue
+        seen.add(key)
+        result.append({**dict(item), "url": allowed[key]})
+    return result
+
+
+def _recover_brief_citations(
+    sources: list[dict[str, Any]],
+    *,
+    brief: object,
+    supplied_urls: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], int]:
+    """Normalize supplied URLs already cited in the brief into source entries.
+
+    Some structured-output providers place a supplied reference in the prose
+    source list but omit the parallel ``sources`` row.  Retaining that citation
+    is deterministic and auditable: the URL must occur in the model-authored
+    brief and must also belong to the immutable Run allow-list.  We do not add a
+    factual claim; the generated row records only that the brief cited the
+    user-supplied reference.  Missing URLs that are absent from the brief still
+    fail the minimum-source gate.
+    """
+
+    brief_text = str(brief or "")
+    # Check the immutable spelling directly.  A Markdown source entry commonly
+    # has ``[https://...](https://...)``; a generic URL regex can consume the
+    # intervening ``](...`` as part of the first URL and miss that citation.
+    cited = {
+        key
+        for supplied in supplied_urls
+        if supplied in brief_text and (key := _https_url_key(supplied)) is not None
+    }
+    present = {
+        key
+        for item in sources
+        if (key := _https_url_key(item.get("url"))) is not None
+    }
+    result = list(sources)
+    recovered = 0
+    for supplied in supplied_urls:
+        key = _https_url_key(supplied)
+        if key is None or key in present or key not in cited:
+            continue
+        parsed = urllib.parse.urlsplit(supplied)
+        result.append(
+            {
+                "title": f"User-supplied reference: {parsed.hostname}",
+                "url": supplied,
+                "claim": (
+                    "Explicitly cited in the research brief as a user-supplied "
+                    "reference for downstream fact verification."
+                ),
+            }
+        )
+        present.add(key)
+        recovered += 1
+    return result, recovered
+
+
+def _https_url_key(value: object) -> str | None:
+    text = str(value or "").strip()
+    if (
+        not text
+        or len(text) > 2048
+        or any(character.isspace() for character in text)
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(text)
+        # Accessing ``port`` also validates a malformed explicit port.
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    hostname = parsed.hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    authority = hostname if port in (None, 443) else f"{hostname}:{port}"
+    path = parsed.path.rstrip("/") or "/"
+    return urllib.parse.urlunsplit(("https", authority, path, parsed.query, ""))
 
 
 def _user_input_text(snapshot: Mapping[str, Any]) -> str:
@@ -581,6 +1115,26 @@ _CHINESE_DATE = re.compile(
 )
 _DAY_SPAN = re.compile(r"(?<!\d)(?P<days>\d{2,4})\s*天")
 _URL_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_ASPECT_RATIO = re.compile(
+    r"(?<!\d)(?P<ratio>9\s*[:：]\s*16|16\s*[:：]\s*9|1\s*[:：]\s*1|"
+    r"4\s*[:：]\s*3|3\s*[:：]\s*4)(?!\d)"
+    r"(?:\s*(?:竖屏|横屏|方形)(?:画幅|格式)?)?"
+)
+_ASPECT_LAYOUTS = {
+    "9:16": "竖屏画幅",
+    "16:9": "横屏画幅",
+    "1:1": "方形画幅",
+    "4:3": "横屏画幅",
+    "3:4": "竖屏画幅",
+}
+_CLOCK_EXPRESSION = re.compile(
+    r"(?<!\d)(?P<hour>\d{1,2})[:：](?P<minute>\d{2})"
+    r"(?:[:：](?P<second>\d{2}))?(?!\d)"
+)
+_POLICY_ASSIGNMENT = re.compile(
+    r"[‘’“”'\"]?(?P<key>[A-Za-z][A-Za-z0-9_.-]*)\s*=\s*"
+    r"(?P<number>\d+(?:\.\d+)?)[‘’“”'\"]?(?:\s*要求)?"
+)
 
 
 def _research_validation_issues(
@@ -681,7 +1235,7 @@ def _minimum_research_sources(snapshot: Mapping[str, Any]) -> int:
     policy = skill.get("research_policy", {})
     policy = policy if isinstance(policy, Mapping) else {}
     value = policy.get("minimum_sources", 1)
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 1
 
 
 def _target_duration_seconds(snapshot: Mapping[str, Any]) -> int | None:
@@ -787,20 +1341,37 @@ def _qualitatively_redact_research_quantities(
     research: Mapping[str, Any],
     issues: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Downgrade rejected measurements without adding a replacement fact."""
+    """Downgrade only validator-rejected claims without adding a new fact."""
 
-    rejected = tuple(
+    rejected_quantities = tuple(
         issue.partition(":")[2]
         for issue in issues
         if issue.startswith("unsupported_quantity_claim:")
         and issue.partition(":")[2]
     )
-    if not rejected:
+    rejected_numbers = tuple(
+        issue.partition(":")[2]
+        for issue in issues
+        if issue.startswith("unsupported_numeric_claim:")
+        and issue.partition(":")[2]
+    )
+    if not rejected_quantities and not rejected_numbers:
         return dict(research)
+
+    sources = research.get("sources", [])
+    source_items = sources if isinstance(sources, list) else []
+    protected_urls = tuple(
+        dict.fromkeys(
+            str(item.get("url", ""))
+            for item in source_items
+            if isinstance(item, Mapping)
+            and _https_url_key(item.get("url")) is not None
+        )
+    )
 
     def redact(value: object) -> str:
         text = str(value or "")
-        for claim in rejected:
+        for claim in rejected_quantities:
             replacement = (
                 "一段时间"
                 if claim.endswith(("天", "日", "年", "月", "周", "小时", "分钟", "秒"))
@@ -811,7 +1382,11 @@ def _qualitatively_redact_research_quantities(
             if claim.endswith(("公里", "千米", "米")):
                 text = text.replace(f"每秒{claim}", replacement)
             text = text.replace(claim, replacement)
-        return text
+        return _redact_unsupported_numbers(
+            text,
+            rejected_numbers,
+            protected_urls=protected_urls,
+        )
 
     result = dict(research)
     result["brief"] = redact(result.get("brief", ""))
@@ -830,47 +1405,105 @@ def _qualitatively_redact_research_quantities(
 
 
 def _ensure_structured_beats(script: Mapping[str, Any]) -> dict[str, Any]:
-    """Upgrade legacy scene arrays to the generic Beat contract.
+    """Publish the same canonical Beat identity consumed by retrieval and TTS.
 
-    Providers are instructed to author precise Beat evidence. This deterministic
-    compatibility path keeps older providers usable without injecting any
-    subject vocabulary: narration sentences are distributed over authored
-    scenes in order, and evidence arrays remain empty rather than guessed.
+    Provider Beat narration is accepted only when it is already an exact
+    ordered partition of the final narration. Otherwise ``normalize_beats``
+    repairs it deterministically while preserving visual intent and evidence
+    constraints. This also keeps IDs and sequence coordinates stable across all
+    downstream artifacts.
     """
 
     result = dict(script)
-    raw_beats = result.get("beats")
-    if isinstance(raw_beats, list) and raw_beats:
-        return result
-    raw_scenes = result.get("scenes", [])
-    scenes = (
-        [str(item).strip() for item in raw_scenes if str(item).strip()]
-        if isinstance(raw_scenes, list)
-        else []
-    )
-    narration = str(result.get("narration", "")).strip()
-    sentences = [
-        item.strip()
-        for item in re.split(r"(?<=[。！？!?；;])\s*", narration)
-        if item.strip()
+    beats = normalize_beats(result)
+    result["beats"] = [
+        {
+            "id": beat.id,
+            "sequence": beat.sequence,
+            "narration": beat.narration,
+            "visual_description": beat.visual_description,
+            "must_match": list(beat.must_match),
+            "must_not_match": list(beat.must_not_match),
+        }
+        for beat in beats
     ]
-    beats: list[dict[str, Any]] = []
-    for index, scene in enumerate(scenes):
-        start = index * len(sentences) // max(1, len(scenes))
-        end = (index + 1) * len(sentences) // max(1, len(scenes))
-        hint = "".join(sentences[start:end]) or narration
-        beats.append(
-            {
-                "id": f"beat-{index + 1:03d}",
-                "sequence": index + 1,
-                "narration": hint,
-                "visual_description": scene,
-                "must_match": [],
-                "must_not_match": [],
-            }
-        )
-    result["beats"] = beats
     return result
+
+
+def _redact_unsupported_numbers(
+    value: str,
+    rejected: tuple[str, ...],
+    *,
+    protected_urls: tuple[str, ...],
+) -> str:
+    """Redact named numeric issues while preserving normalized source URLs."""
+
+    rejected_set = frozenset(rejected)
+    if not rejected_set:
+        return value
+    protected = value
+    placeholders: list[tuple[str, str]] = []
+    for index, url in enumerate(sorted(protected_urls, key=len, reverse=True)):
+        if not url or url not in protected:
+            continue
+        placeholder = f"\ue000{chr(0xE100 + index)}\ue001"
+        while placeholder in protected:
+            placeholder += "\ue002"
+        protected = protected.replace(url, placeholder)
+        placeholders.append((placeholder, url))
+    redacted = _redact_numeric_fragment(protected, rejected_set)
+    for placeholder, url in placeholders:
+        redacted = redacted.replace(placeholder, url)
+    return redacted
+
+
+def _redact_numeric_fragment(value: str, rejected: frozenset[str]) -> str:
+    def redact_aspect(match: re.Match[str]) -> str:
+        ratio = re.sub(r"\s+", "", match.group("ratio")).replace("：", ":")
+        components = ratio.split(":")
+        if not rejected.intersection(components):
+            return match.group(0)
+        return _ASPECT_LAYOUTS[ratio]
+
+    def redact_policy(match: re.Match[str]) -> str:
+        if match.group("number") not in rejected:
+            return match.group(0)
+        key = match.group("key").casefold()
+        return "来源时效要求" if key == "freshness_days" else "相关策略要求"
+
+    def redact_clock(match: re.Match[str]) -> str:
+        hour = match.group("hour")
+        minute = match.group("minute")
+        second = match.group("second")
+        if not rejected.intersection(item for item in (hour, minute, second) if item):
+            return match.group(0)
+        return "具体时刻"
+
+    text = _ASPECT_RATIO.sub(redact_aspect, value)
+    text = _POLICY_ASSIGNMENT.sub(redact_policy, text)
+    text = _CLOCK_EXPRESSION.sub(redact_clock, text)
+    replacements = (
+        ("年", "相关年份"),
+        ("月", "相关月份"),
+        ("日", "相关日期"),
+        ("号", "相关日期"),
+        ("时", "当天稍后"),
+        ("点", "当天稍后"),
+    )
+    for number in sorted(rejected, key=lambda item: (-len(item), item)):
+        escaped = re.escape(number)
+        for suffix, replacement in replacements:
+            text = re.sub(
+                rf"(?<![A-Za-z0-9]){escaped}\s*{suffix}",
+                replacement,
+                text,
+            )
+        text = re.sub(
+            rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])",
+            "相关数值",
+            text,
+        )
+    return text
 
 
 def _qualitatively_redact_script_quantities(
@@ -889,6 +1522,7 @@ def _qualitatively_redact_script_quantities(
 
     def redact(value: object) -> str:
         text = str(value or "")
+        placeholders: list[str] = []
         for claim in rejected:
             replacement = (
                 "一段时间"
@@ -899,9 +1533,19 @@ def _qualitatively_redact_script_quantities(
                 if claim.endswith(("公里", "千米", "米"))
                 else "许多"
             )
+            if replacement not in placeholders:
+                placeholders.append(replacement)
             if claim.endswith(("公里", "千米", "米")):
                 text = text.replace(f"每秒{claim}", replacement)
             text = text.replace(claim, replacement)
+        separator = r"[\s,，、;；:：.!。！?？]*"
+        for placeholder in placeholders:
+            escaped = re.escape(placeholder)
+            text = re.sub(
+                rf"{escaped}(?:{separator}{escaped})+",
+                placeholder,
+                text,
+            )
         return text
 
     result = dict(script)
