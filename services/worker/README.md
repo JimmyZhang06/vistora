@@ -1,5 +1,8 @@
 # Vistora Worker
 
+> 文档状态：当前组件说明
+> 进程边界：普通 Worker 与 Browser Capture Worker 必须分离
+
 Worker 从 Redis `runs` 队列接收唤醒，将不可变 Pipeline 图物化为 PostgreSQL `run_steps`，再通过 `run-steps` 队列执行。PostgreSQL 扫描会恢复漏发唤醒和过期租约；状态转换使用 revision/CAS 和租约 fencing，支持重试、取消、人工审核与重启恢复。
 
 Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前缀。完整本地环境由根目录 `start.ps1` 配置；单独命令为：
@@ -20,11 +23,14 @@ Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前�
 | `render.compose` | FFmpeg 时间线与字幕渲染 | 本地媒体桥与 FFmpeg/ffprobe 可用 |
 | `quality.evaluate` | FFmpeg 解码级流、时长、黑屏和静音检查 | 本地媒体桥可用；否则可用文本质量 Provider |
 | `web.capture.validate` / `web.capture.screenshot` | Playwright Chromium 公开网页校验与定尺寸 PNG | 仅独立 `browser-capture` Worker，且外部 egress 策略已断言 |
-| `writing.compose.webpage` / `web.materialize` | 不可信页面引用写稿与已批准截图的精确字节物化 | 普通 Worker 的文本 Provider与对象存储可用 |
+| `web.site.discover` / `web.page.capture_batch` / `web.region.analyze` / `web.storyboard.plan` | 同站发现、稳定批量截图、区域证据与 Storyboard | 发现/截图只在 Browser Worker；规划能力按注册表装配 |
+| `writing.compose.webpage` / `writing.compose.webpage_story` / `web.materialize*` | 页面证据写稿与批准截图/区域的精确字节物化 | 普通 Worker 的文本 Provider 与对象存储可用 |
+| `writing.compose.generated` / `media.generate` | Full-AI 创意脚本、付费场景生成与持久审计 | 独立生成 Provider、条款/价格/权利与 verifier 完整配置 |
+| `media.inventory` / `media.retrieve` / `timeline.align` / `render.edl` | 快照库存、候选检索、冻结时间线和 EDL 渲染 | 数据库素材库、对象存储、FFmpeg/ffprobe 可用 |
 | 素材视觉分析 | OpenAI-compatible vision | `FRAMEFACTORY_ASSET_VISION_*` |
 | 素材转写 | OpenAI-compatible ASR | `FRAMEFACTORY_ASR_*`，可选 |
 
-未配置的操作由 `UnsupportedCapability` 明确失败，不产生占位 Artifact。`media.generate`、独立 `timeline.align`、`research.verify` 和交付打包等操作仍需要对应部署实现；不能仅凭操作名存在就宣称可用。
+表中的条件能力在 Provider 或基础设施未配置时由 `UnsupportedCapability` 明确失败，不产生占位 Artifact。`research.verify`、`delivery.package` 等未装配操作仍没有生产实现；不能仅凭枚举、Pipeline 节点或操作名存在就宣称可用。
 
 根启动器检测 Edge TTS 和 FFmpeg 后启用本地媒体桥，默认启用数据库素材库；只有 `var/secrets/worker-provider.env` 中允许的文本、视觉和 ASR 字段会进入 Worker 环境。
 

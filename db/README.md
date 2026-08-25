@@ -1,11 +1,14 @@
 # Vistora 数据库迁移
 
-`db/migrations/` 保存 Control API 的 PostgreSQL 前向迁移；`services/worker/migrations/` 保存 Worker 运行时表迁移。当前根迁移从 `0001_initial.sql` 连续到 `0019_skill_draft_content_hash.sql`，Worker 另有 `0001_runtime_state.sql`。实际文件列表是唯一顺序来源。
+> 文档状态：当前迁移规则
+> 迁移方向：仅前向；恢复依赖备份，不依赖反向 SQL
+
+`db/migrations/` 保存 Control API 的 PostgreSQL 前向迁移；`services/worker/migrations/` 保存 Worker 运行时表迁移。当前根迁移从 `0001_initial.sql` 连续到 `0024_browser_capture_artifact_tenant_key.sql`，Worker 另有 `0001_runtime_state.sql`。实际文件列表是唯一顺序来源。
 
 不要逐个手工执行某一个 SQL 文件。统一迁移入口会按文件名排序执行两组迁移、在 `schema_migrations` 记录 SHA-256，并使用 PostgreSQL advisory lock 串行化部署：
 
 ```powershell
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55432/vistora"
+$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55433/vistora"
 .\.venv\Scripts\python.exe -m framefactory_api.migrate --project-root .
 ```
 

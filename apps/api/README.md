@@ -1,5 +1,8 @@
 # Vistora Control API
 
+> 文档状态：当前组件说明
+> 运行边界：单用户、单默认工作区；公网请求认证尚未内建
+
 本包是 Vistora 的 FastAPI 控制面。Python 模块名仍为 `framefactory_api`，环境变量仍使用 `FRAMEFACTORY_` 前缀，以保持迁移兼容；产品数据和本地持久化栈已经使用独立的 Vistora 数据库、Bucket、Redis namespace 和 Compose 项目。
 
 ## 当前接口范围
@@ -10,6 +13,9 @@
 - Skill、可编辑草稿、校验、测试、发布、分叉和不可变版本
 - Run 估算/创建/取消，Step 查询/重试/审核，Artifact 和 Event 查询
 - Generation Batch 创建、列表、取消和失败项重试
+- 独立 Full-AI 报价、创建、状态与付费对账控制面
+- 独立网页发现、截图、范围审核、Storyboard 审核与成片控制面
+- Library Build Job 创建、进度、取消与失败状态
 - 素材库、预签名上传、公开视频导入、分页/筛选、批量审核/标签/重分析、软删除/恢复
 - 素材来源、分析、片段、分析任务、使用记录、下载变体和状态转换
 
@@ -34,11 +40,13 @@ API Key 接口目前只管理哈希凭据记录，不会自动为所有 HTTP 请
 它使用下列独立连接，不复用旧 FrameFactory：
 
 ```text
-PostgreSQL  postgresql://vistora:…@127.0.0.1:55432/vistora
-Redis       redis://127.0.0.1:56379/0  (namespace: vistora-local)
-MinIO       http://127.0.0.1:59000     (bucket: vistora-local)
+PostgreSQL  postgresql://vistora:…@127.0.0.1:55433/vistora
+Redis       redis://127.0.0.1:56380/0  (namespace: vistora-local)
+MinIO       http://127.0.0.1:59002     (bucket: vistora-local)
 API         http://127.0.0.1:8200
 ```
+
+以上是 `start.ps1` 的集成端口。直接运行 `deploy/docker-compose.persistence.yml` 且不传覆盖变量时，使用 Compose 文件中的另一组开发默认端口。
 
 只做 API 测试或 UI 联调时可使用非持久内存 Repository：
 
@@ -56,7 +64,7 @@ $env:FRAMEFACTORY_REPOSITORY_BACKEND = "memory"
 统一入口按顺序执行 `db/migrations/*.sql` 与 `services/worker/migrations/*.sql`：
 
 ```powershell
-$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55432/vistora"
+$env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.0.1:55433/vistora"
 .\.venv\Scripts\python.exe -m framefactory_api.migrate --project-root .
 ```
 

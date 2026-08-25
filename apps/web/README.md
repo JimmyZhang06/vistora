@@ -1,5 +1,8 @@
 # Vistora Web
 
+> 文档状态：当前组件说明
+> 运行边界：HTTP adapter 连接真实 API；Mock 仅用于测试
+
 Vistora Web 是 React 19 + Vinext 工作台。默认运行路径通过 typed HTTP adapter 连接 Control API；Mock adapter 只用于测试 fixture，不会在 API 失败时伪造生产数据。
 
 ## 启动
@@ -18,6 +21,9 @@ npm run dev
 ## 现行路由
 
 - `/create`：创建单个视频任务。
+- `/create/ai`：创建独立 Full-AI 生成任务。
+- `/create/webpage-video`：创建网页发现、截图审核和成片任务。
+- `/webpage-video/[id]`：审核页面范围、截图与 Storyboard，并查看后续成片状态。
 - `/batches`：批量生成任务。
 - `/projects`、`/projects/[runId]`：Run 列表、步骤、产物、审核和重试。
 - `/skills` 及 `/skills/[skillId]/*`：创建、编辑、测试、发布、使用情况和版本历史。
@@ -35,7 +41,7 @@ npm run dev
 
 ```powershell
 Set-Location apps/web
-$env:PYTHON = (Resolve-Path ..\..\.venv\Scripts\python.exe).Path
+$env:Path = (Resolve-Path ..\..\.venv\Scripts).Path + ";" + $env:Path
 npm test
 npm run lint
 ```

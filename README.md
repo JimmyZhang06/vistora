@@ -264,13 +264,19 @@ npm run lint
 
 ## 文档
 
+- [文档中心](docs/README.md)
+- [当前工程架构](docs/ACTUAL_ENGINEERING_ARCHITECTURE.md)
+- [Full-AI 视频管线](docs/FULL_AI_VIDEO_PIPELINE.md)
+- [批量生产与素材库设计](docs/BATCH_LIBRARY_IMPLEMENTATION_PLAN.md)
 - [Control API](apps/api/README.md)
 - [Web 工作台](apps/web/README.md)
 - [Worker 与 Provider](services/worker/README.md)
 - [数据库迁移](db/README.md)
 - [生产部署](deploy/production/README.md)
 - [OpenAPI 与 JSON Schema](packages/contracts/README.md)
+- [官方 Seed](packages/seeds/README.md)
 - [发布验收矩阵](tools/release/ASSET_ACCEPTANCE_MATRIX.md)
+- [本地运行数据边界](var/README.md)
 
 `docs/reference-v3/` 保存历史设计资料。旧路径、端口、Run ID、测试数量和能力状态不能作为当前运行依据。
 

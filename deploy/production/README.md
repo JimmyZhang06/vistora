@@ -1,8 +1,11 @@
 # Vistora 生产部署基线
 
+> 文档状态：自托管后端基线，不是完整公网部署
+> 发布结论：缺少身份、出站策略、Secret 或恢复证据时必须视为 `BLOCKED`
+
 `deploy/production/` 提供 API、Worker、PostgreSQL、Redis 和 S3-compatible 存储的自托管基线。它不是完整公网安全边界；Web 需独立构建，并通过 HTTPS `NEXT_PUBLIC_FRAMEFACTORY_API_URL` 访问受保护的 API。
 
-本目录与根目录的 `deploy/docker-compose.persistence.yml` 用途不同：后者是 Compose 项目 `vistora-local` 的本机开发基础设施，使用 `55432/56379/59000/59001` 和独立数据卷；生产文件不得复用这些开发凭据。
+本目录与根目录的 `deploy/docker-compose.persistence.yml` 用途不同：后者直接运行时默认使用 `55432/56379/59000/59001`；根 `start.ps1` 会显式覆盖为 `55433/56380/59002/59003`。两者都只属于开发环境，生产文件不得复用其凭据或数据卷。
 
 ## 必需边界
 

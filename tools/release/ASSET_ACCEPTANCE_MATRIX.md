@@ -1,5 +1,8 @@
 # Vistora 素材发布验收矩阵
 
+> 文档状态：规范性发布要求
+> 结果来源：同一候选提交生成的机器报告；本文不记录一次性通过状态
+
 本文件定义发布要求，不保存会迅速过期的“当前通过”截图。每次发布的真实状态以同一提交上生成的机器可读 Gate 报告为准。
 
 所有门禁使用 fail-closed 退出语义：`PASSED=0`、`FAILED=1`、`BLOCKED=2`。缺少专用环境、fixture、权限或外部能力必须是 `BLOCKED`，不能降级为内存 Repository、跳过或视为通过。
@@ -24,6 +27,8 @@
 | 软删除与历史 | 删除源素材后旧 Run 证据和 Artifact 仍按策略可追溯 | asset E2E + integrity audit |
 | DB/Object 一致性 | object key、workspace 前缀、metadata、代表帧和内容哈希一致 | S3 + asset integrity audit |
 | 大文件与资源限制 | 声明/实传超限拒绝，转码/分析不会绕过预算或拖垮队列 | contract + load gate |
+| 网页截图素材 | 页面稳定、公开网络边界、截图哈希、范围/Storyboard 审核和权利声明 | browser sandbox + webpage E2E |
+| Full-AI 生成素材 | 无共享素材回退、付费幂等、费用上限、生成来源、独立验证与披露 | generated-only E2E + paid ledger audit |
 
 ## 规模硬断言
 

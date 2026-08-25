@@ -1,37 +1,53 @@
-# Vistora 文档索引
+# Vistora 文档中心
 
-现行操作说明尽量与实现放在同一目录，避免跨模块文档与代码脱节：
+> 文档状态：当前索引
+> 适用范围：本仓库当前 `main` 工作树
+> 事实优先级：代码与迁移 > 自动化测试 > 当前组件文档 > 历史资料
 
-- [项目总览与本地启动](../README.md)
-- [非商业软件许可](../LICENSE.md)
-- [Control API](../apps/api/README.md)
-- [Web](../apps/web/README.md)
-- [Worker 与 Provider](../services/worker/README.md)
-- [数据库迁移](../db/README.md)
-- [生产部署](../deploy/production/README.md)
-- [OpenAPI 与 JSON Schema](../packages/contracts/README.md)
-- [官方 Seed](../packages/seeds/README.md)
-- [素材发布验收矩阵](../tools/release/ASSET_ACCEPTANCE_MATRIX.md)
-- [本地运行数据边界](../var/README.md)
+Vistora 的文档按用途分层维护。根 README 负责产品与启动总览；组件 README 负责可执行操作；本目录保存跨模块架构、管线设计和历史参考。文档不能替代运行时 capability/readiness、发布 Gate 或用户的素材权利审核。
 
-文档位置约定：组件 README 跟随组件；可执行门禁说明跟随脚本；跨模块长期设计放在 `docs/`；本地日志、密钥和测试输入只放 `var/`。
+## 快速入口
 
-## v3 历史经验
+| 目标 | 文档 |
+| --- | --- |
+| 了解产品、能力边界与本地启动 | [项目总览](../README.md) |
+| 理解当前系统拓扑与可靠性边界 | [当前工程架构](ACTUAL_ENGINEERING_ARCHITECTURE.md) |
+| 理解网页截图成片管线 | [项目总览：网页截图成片](../README.md#网页截图成片) |
+| 理解 Full-AI 生成管线 | [Full-AI 视频管线](FULL_AI_VIDEO_PIPELINE.md) |
+| 理解批量生产与素材快照 | [批量生产与素材库](BATCH_LIBRARY_IMPLEMENTATION_PLAN.md) |
+| 部署受保护的后端基线 | [生产部署](../deploy/production/README.md) |
+| 判断是否可以发布 | [素材发布验收矩阵](../tools/release/ASSET_ACCEPTANCE_MATRIX.md) |
+| 查看许可 | [PolyForm Noncommercial License](../LICENSE.md) |
 
-`reference-v3/` 是旧仓库 `v3/docs` 的历史快照，用来保留重构、架构评审、剪辑优化和运行复盘经验。每份文件顶部都标明历史边界。其旧路径、端口、Run ID、测试结论和“当前/现行”措辞只描述快照日期，不得作为新仓库的启动或发布依据。
+## 当前组件文档
 
-### 规划
+| 组件 | 责任边界 | 文档 |
+| --- | --- | --- |
+| Web | 创建、审核、项目、素材、Skill 与设置工作台 | [Web](../apps/web/README.md) |
+| Control API | 资源、幂等、并发、控制面与 readiness | [Control API](../apps/api/README.md) |
+| Worker | DAG 调度、Provider、浏览器采集、渲染与恢复 | [Worker](../services/worker/README.md) |
+| PostgreSQL | 前向迁移、校验和与恢复约束 | [数据库迁移](../db/README.md) |
+| Contracts | OpenAPI、JSON Schema 与不可变载荷 | [数据契约](../packages/contracts/README.md) |
+| Official Seeds | Skill/Pipeline 声明式启动数据 | [官方 Seed](../packages/seeds/README.md) |
+| Local data | 本机日志、Secret、测试输入与运行状态 | [本地数据边界](../var/README.md) |
 
-- [通用化重构计划（历史）](reference-v3/planning/REFACTOR_PLAN.md)
+## 文档维护规则
 
-### 架构
+1. 当前能力必须标成“可用”“条件可用”或“未实现”，不能用路由、枚举或接口名称推断能力已经接通。
+2. 端口以根 `start.ps1` 为本地集成入口；直接运行 Compose 时使用 Compose 自身默认值，二者必须明确区分。
+3. 不在长期文档中固定测试通过数量、临时 Run ID、供应商价格或本机容器状态；这些属于发布报告。
+4. API、Schema、Pydantic、TypeScript 和 Worker 模型发生变化时，必须同时检查相应组件文档。
+5. 文档中的 PowerShell 命令默认从仓库根目录执行，除非代码块前明确改变目录。
+6. Secret、真实用户素材、截图、视频、日志和 Gate 报告不进入文档目录。
 
-- [v3 技术架构与剪辑成片评审（历史）](reference-v3/architecture/V3_ARCHITECTURE_AND_EDITING_REVIEW.md)
-- [v3 素材检索与剪辑流程优化方案（历史）](reference-v3/architecture/EDITING_AND_ASSET_RETRIEVAL_OPTIMIZATION_PLAN.md)
+## 历史参考
 
-### 运行复盘
+`reference-v3/` 保存 2026-08-14 至 2026-08-20 的旧仓库设计与运行复盘。它们仅用于解释设计来路；旧路径、端口、Run ID、时间计划、测试数量和“当前”措辞均不是现行操作依据。
 
-- [自动视频任务监督与素材补足手册（历史）](reference-v3/operations/automatic-video-runbook.md)
-- [Architecture 解说视频冒烟测试（历史）](reference-v3/operations/architecture-video-smoke-test.md)
+- [通用化重构计划](reference-v3/planning/REFACTOR_PLAN.md)
+- [v3 技术架构与剪辑成片评审](reference-v3/architecture/V3_ARCHITECTURE_AND_EDITING_REVIEW.md)
+- [v3 素材检索与剪辑优化方案](reference-v3/architecture/EDITING_AND_ASSET_RETRIEVAL_OPTIMIZATION_PLAN.md)
+- [自动视频任务监督与素材补足手册](reference-v3/operations/automatic-video-runbook.md)
+- [Architecture 解说视频冒烟测试](reference-v3/operations/architecture-video-smoke-test.md)
 
-旧仓库的运行产物、发布结果 JSON、用户素材和密钥不属于文档资产，因此没有迁入。
+旧仓库的运行产物、用户数据、下载素材、密钥和发布报告不是文档资产，没有迁入本目录。
