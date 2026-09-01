@@ -61,8 +61,9 @@ test("page identity and review workbench follow the shared layout grid", async (
   assert.match(assets, /05 \/ ASSETS/);
   assert.match(channels, /06 \/ CHANNELS/);
   assert.match(settings, /07 \/ ACCOUNT & SETTINGS/);
-  for (const image of ["research-planning", "voice-recording", "editing-timeline", "final-grade"]) {
-    assert.match(create, new RegExp(`/create/${image}\\.webp`));
+  assert.doesNotMatch(create, /cinema-board|film-frame|research-planning\.webp|CONTROLLED WORKFLOW/);
+  for (const destination of ["ai", "webpage-video", "projects"]) {
+    assert.match(create, new RegExp(`/${destination}`));
   }
   assert.match(detail, /review-drawer-header/);
   assert.match(detail, /review-artifact-grid--single/);

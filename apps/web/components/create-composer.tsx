@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -267,16 +266,7 @@ export function CreateComposer() {
             <Link className="button" href="/create/ai">进入全 AI 影片</Link>
             <Link className="button-ghost" href="/create/webpage-video">网页截图成片</Link>
             <Link className="button-ghost" href="/projects">查看制作队列</Link>
-            <span><i aria-hidden="true" /> CONTROLLED WORKFLOW</span>
           </div>
-        </div>
-
-        <div className="cinema-board" aria-hidden="true">
-          <div className="film-frame film-frame--one"><Image src="/create/research-planning.webp" alt="" fill sizes="(max-width: 767px) 46vw, 22vw" priority /><span>RESEARCH_01</span></div>
-          <div className="film-frame film-frame--two"><Image src="/create/voice-recording.webp" alt="" fill sizes="(max-width: 767px) 49vw, 24vw" priority /><span>VOICE_02</span></div>
-          <div className="film-frame film-frame--three"><Image src="/create/final-grade.webp" alt="" fill sizes="(max-width: 767px) 48vw, 26vw" priority /><span>FINAL_CUT</span></div>
-          <div className="film-frame film-frame--four"><Image src="/create/editing-timeline.webp" alt="" fill sizes="18vw" priority /><span>FRAME / 024</span></div>
-          <div className="cinema-reticle"><i /><span>READY</span></div>
         </div>
       </section>
 
