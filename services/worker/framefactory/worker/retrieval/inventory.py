@@ -10,6 +10,7 @@ from typing import Any
 
 from framefactory.runtime import PermanentStepError
 from framefactory.steps import StepContext, StepResult
+from framefactory.worker.adapters.database_assets import _asset_acquisition
 from framefactory.worker.config import AssetLibrarySettings
 from framefactory.worker.providers import ArtifactStorage, ProviderArtifact
 
@@ -19,6 +20,7 @@ from .capability import (
     rank_candidates,
 )
 from .catalog import PostgresRetrievalCatalog, RetrievalCatalog, SearchCandidates
+from .editorial_fallback import editorial_fallback_enabled, editorial_inventory
 from .models import RetrievalBeat, RetrievalCandidate
 
 _CONCEPT_BREAK = re.compile(r"[\r\n,，;；|]+")
@@ -55,7 +57,15 @@ class DatabaseInventoryCapability:
         snapshot = context.input_snapshot.to_dict()
         snapshot_id = catalog_snapshot_id(context.input_snapshot)
         concepts = inventory_concepts(snapshot)
-        if snapshot_id is None:
+        acquisition = _asset_acquisition(context.input_snapshot)
+        if snapshot_id is None and not acquisition["enabled"]:
+            if editorial_fallback_enabled(context.input_snapshot):
+                return self._fallback_result(
+                    context,
+                    snapshot=snapshot,
+                    concepts=concepts,
+                    reason="no_frozen_catalog_snapshot",
+                )
             raise _coverage_error(
                 "media.inventory requires a frozen catalog snapshot",
                 snapshot_id=None,
@@ -126,7 +136,14 @@ class DatabaseInventoryCapability:
                 }
             )
 
-        if total_eligible == 0:
+        if total_eligible == 0 and not acquisition["enabled"]:
+            if editorial_fallback_enabled(context.input_snapshot):
+                return self._fallback_result(
+                    context,
+                    snapshot=snapshot,
+                    concepts=concepts,
+                    reason="no_eligible_catalog_footage",
+                )
             raise _coverage_error(
                 "the frozen catalog contains no eligible footage for this topic",
                 snapshot_id=snapshot_id,
@@ -134,16 +151,31 @@ class DatabaseInventoryCapability:
                 reason="no_eligible_candidates",
             )
 
+        coverage_status = (
+            "pending_auto_acquisition"
+            if missing and acquisition["enabled"] and snapshot_id is None
+            else "complete" if not missing else "partial"
+        )
+
         inventory = {
             "schema_version": "1.0.0",
             "operation": self.operation,
             "catalog_snapshot_id": snapshot_id,
             "topic": str(snapshot.get("topic") or "").strip(),
             "coverage": {
-                "status": "complete" if not missing else "partial",
+                "status": coverage_status,
                 "total_concepts": len(concepts),
                 "covered_concepts": len(concepts) - len(missing),
                 "missing_concepts": missing,
+            },
+            "catalog_mode": "frozen" if snapshot_id is not None else "live",
+            "asset_acquisition": {
+                "enabled": acquisition["enabled"],
+                "pending": coverage_status == "pending_auto_acquisition",
+                "sources": list(acquisition["sources"]),
+                "max_assets": acquisition["max_assets"],
+                "copyright_status": acquisition["copyright_status"],
+                "rights_mode": acquisition["rights_mode"],
             },
             "eligible_candidates": total_eligible,
             "unique_assets": len(unique_assets),
@@ -170,12 +202,62 @@ class DatabaseInventoryCapability:
                 "operation": self.operation,
                 "provider": "database-asset-library",
                 "local_catalog_only": True,
+                "catalog_mode": inventory["catalog_mode"],
                 "catalog_snapshot_id": snapshot_id,
                 "coverage_status": inventory["coverage"]["status"],
                 "covered_concepts": inventory["coverage"]["covered_concepts"],
                 "missing_concepts": missing,
                 "eligible_candidates": total_eligible,
                 "unique_assets": len(unique_assets),
+                "auto_acquisition_enabled": acquisition["enabled"],
+                "action_required": (
+                    "automatic_acquisition_after_script"
+                    if coverage_status == "pending_auto_acquisition"
+                    else None
+                ),
+            },
+        )
+
+    def _fallback_result(
+        self,
+        context: StepContext,
+        *,
+        snapshot: Mapping[str, Any],
+        concepts: Sequence[str],
+        reason: str,
+    ) -> StepResult:
+        inventory = editorial_inventory(
+            topic=str(snapshot.get("topic") or "").strip(),
+            concepts=concepts,
+            reason=reason,
+        )
+        artifact = self.storage.publish(
+            context,
+            ProviderArtifact(
+                "inventory",
+                "inventory.json",
+                "application/json",
+                json.dumps(
+                    inventory,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+            ),
+        )
+        return StepResult(
+            artifacts=(artifact,),
+            output_summary={
+                "operation": self.operation,
+                "provider": "procedural-editorial-cards",
+                "visual_source_mode": "editorial_fallback",
+                "draft": True,
+                "fallback_reason": reason,
+                "coverage_status": "editorial_fallback",
+                "covered_concepts": 0,
+                "missing_concepts": list(concepts),
+                "eligible_candidates": 0,
+                "unique_assets": 0,
             },
         )
 

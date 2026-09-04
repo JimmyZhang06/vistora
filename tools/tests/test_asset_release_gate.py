@@ -11,15 +11,15 @@ import pytest
 RELEASE_TOOLS = Path(__file__).resolve().parents[1] / "release"
 sys.path.insert(0, str(RELEASE_TOOLS))
 
-from asset_contract_gate import evaluate_contract  # noqa: E402
-from asset_e2e_gate import walk_asset_pages  # noqa: E402
-from asset_integrity_audit import evaluate_inventory  # noqa: E402
-from asset_load_gate import (  # noqa: E402
+from asset_contract_gate import evaluate_contract
+from asset_e2e_gate import walk_asset_pages
+from asset_integrity_audit import evaluate_inventory
+from asset_load_gate import (
     QueueObservation,
     _assert_fixture_records,
     assert_backpressure,
 )
-from release_gate_common import GateFailure  # noqa: E402
+from release_gate_common import GateFailure
 
 
 @dataclass

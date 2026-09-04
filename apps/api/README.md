@@ -1,6 +1,6 @@
 # Vistora Control API
 
-> 文档状态：当前组件说明
+> 文档状态：当前组件说明（2026-09-05）
 > 运行边界：单用户、单默认工作区；公网请求认证尚未内建
 
 本包是 Vistora 的 FastAPI 控制面。Python 模块名仍为 `framefactory_api`，环境变量仍使用 `FRAMEFACTORY_` 前缀，以保持迁移兼容；产品数据和本地持久化栈已经使用独立的 Vistora 数据库、Bucket、Redis namespace 和 Compose 项目。
@@ -15,6 +15,9 @@
 - Generation Batch 创建、列表、取消和失败项重试
 - 独立 Full-AI 报价、创建、状态与付费对账控制面
 - 独立网页发现、截图、范围审核、Storyboard 审核与成片控制面
+- 网页试点反馈写入与跨 Run 证据汇总；反馈是团队录入数据，不是独立核验结果
+- PDF Document Source 创建、预签名上传完成、来源读取，以及独立文档视频 Run 创建
+- PDF retention、Legal Hold、异步 Purge 请求与进度查询
 - Library Build Job 创建、进度、取消与失败状态
 - 素材库、预签名上传、公开视频导入、分页/筛选、批量审核/标签/重分析、软删除/恢复
 - 素材来源、分析、片段、分析任务、使用记录、下载变体和状态转换
@@ -77,6 +80,14 @@ $env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.
 `POST /v1/asset-imports` 处理用户明确给出的公开视频链接并要求权利确认；平台解析器不是版权授权。自动补采只允许 Run 快照中启用的来源和预算，找不到权利与语义均合格的素材时会 fail closed 或请求审核。
 
 旧媒体重建工具只应面向明确的源目录和独立测试计划，不能扫描整个仓库、`var/` 或生成产物目录，也不能在没有证据时把版权标为 `owned`、`licensed` 或 `public_domain`。
+
+## 文档视频边界
+
+`POST /v1/document-sources` 只接收声明为 `application/pdf`、最大 200 MiB、带浏览器计算 SHA-256 且明确确认使用权的来源描述。创建成功后返回短期预签名 PUT；`/complete` 会从对象存储读取并验证完整对象大小、媒体类型和哈希，只有 `uploaded` 来源才能通过 `/v1/document-video/runs` 创建冻结 Run。服务端解析官方 `document-video-director` 与 `document-hybrid-production` 版本，不接受客户端替换为任意 Skill/Pipeline。
+
+Document Run 与普通 Run 共用 Step、Review、Artifact、Event、取消和重试 API。缺少文档 Worker capability、对象存储或发布 Seed 时会明确返回 blocked/unavailable，不创建“成功”占位结果。
+
+`PATCH /v1/document-sources/{id}/retention`、`POST .../legal-hold` 和 `POST .../purge-requests` 都受工作区与 revision 约束；Purge 是持久化异步任务，不在请求线程直接删除对象。读取 Purge 进度不会返回 Bucket/object key。当前内建上下文只表达 `assets:read`、`assets:write`、`assets:review` 权限检查，真正的身份签发与公网认证仍必须由可信网关提供。
 
 ## 验证
 

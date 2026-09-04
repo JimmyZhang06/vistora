@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -214,11 +215,24 @@ class AssetAcquisitionSettingsInput(StrictModel):
 
     @model_validator(mode="after")
     def validate_automatic_rights(self) -> AssetAcquisitionSettingsInput:
-        if self.enabled and not self.rights_confirmed:
-            raise ValueError("automatic asset acquisition requires rights confirmation")
+        provider_verified_public_domain = (
+            self.sources == ["wikimedia"]
+            and self.copyright_status == "public_domain"
+        )
+        if self.enabled and not (
+            self.rights_confirmed or provider_verified_public_domain
+        ):
+            raise ValueError(
+                "automatic asset acquisition requires rights confirmation unless "
+                "Wikimedia public-domain evidence is verified by the provider"
+            )
         if len(set(self.sources)) != len(self.sources):
             raise ValueError("automatic asset acquisition sources must be unique")
         return self
+
+
+class NoAssetDraftSettingsInput(StrictModel):
+    enabled: bool = False
 
 
 class VideoSettingsInput(StrictModel):
@@ -234,6 +248,7 @@ class VideoSettingsInput(StrictModel):
     frame_rate: Literal[24, 25, 30, 50, 60] | None = None
     subtitles: SubtitleSettingsInput | None = None
     asset_acquisition: AssetAcquisitionSettingsInput | None = None
+    no_asset_draft: NoAssetDraftSettingsInput | None = None
 
 
 class RunCreate(StrictModel):
@@ -386,6 +401,71 @@ class AssetUploadComplete(StrictModel):
     @classmethod
     def normalize_content_type(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class DocumentSourceCreate(StrictModel):
+    """Immutable, user-owned PDF upload descriptor.
+
+    Documents deliberately do not enter the reusable media-asset library.  The
+    worker receives only the server-resolved object descriptor captured in the
+    Run input snapshot; clients can never choose another tenant's object key.
+    """
+
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: Literal["application/pdf"]
+    byte_size: int = Field(gt=0, le=200 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rights_confirmed: Literal[True]
+
+    @field_validator("filename")
+    @classmethod
+    def validate_pdf_filename(cls, value: str) -> str:
+        cleaned = value.strip()
+        if (
+            not cleaned.lower().endswith(".pdf")
+            or "/" in cleaned
+            or "\\" in cleaned
+            or "\x00" in cleaned
+        ):
+            raise ValueError("filename must be a PDF basename")
+        return cleaned
+
+
+class DocumentSourceComplete(StrictModel):
+    object_key: str = Field(min_length=1, max_length=1024)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_type: Literal["application/pdf"]
+
+
+class DocumentVideoRunCreate(StrictModel):
+    source_id: UUID
+    topic: str = Field(min_length=1, max_length=1600)
+    duration_seconds: int = Field(default=120, ge=30, le=600)
+    aspect_ratio: Literal["16:9", "9:16", "1:1"] = "16:9"
+    generated_background_enabled: bool = True
+
+
+class DocumentRetentionUpdate(StrictModel):
+    retention_until: datetime | None
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("retention_until")
+    @classmethod
+    def require_aware_retention_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("retention_until must include a timezone")
+        return value
+
+
+class DocumentLegalHoldUpdate(StrictModel):
+    active: bool
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class DocumentPurgeCreate(StrictModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    delete_derived: Literal[True] = True
+    confirmation: Literal["DELETE"]
 
 
 class AssetMetadataPatch(StrictModel):

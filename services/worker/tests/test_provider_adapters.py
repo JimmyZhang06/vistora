@@ -12,6 +12,7 @@ from uuid import uuid4
 from framefactory.runtime import PermanentStepError, RetryableStepError
 from framefactory.steps import ArtifactRef, StepContext
 from framefactory.worker.adapters.openai_compatible import (
+    DashscopeResearchSearchGateway,
     HttpRequest,
     HttpResponse,
     HttpsJsonResearchSearchGateway,
@@ -326,6 +327,73 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
         self.assertEqual("Bearer search-secret", request.headers["Authorization"])
         self.assertNotIn("search-secret", repr(request))
 
+    def test_dashscope_search_gateway_returns_only_attributable_https_sources(
+        self,
+    ) -> None:
+        transport = FakeTransport(
+            [
+                HttpResponse(
+                    200,
+                    json.dumps(
+                        {
+                            "output": {
+                                "search_info": {
+                                    "search_results": [
+                                        {
+                                            "title": "Official result",
+                                            "url": "https://source.example/result",
+                                            "site_name": "Source",
+                                            "index": 1,
+                                        },
+                                        {
+                                            "title": "Unsafe result",
+                                            "url": "http://source.example/unsafe",
+                                            "site_name": "Unsafe",
+                                        },
+                                    ]
+                                }
+                            },
+                            "request_id": "request-1",
+                        }
+                    ).encode(),
+                )
+            ]
+        )
+        gateway = DashscopeResearchSearchGateway(
+            url=(
+                "https://dashscope.example/api/v1/services/aigc/"
+                "text-generation/generation"
+            ),
+            bearer_token="dummy-dashscope-token",
+            model="qwen-plus",
+            timeout_seconds=5,
+            maximum_response_bytes=4096,
+            transport=transport,
+        )
+
+        results = asyncio.run(gateway.search(query="topic", limit=2))
+
+        self.assertEqual(
+            (
+                {
+                    "title": "Official result",
+                    "url": "https://source.example/result",
+                    "snippet": "Source",
+                },
+            ),
+            results,
+        )
+        request = transport.requests[0]
+        body = json.loads(request.body)
+        self.assertEqual("qwen-plus", body["model"])
+        self.assertTrue(body["parameters"]["enable_search"])
+        self.assertTrue(body["parameters"]["search_options"]["forced_search"])
+        self.assertTrue(body["parameters"]["search_options"]["enable_source"])
+        self.assertEqual(
+            "Bearer dummy-dashscope-token", request.headers["Authorization"]
+        )
+        self.assertNotIn("dashscope-secret", repr(request))
+
     def test_configured_capabilities_injects_configured_search_gateway(self) -> None:
         settings = WorkerSettings(
             database_url="postgresql://user:pass@db/framefactory",
@@ -355,6 +423,41 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
 
         self.assertIsInstance(capability, OpenAIResearchCapability)
         self.assertIsInstance(capability.search_gateway, HttpsJsonResearchSearchGateway)
+
+    def test_configured_capabilities_injects_dashscope_search_gateway(self) -> None:
+        settings = WorkerSettings(
+            database_url="postgresql://user:pass@db/framefactory",
+            redis_url="redis://redis/0",
+            environment="test",
+            worker_id="worker-test",
+            openai_compatible=OpenAICompatibleSettings(
+                base_url="https://models.example/v1",
+                api_key="model-secret",
+                research_model="research",
+                writing_model="writing",
+                quality_model="quality",
+            ),
+            research_search=ResearchSearchSettings(
+                url=(
+                    "https://dashscope.example/api/v1/services/aigc/"
+                    "text-generation/generation"
+                ),
+                bearer_token="search-secret",
+                protocol="dashscope",
+                model="qwen-plus",
+            ),
+            object_storage=ObjectStorageSettings(bucket="artifacts"),
+        )
+
+        registry = configured_capabilities(
+            settings,
+            artifact_storage=MemoryArtifacts(),
+            transport=FakeTransport([]),
+        )
+        capability = registry.resolve("research.collect")
+
+        self.assertIsInstance(capability, OpenAIResearchCapability)
+        self.assertIsInstance(capability.search_gateway, DashscopeResearchSearchGateway)
 
     def test_optional_research_policy_accepts_zero_sources_without_review(self) -> None:
         transport = FakeTransport(
@@ -716,6 +819,27 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
         self.assertIn("unsupported_numeric_claim:1", issues)
         self.assertNotIn("unsupported_numeric_claim:445", issues)
 
+    def test_research_does_not_treat_url_path_ids_as_numeric_claims(self) -> None:
+        source = "https://news.example/articles/927135996_121885030"
+        research = {
+            "brief": f"来源页面（{source}）说明运动员保持专注。",
+            "sources": [
+                {
+                    "title": "比赛报道",
+                    "url": source,
+                    "claim": "运动员保持专注。",
+                }
+            ],
+        }
+
+        issues = _research_validation_issues(
+            research,
+            (source,),
+            {"topic": "运动员比赛"},
+        )
+
+        self.assertEqual((), issues)
+
     def test_research_rejects_unsupported_chinese_quantities(self) -> None:
         url = "https://science.example.test/space-weather"
         issues = _research_validation_issues(
@@ -956,6 +1080,104 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
         self.assertIn("non_footage_scene:1", issues)
         self.assertIn("unsupported_shot_detail:2:接球失误", issues)
 
+    def test_script_rejects_a_direct_quote_missing_from_available_evidence(
+        self,
+    ) -> None:
+        issues = _script_grounding_issues(
+            {
+                "narration": "村民说：“以前走很久，现在十几分钟就到了。”",
+                "scenes": ["贵州山区道路与桥梁"],
+            },
+            {
+                "brief": "贵州桥梁建设改善了山区交通条件。",
+                "sources": [
+                    {
+                        "url": "https://example.com/bridge",
+                        "claim": "山区交通条件持续改善。",
+                    }
+                ],
+            },
+            {"topic": "贵州桥梁三十年"},
+        )
+
+        self.assertIn("unsupported_direct_quote", issues)
+
+    def test_script_accepts_a_direct_quote_present_in_available_evidence(self) -> None:
+        quote = "以前走很久，现在十几分钟就到了。"
+        issues = _script_grounding_issues(
+            {
+                "narration": f"村民说：“{quote}”",
+                "scenes": ["贵州山区道路与桥梁"],
+            },
+            {
+                "brief": "贵州桥梁建设改善了山区交通条件。",
+                "sources": [
+                    {
+                        "url": "https://example.com/bridge",
+                        "claim": f"受访村民原话：{quote}",
+                    }
+                ],
+            },
+            {"topic": "贵州桥梁三十年"},
+        )
+
+        self.assertNotIn("unsupported_direct_quote", issues)
+
+    def test_script_flags_policy_copy_embedded_as_a_visual_beat(self) -> None:
+        issues = _script_grounding_issues(
+            {
+                "narration": "贵州桥梁建设改善了山区交通条件。",
+                "scenes": [],
+                "beats": [
+                    {
+                        "id": "policy-copy",
+                        "visual_description": "所有事实与画面均与源文件一致，未作虚构。",
+                    }
+                ],
+            },
+            {
+                "brief": "贵州桥梁建设改善了山区交通条件。",
+                "sources": [{"url": "https://example.com/bridge"}],
+            },
+            {"topic": "贵州桥梁三十年"},
+        )
+
+        self.assertIn("non_footage_beat:policy-copy", issues)
+
+    def test_strict_location_scope_requires_place_evidence_on_every_beat(self) -> None:
+        run = {
+            "topic": (
+                "活化主题：贵州桥梁三十年\n"
+                "地点范围：贵州山区、贵阳及典型桥梁所在地\n"
+                "所有镜头必须保留来源证据。"
+            )
+        }
+        research = {
+            "brief": "贵州桥梁建设改善了山区交通条件。",
+            "sources": [{"url": "https://example.com/bridge"}],
+        }
+        script = {
+            "narration": "贵州桥梁建设改善了山区交通条件。",
+            "scenes": [],
+            "beats": [
+                {
+                    "id": "unscoped-bridge",
+                    "visual_description": "大型桥梁跨越峡谷",
+                    "must_match": ["桥梁"],
+                },
+                {
+                    "id": "guizhou-bridge",
+                    "visual_description": "贵州大型桥梁跨越峡谷",
+                    "must_match": ["贵州", "桥梁"],
+                },
+            ],
+        }
+
+        issues = _script_grounding_issues(script, research, run)
+
+        self.assertIn("beat_location_evidence_missing:unscoped-bridge", issues)
+        self.assertNotIn("beat_location_evidence_missing:guizhou-bridge", issues)
+
     def test_script_rejects_quantities_missing_from_research_and_user_input(
         self,
     ) -> None:
@@ -1035,6 +1257,33 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
             "conforms exactly to this schema", fallback_body["messages"][0]["content"]
         )
 
+    def test_structured_response_accepts_fenced_json_after_provider_thinking(
+        self,
+    ) -> None:
+        content = '<think>internal reasoning</think>\n```json\n{"brief":"ok"}\n```'
+        envelope = {
+            "choices": [{"finish_reason": "stop", "message": {"content": content}}]
+        }
+        transport = FakeTransport(
+            [HttpResponse(status=200, body=json.dumps(envelope).encode())]
+        )
+
+        result = asyncio.run(
+            self.client(transport).structured(
+                operation="test.structured",
+                system="Return JSON.",
+                payload={"topic": "test"},
+                schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["brief"],
+                    "properties": {"brief": {"type": "string"}},
+                },
+            )
+        )
+
+        self.assertEqual({"brief": "ok"}, result)
+
     def test_writing_reads_research_and_publishes_script(self) -> None:
         storage = MemoryArtifacts()
         seed_context = self.context()
@@ -1100,6 +1349,250 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
         self.assertEqual(
             ("night",), result.output_summary["inventory_missing_concepts"]
         )
+
+    def test_writing_repairs_visuals_not_supported_by_frozen_inventory(self) -> None:
+        storage = MemoryArtifacts()
+        seed_context = self.context()
+        research = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "research",
+                "research.json",
+                "application/json",
+                b'{"brief":"facts","sources":[]}',
+            ),
+        )
+        inventory = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "inventory",
+                "inventory.json",
+                "application/json",
+                json.dumps(
+                    {
+                        "catalog_mode": "frozen",
+                        "catalog_snapshot_id": "11111111-1111-4111-8111-111111111111",
+                        "concepts": [
+                            {
+                                "concept": "NASA Apollo",
+                                "representatives": [
+                                    {
+                                        "title": "NASA Apollo archive",
+                                        "description": "火箭位于发射台",
+                                        "labels": ["NASA", "火箭", "发射台"],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+            ),
+        )
+        unsupported = {
+            "title": "Title",
+            "narration": "Words",
+            "scenes": ["宏大计划"],
+            "beats": [
+                {
+                    "id": "beat-1",
+                    "sequence": 1,
+                    "narration": "Words",
+                    "visual_description": "宏大计划历时多年",
+                    "must_match": [],
+                    "must_not_match": [],
+                }
+            ],
+        }
+        supported = {
+            **unsupported,
+            "scenes": ["NASA 火箭位于发射台"],
+            "beats": [
+                {
+                    **unsupported["beats"][0],
+                    "visual_description": "NASA 火箭位于发射台",
+                    "must_match": ["火箭"],
+                }
+            ],
+        }
+        transport = FakeTransport([response(unsupported), response(supported)])
+
+        result = asyncio.run(
+            OpenAIWritingCapability(self.client(transport), storage).execute(
+                self.context(artifacts=(research, inventory))
+            )
+        )
+
+        self.assertEqual(2, len(transport.requests))
+        self.assertFalse(result.requires_review)
+        self.assertEqual((), result.output_summary["grounding_issues"])
+        revised = storage.read_json(result.artifacts[0])
+        self.assertEqual(["火箭"], revised["beats"][0]["must_match"])
+
+    def test_writing_falls_back_to_verified_inventory_broll_after_model_retries(
+        self,
+    ) -> None:
+        storage = MemoryArtifacts()
+        seed_context = self.context()
+        research = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "research",
+                "research.json",
+                "application/json",
+                b'{"brief":"facts","sources":[]}',
+            ),
+        )
+        inventory = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "inventory",
+                "inventory.json",
+                "application/json",
+                json.dumps(
+                    {
+                        "catalog_mode": "frozen",
+                        "catalog_snapshot_id": "11111111-1111-4111-8111-111111111111",
+                        "concepts": [
+                            {
+                                "representatives": [
+                                    {
+                                        "title": "NASA archive",
+                                        "description": "火箭矗立在发射台上",
+                                        "labels": ["火箭", "发射台"],
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ).encode(),
+            ),
+        )
+        unsupported = {
+            "title": "Title",
+            "narration": "Words",
+            "scenes": ["宏大计划"],
+            "beats": [
+                {
+                    "id": "beat-1",
+                    "sequence": 1,
+                    "narration": "Words",
+                    "visual_description": "宏大计划历时多年",
+                    "must_match": [],
+                    "must_not_match": [],
+                }
+            ],
+        }
+        transport = FakeTransport([response(unsupported)] * 3)
+
+        result = asyncio.run(
+            OpenAIWritingCapability(self.client(transport), storage).execute(
+                self.context(artifacts=(research, inventory))
+            )
+        )
+
+        self.assertEqual(3, len(transport.requests))
+        self.assertFalse(result.requires_review)
+        self.assertGreater(result.output_summary["inventory_repairs_applied"], 0)
+        revised = storage.read_json(result.artifacts[0])
+        self.assertEqual(
+            "火箭矗立在发射台上", revised["beats"][0]["visual_description"]
+        )
+        self.assertEqual(["火箭"], revised["beats"][0]["must_match"])
+
+    def test_writing_repairs_synthesized_beats_when_model_omits_beats(self) -> None:
+        storage = MemoryArtifacts()
+        seed_context = self.context()
+        research = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "research",
+                "research.json",
+                "application/json",
+                b'{"brief":"facts","sources":[]}',
+            ),
+        )
+        inventory = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "inventory",
+                "inventory.json",
+                "application/json",
+                json.dumps(
+                    {
+                        "catalog_mode": "frozen",
+                        "catalog_snapshot_id": "11111111-1111-4111-8111-111111111111",
+                        "concepts": [
+                            {
+                                "representatives": [
+                                    {
+                                        "title": "NASA archive",
+                                        "description": "火箭矗立在发射台上",
+                                        "labels": ["火箭", "发射台"],
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ).encode(),
+            ),
+        )
+        transport = FakeTransport(
+            [response({"title": "Title", "narration": "Words", "scenes": []})]
+        )
+
+        result = asyncio.run(
+            OpenAIWritingCapability(self.client(transport), storage).execute(
+                self.context(artifacts=(research, inventory))
+            )
+        )
+
+        self.assertFalse(result.requires_review)
+        self.assertGreater(result.output_summary["inventory_repairs_applied"], 0)
+        revised = storage.read_json(result.artifacts[0])
+        self.assertEqual(
+            "火箭矗立在发射台上", revised["beats"][0]["visual_description"]
+        )
+        self.assertEqual(["火箭"], revised["beats"][0]["must_match"])
+
+    def test_writing_treats_live_missing_inventory_as_acquisition_targets(self) -> None:
+        storage = MemoryArtifacts()
+        seed_context = self.context()
+        research = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "research",
+                "research.json",
+                "application/json",
+                b'{"brief":"facts","sources":[]}',
+            ),
+        )
+        inventory = storage.publish(
+            seed_context,
+            ProviderArtifact(
+                "inventory",
+                "inventory.json",
+                "application/json",
+                b'{"catalog_snapshot_id":null,"catalog_mode":"live","coverage":{"status":"pending_auto_acquisition","missing_concepts":["night"]},"concepts":[]}',
+            ),
+        )
+        transport = FakeTransport(
+            [response({"title": "Title", "narration": "Words", "scenes": ["night"]})]
+        )
+
+        result = asyncio.run(
+            OpenAIWritingCapability(self.client(transport), storage).execute(
+                self.context(artifacts=(research, inventory))
+            )
+        )
+
+        self.assertFalse(result.output_summary["inventory_constrained"])
+        self.assertTrue(result.output_summary["inventory_auto_acquisition_pending"])
+        self.assertEqual("live", result.output_summary["inventory_catalog_mode"])
+        system_prompt = json.loads(transport.requests[0].body)["messages"][0]["content"]
+        self.assertIn("acquisition targets", system_prompt)
 
     def test_writing_repairs_repeated_full_narration_and_keeps_visual_evidence(
         self,

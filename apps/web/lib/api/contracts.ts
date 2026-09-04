@@ -508,7 +508,7 @@ export interface AssetFileInfo {
 }
 
 export interface AssetSource {
-  id: string;
+  id?: string;
   type: string;
   locator?: string;
   provider?: string;
@@ -718,6 +718,19 @@ export interface AssetUploadRequest {
   relativePath?: string;
 }
 
+export interface DocumentVideoCreateRequest {
+  file: File;
+  topic: string;
+  durationSeconds: number;
+  aspectRatio: "16:9" | "9:16" | "1:1";
+  generatedBackgroundEnabled: boolean;
+}
+
+export interface DocumentVideoCreateResult {
+  sourceId: string;
+  runId: string;
+}
+
 export interface RemoteAssetImportRequest {
   libraryId: string;
   sourceUrl: string;
@@ -805,6 +818,7 @@ export interface SkillVersionOption {
   skillName: string;
   versionId: string;
   version: string;
+  defaultPipelineVersionId?: string;
   publisher: Publisher;
 }
 
@@ -872,7 +886,7 @@ export interface FullAiSpec {
 }
 
 export interface FullAiQuote {
-  currency: string;
+  currency: "CNY" | "USD";
   amountMinor: number;
   expiresAt: IsoTimestamp;
 }
@@ -894,7 +908,7 @@ export interface FullAiEstimate {
 export interface FullAiRunCreateRequest extends FullAiSpec {
   estimateFingerprint: string;
   maxCostMinor: number;
-  currency: string;
+  currency: "CNY" | "USD";
 }
 
 export interface FullAiRun {
@@ -1017,6 +1031,8 @@ export interface WebpageVideoStoryboardShot {
   reason?: string;
   previewUrl?: string;
   durationSeconds?: number;
+  motion: "static" | "zoom_in" | "zoom_out" | "pan";
+  transition: "cut" | "fade_black";
   enabled: boolean;
   order: number;
 }
@@ -1051,7 +1067,13 @@ export interface WebpageVideoStoryboardReviewRequest {
   comment?: string;
   expectedRevision: number;
   expectedSha256: string;
-  shots: Array<{ id: string; enabled: boolean; order: number }>;
+  shots: Array<{
+    id: string;
+    enabled: boolean;
+    order: number;
+    motion?: WebpageVideoStoryboardShot["motion"];
+    transition?: WebpageVideoStoryboardShot["transition"];
+  }>;
 }
 
 export interface WebpageVideoCapture {
@@ -1064,6 +1086,13 @@ export interface WebpageVideoCapture {
   height?: number;
   capturedAt?: IsoTimestamp;
   expiresAt?: IsoTimestamp;
+  review?: {
+    decision: "approve" | "request_changes" | "reject";
+    comment?: string;
+    issueCodes: string[];
+    reviewedRevision: number;
+    decidedAt?: IsoTimestamp;
+  };
 }
 
 export interface WebpageVideoMedia {
@@ -1072,6 +1101,83 @@ export interface WebpageVideoMedia {
   captionsUrl?: string;
   mediaType?: string;
   filename?: string;
+  sha256?: string;
+  byteSize?: number;
+}
+
+export interface WebpageVideoPilotFeedback {
+  id: string;
+  webpageVideoRunId: string;
+  customerSegment: string;
+  baselineMinutes: number;
+  assistedMinutes: number;
+  savedMinutes: number;
+  timeReductionPercent: number;
+  revisionCount: number;
+  outcome: "evaluating" | "adopted" | "rejected";
+  satisfactionScore?: number;
+  willingnessToPayHkd?: number;
+  notes?: string;
+  revision: number;
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+}
+
+export interface WebpageVideoPilotFeedbackSaveRequest {
+  customerSegment: string;
+  baselineMinutes: number;
+  assistedMinutes: number;
+  revisionCount: number;
+  outcome: WebpageVideoPilotFeedback["outcome"];
+  satisfactionScore?: number;
+  willingnessToPayHkd?: number;
+  notes?: string;
+  expectedRevision: number;
+}
+
+export interface WebpageVideoPilotSummaryItem {
+  webpageVideoRunId: string;
+  customerSegment: string;
+  baselineMinutes: number;
+  assistedMinutes: number;
+  savedMinutes: number;
+  timeReductionPercent: number;
+  revisionCount: number;
+  outcome: WebpageVideoPilotFeedback["outcome"];
+  satisfactionScore?: number;
+  willingnessToPayHkd?: number;
+  updatedAt: IsoTimestamp;
+}
+
+export interface WebpageVideoPilotSegmentSummary {
+  customerSegment: string;
+  pilotCount: number;
+  adoptedCount: number;
+  savedMinutes: number;
+  averageTimeReductionPercent: number;
+}
+
+export interface WebpageVideoPilotSummary {
+  schemaVersion: string;
+  generatedAt: IsoTimestamp;
+  totalRecords: number;
+  includedRecords: number;
+  truncated: boolean;
+  recommendedMinimumPilots: number;
+  pilotTargetMet: boolean;
+  adoptedCount: number;
+  evaluatingCount: number;
+  rejectedCount: number;
+  baselineMinutesTotal: number;
+  assistedMinutesTotal: number;
+  savedMinutesTotal: number;
+  timeReductionPercent?: number;
+  averageSatisfactionScore?: number;
+  satisfactionResponseCount: number;
+  averageWillingnessToPayHkd?: number;
+  willingnessToPayResponseCount: number;
+  segments: WebpageVideoPilotSegmentSummary[];
+  items: WebpageVideoPilotSummaryItem[];
 }
 
 export interface WebpageVideoRun {
@@ -1095,6 +1201,7 @@ export interface WebpageVideoRun {
   capture?: WebpageVideoCapture;
   siteMode: boolean;
   finalVideo?: WebpageVideoMedia;
+  pilotFeedback?: WebpageVideoPilotFeedback;
   failure?: { code?: string; message: string; retryable: boolean };
   createdAt?: IsoTimestamp;
   updatedAt?: IsoTimestamp;
@@ -1116,6 +1223,9 @@ export interface CapabilityGap {
 export interface RunDraft {
   workspaceId: string;
   topic: string;
+  researchMode?: "off" | "when_missing" | "required";
+  inventoryConcepts?: string[];
+  sourceUrls?: string[];
   channelId?: string;
   composition: RunComposition;
   videoSettings?: VideoSettings;
@@ -1148,6 +1258,9 @@ export interface VideoSettings {
     maxAssets: number;
     copyrightStatus: "licensed" | "public_domain";
     rightsConfirmed: boolean;
+  };
+  noAssetDraft: {
+    enabled: boolean;
   };
 }
 
@@ -1227,7 +1340,7 @@ export interface Run {
   id: string;
   workspaceId: string;
   topic: string;
-  projectKind?: "standard" | "full_ai" | "webpage_video";
+  projectKind?: "standard" | "full_ai" | "webpage_video" | "document_video";
   controlRunId?: string;
   channelId?: string;
   status: RunStatus;

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package_id": "framefactory.official-skills.v1",
-  "package_version": "1.8.0",
+  "package_version": "1.13.0",
   "description": "Curated official starting points represented as ordinary declarative Skill and SkillVersion records.",
   "dry_run_only": true,
   "publisher": {
@@ -67,6 +67,14 @@
       "expected_content_hash": "54c58573fdfd57f7ae03cca7617b59d63ea7961b4e30a1ebf5db54975435f98b"
     },
     {
+      "order": 35,
+      "slug": "standard-production",
+      "pipeline_id": "2c15b2d6-1460-5d30-a718-f4b06d8e28d7",
+      "version_id": "3cbfb0d5-69ab-507d-ac62-e9918b3c3462",
+      "version": "pipelines/standard-production/4.json",
+      "expected_content_hash": "e6e38496571ef96916444e1ba2db4715cb03dc4f2cc53ca5d1bdc8a45116e756"
+    },
+    {
       "order": 40,
       "slug": "full-ai-production",
       "pipeline_id": "7ed21b77-7e4c-5801-8fc0-bee133575101",
@@ -97,6 +105,22 @@
       "version_id": "2110e922-329d-565f-ba7a-3616c9d5070b",
       "version": "pipelines/webpage-video-production/2.json",
       "expected_content_hash": "d310c9ee96a16341e7ef273d0043df35297aa316c5518b75fb429b1b439155d6"
+    },
+    {
+      "order": 60,
+      "slug": "document-hybrid-production",
+      "pipeline_id": "414940e8-81c1-5f47-b609-03fc01a1a3bc",
+      "version_id": "6a36cbee-99d4-5f25-84fd-5c3352005275",
+      "version": "pipelines/document-hybrid-production/1.json",
+      "expected_content_hash": "d6d80339b7ca19bd591a3b87008f404cf77cb3c4147fc9a5758dabd0aa4da140"
+    },
+    {
+      "order": 61,
+      "slug": "document-hybrid-production",
+      "pipeline_id": "414940e8-81c1-5f47-b609-03fc01a1a3bc",
+      "version_id": "0979fced-2c88-514a-a13a-1f7863798e62",
+      "version": "pipelines/document-hybrid-production/2.json",
+      "expected_content_hash": "635bca200dbe17dd81daba10885853bf29706f9e81d1097a1772e511276d287a"
     }
   ],
   "entries": [
@@ -176,6 +200,48 @@
       "skill": "webpage-video-director/skill.json",
       "version": "webpage-video-director/1.1.0.json",
       "expected_content_hash": "0b067d7f6bf9d048ee696e8f2b03e8ca071b85e350f5566ef979625682f969d1"
+    },
+    {
+      "order": 80,
+      "slug": "guizhou-broadcast-memory-revival",
+      "skill": "guizhou-broadcast-memory-revival/skill.json",
+      "version": "guizhou-broadcast-memory-revival/1.0.0.json",
+      "expected_content_hash": "6a9d37feff4b7d52934b09187c08fe5608696c8c3856154676aa8029b5d597a5"
+    },
+    {
+      "order": 81,
+      "slug": "guizhou-broadcast-memory-revival",
+      "skill": "guizhou-broadcast-memory-revival/skill.json",
+      "version": "guizhou-broadcast-memory-revival/1.1.0.json",
+      "expected_content_hash": "a40e0fe1537eb57d328d96ce351dff24df91d43cce30ef2ebdb6748ea6644641"
+    },
+    {
+      "order": 82,
+      "slug": "guizhou-broadcast-memory-revival",
+      "skill": "guizhou-broadcast-memory-revival/skill.json",
+      "version": "guizhou-broadcast-memory-revival/1.2.0.json",
+      "expected_content_hash": "db3f61065778ebd15e9e9d2d794792861b523e3baad2f33a27990c0bbe8e291b"
+    },
+    {
+      "order": 90,
+      "slug": "document-video-director",
+      "skill": "document-video-director/skill.json",
+      "version": "document-video-director/1.0.0.json",
+      "expected_content_hash": "972cca7f5de6fbe43fcf016505a01f3fab846c5d63cfccb6d6a02b5a87cb07a2"
+    },
+    {
+      "order": 91,
+      "slug": "document-video-director",
+      "skill": "document-video-director/skill.json",
+      "version": "document-video-director/1.1.0.json",
+      "expected_content_hash": "2174db855010503d735d10071d6f9af50afc1955b6e8667d64c927950bda47df"
+    },
+    {
+      "order": 92,
+      "slug": "document-video-director",
+      "skill": "document-video-director/skill.json",
+      "version": "document-video-director/1.2.0.json",
+      "expected_content_hash": "c00247f89864d6d8d2bebabd47238483ba1f6ccc699d79bd5be5d9719c3cbe25"
     }
   ]
 }

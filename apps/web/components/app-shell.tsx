@@ -41,7 +41,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const result = await adapterRef.current.getSession();
     if (result.ok) {
       setSession(result.data);
-      setLocale(result.data.user.locale);
+      // The application workspaces are currently complete in Simplified Chinese.
+      // Keep the interface language honest until the remaining routes are translated.
+      setLocale("zh-CN");
       setConnection("online");
       return;
     }
@@ -165,15 +167,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
 
-        <div className="sidebar-context">
-          <p className="nav-label">{t("shell.currentEnvironment")}</p>
-          <dl>
-            <div><dt>{t("shell.workspace")}</dt><dd>{workspace?.name ?? "—"}</dd></div>
-            <div><dt>{t("shell.permission")}</dt><dd>{workspace?.role ?? "—"}</dd></div>
-            <div><dt>{t("shell.service")}</dt><dd data-state={connection}>{connectionLabel}</dd></div>
-          </dl>
-          {connection === "offline" ? <button type="button" onClick={() => void refreshSession()}>{t("shell.reconnect")}</button> : null}
-        </div>
       </aside>
 
       <main id="main-content" className="main-content">{children}</main>

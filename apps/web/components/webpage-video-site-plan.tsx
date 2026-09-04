@@ -10,6 +10,7 @@ import {
   type WebpageVideoStoryboardShot,
 } from "@/lib/api";
 import { safeBrowserMediaUrl } from "@/lib/safe-media-url";
+import { UiSelect } from "@/components/ui-select";
 
 type SiteState = "loading" | "ready" | "empty" | "error";
 type Gate = "scope" | "storyboard";
@@ -26,6 +27,63 @@ function validHash(value: string): boolean {
 function scoreLabel(value?: number): string {
   if (typeof value !== "number") return "—";
   return value <= 1 ? `${Math.round(value * 100)}%` : String(Math.round(value));
+}
+
+function StoryboardShotCard({
+  shot,
+  index,
+  total,
+  editable,
+  onMove,
+  onUpdate,
+  onPreviewLoaded,
+  onPreviewFailed,
+}: {
+  shot: WebpageVideoStoryboardShot;
+  index: number;
+  total: number;
+  editable: boolean;
+  onMove: (direction: -1 | 1) => void;
+  onUpdate: (patch: Partial<WebpageVideoStoryboardShot>) => void;
+  onPreviewLoaded: (key: string) => void;
+  onPreviewFailed: (key: string) => void;
+}) {
+  const url = safeBrowserMediaUrl(shot.previewUrl);
+  const previewKey = url ? `${shot.id}|${url}` : "";
+  return (
+    <li data-disabled={!shot.enabled || undefined}>
+      <div className="web-video-shot-order">
+        <strong>{String(index + 1).padStart(2, "0")}</strong>
+        <button type="button" aria-label={`上移 ${shot.label}`} disabled={!editable || index === 0} onClick={() => onMove(-1)}>↑</button>
+        <button type="button" aria-label={`下移 ${shot.label}`} disabled={!editable || index === total - 1} onClick={() => onMove(1)}>↓</button>
+      </div>
+      {url ? (
+        <Image
+          unoptimized
+          src={url}
+          alt={`${shot.label} 镜头预览`}
+          width={640}
+          height={360}
+          referrerPolicy="no-referrer"
+          onLoad={() => onPreviewLoaded(previewKey)}
+          onError={() => onPreviewFailed(previewKey)}
+        />
+      ) : <div className="web-video-shot-missing" role="alert">缺少安全预览</div>}
+      <div className="web-video-shot-copy">
+        <strong>{shot.label}</strong>
+        <small>{shot.durationSeconds ? `${shot.durationSeconds}s · ` : ""}{shot.regionId ? "关键区域特写" : "页面全景"}</small>
+        {shot.reason ? <p>{shot.reason}</p> : null}
+      </div>
+      <div className="web-video-shot-controls">
+        <div><span>镜头运动</span><UiSelect ariaLabel={`${shot.label} 镜头运动`} value={shot.motion} disabled={!editable || !shot.enabled} onChange={(motion) => onUpdate({ motion: motion as WebpageVideoStoryboardShot["motion"] })}><option value="zoom_in">缓慢推近</option><option value="zoom_out">缓慢拉远</option><option value="pan">轻柔平移</option><option value="static">静止画面</option></UiSelect></div>
+        <div><span>与前镜头</span><UiSelect ariaLabel={`${shot.label} 转场`} value={index === 0 ? "cut" : shot.transition} disabled={!editable || !shot.enabled || index === 0} onChange={(transition) => onUpdate({ transition: transition as WebpageVideoStoryboardShot["transition"] })}><option value="fade_black">淡黑过渡</option><option value="cut">直接切换</option></UiSelect></div>
+      </div>
+      <label className="web-video-shot-toggle">
+        <input type="checkbox" checked={shot.enabled} disabled={!editable} onChange={(event) => onUpdate({ enabled: event.target.checked })} />
+        <span>{shot.enabled ? "启用" : "停用"}</span>
+      </label>
+    </li>
+  );
 }
 
 export function WebpageVideoSitePlanPanel({ run, onChanged }: { run: WebpageVideoRun; onChanged: () => void }) {
@@ -133,7 +191,13 @@ export function WebpageVideoSitePlanPanel({ run, onChanged }: { run: WebpageVide
         comment: comment.trim() || undefined,
         expectedRevision: site.storyboard!.revision,
         expectedSha256: site.storyboard!.sha256,
-        shots: shots.map((shot, order) => ({ id: shot.id, enabled: shot.enabled, order: order + 1 })),
+        shots: shots.map((shot, order) => ({
+          id: shot.id,
+          enabled: shot.enabled,
+          order: order + 1,
+          motion: shot.motion,
+          transition: order === 0 ? "cut" : shot.transition,
+        })),
       }, idempotencyKey(`webpage-video-storyboard-${decision}`));
     setAction(null);
     if (!result.ok) {
@@ -187,9 +251,9 @@ export function WebpageVideoSitePlanPanel({ run, onChanged }: { run: WebpageVide
 
       <section className="panel web-video-storyboard" aria-labelledby="storyboard-title">
         <header><div><p className="eyebrow">STORYBOARD · HUMAN GATE 2</p><h2 id="storyboard-title">镜头板顺序</h2></div><span>{site.storyboard?.status?.toUpperCase() || "WAITING"}</span></header>
-        {shots.length ? <ol>{shots.map((shot, index) => { const url = safeBrowserMediaUrl(shot.previewUrl); const previewKey = url ? `${shot.id}|${url}` : ""; return <li key={shot.id} data-disabled={!shot.enabled || undefined}><div className="web-video-shot-order"><strong>{String(index + 1).padStart(2, "0")}</strong><button type="button" aria-label={`上移 ${shot.label}`} disabled={index === 0 || run.status !== "awaiting_storyboard_review"} onClick={() => moveShot(index, -1)}>↑</button><button type="button" aria-label={`下移 ${shot.label}`} disabled={index === shots.length - 1 || run.status !== "awaiting_storyboard_review"} onClick={() => moveShot(index, 1)}>↓</button></div>{url ? <Image unoptimized src={url} alt={`${shot.label} 镜头预览`} width={640} height={360} referrerPolicy="no-referrer" onLoad={() => setLoadedPreviews((current) => new Set(current).add(previewKey))} onError={() => setLoadedPreviews((current) => { const next = new Set(current); next.delete(previewKey); return next; })} /> : <div className="web-video-shot-missing" role="alert">缺少安全预览</div>}<div className="web-video-shot-copy"><strong>{shot.label}</strong><small>{shot.durationSeconds ? `${shot.durationSeconds}s · ` : ""}{shot.regionId ? "关键区域特写" : "页面全景"}</small>{shot.reason ? <p>{shot.reason}</p> : null}</div><label><input type="checkbox" checked={shot.enabled} disabled={run.status !== "awaiting_storyboard_review" || Boolean(action)} onChange={(event) => updateShot(shot.id, { enabled: event.target.checked })} /><span>{shot.enabled ? "启用" : "停用"}</span></label></li>; })}</ol> : <div className="web-video-capture-empty" role="status"><span>⌁</span><h3>镜头板尚未生成</h3><p>区域分析完成后，系统会把页面全景与高清局部组织成候选镜头。</p></div>}
+        {shots.length ? <ol>{shots.map((shot, index) => <StoryboardShotCard key={shot.id} shot={shot} index={index} total={shots.length} editable={run.status === "awaiting_storyboard_review" && !action} onMove={(direction) => moveShot(index, direction)} onUpdate={(patch) => updateShot(shot.id, patch)} onPreviewLoaded={(key) => setLoadedPreviews((current) => new Set(current).add(key))} onPreviewFailed={(key) => setLoadedPreviews((current) => { const next = new Set(current); next.delete(key); return next; })} />)}</ol> : <div className="web-video-capture-empty" role="status"><span>⌁</span><h3>镜头板尚未生成</h3><p>区域分析完成后，系统会把页面全景与高清局部组织成候选镜头。</p></div>}
         {site.storyboard ? <dl className="web-video-evidence"><div><dt>Storyboard revision</dt><dd>{site.storyboard.revision || "—"}</dd></div><div><dt>Storyboard SHA-256</dt><dd><code>{site.storyboard.sha256 || "等待清单固化"}</code></dd></div><div><dt>启用镜头</dt><dd>{enabledShots.length} / {shots.length}</dd></div></dl> : null}
-        {run.status === "awaiting_storyboard_review" ? <div className="web-video-site-gate"><label className="field" htmlFor="web-video-site-review-comment"><span>审核备注（可选）</span><textarea id="web-video-site-review-comment" className="textarea" value={comment} maxLength={1000} disabled={Boolean(action)} onChange={(event) => setComment(event.target.value)} /></label>{!canReviewStoryboard ? <p role="status">至少启用一个镜头，且所有启用镜头必须在本页成功加载预览；还需要有效 revision 和 64 位镜头板哈希。</p> : null}<div><button className="button" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "approve")}>批准镜头板并生成视频</button><button className="button-ghost" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "request_changes")}>要求重新截图并重建镜头板</button><button className="button-danger" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "reject")}>拒绝并停止</button></div></div> : <p className="web-video-site-locked">镜头启停与顺序只在镜头板审核阶段可编辑；重截或重建会产生新 revision/hash。</p>}
+        {run.status === "awaiting_storyboard_review" ? <div className="web-video-site-gate"><p className="web-video-storyboard-tip">先调整镜头顺序、运动和转场，再批准生成。运动会围绕系统识别的关键区域缓慢执行。</p><label className="field" htmlFor="web-video-site-review-comment"><span>审核备注（可选）</span><textarea id="web-video-site-review-comment" className="textarea" value={comment} maxLength={1000} disabled={Boolean(action)} onChange={(event) => setComment(event.target.value)} /></label>{!canReviewStoryboard ? <p role="status">至少启用一个镜头，且所有启用镜头必须在本页成功加载预览；还需要有效 revision 和 64 位镜头板哈希。</p> : null}<div><button className="button" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "approve")}>批准剪辑方案并生成视频</button><button className="button-ghost" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "request_changes")}>要求重新截图并重建镜头板</button><button className="button-danger" type="button" disabled={!canReviewStoryboard} onClick={() => void review("storyboard", "reject")}>拒绝并停止</button></div></div> : <p className="web-video-site-locked">镜头启停、顺序、运动与转场只在镜头板审核阶段可编辑；重截或重建会产生新 revision/hash。</p>}
       </section>
     </>
   );

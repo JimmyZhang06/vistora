@@ -45,6 +45,7 @@ class _Connection:
     def __init__(self) -> None:
         self.fetchval_result: Any = 1
         self.fetchrow_result: Any = None
+        self.fetch_result: list[Any] = []
         self.executions: list[tuple[str, tuple[Any, ...]]] = []
 
     def transaction(self) -> _Context:
@@ -64,7 +65,7 @@ class _Connection:
 
     async def fetch(self, query: str, *args: Any) -> list[Any]:
         self.executions.append((query, args))
-        return []
+        return self.fetch_result
 
 
 class _Pool:
@@ -101,6 +102,44 @@ def test_asset_segments_only_query_current_completed_analysis() -> None:
     assert args == (WORKSPACE_ID, USER_ID)
 
 
+def test_pilot_summary_source_is_workspace_scoped_bounded_and_newest_first() -> None:
+    connection = _Connection()
+    now = datetime.now(UTC)
+    run_id = uuid4()
+    connection.fetchval_result = 2
+    connection.fetch_result = [
+        {
+            "id": uuid4(),
+            "workspace_id": WORKSPACE_ID,
+            "webpage_video_run_id": run_id,
+            "customer_segment": "香港内容代理商",
+            "baseline_minutes": 90,
+            "assisted_minutes": 30,
+            "revision_count": 1,
+            "outcome": "adopted",
+            "satisfaction_score": 5,
+            "willingness_to_pay_hkd": 1200,
+            "notes": None,
+            "revision": 1,
+            "created_by": USER_ID,
+            "created_at": now,
+            "updated_at": now,
+        }
+    ]
+    repository = _repository(connection)
+
+    rows, total = asyncio.run(repository.list_webpage_pilot_feedback(WORKSPACE_ID, limit=25))
+
+    assert total == 2
+    assert rows[0]["webpage_video_run_id"] == str(run_id)
+    count_query, count_args = connection.executions[-2]
+    list_query, list_args = connection.executions[-1]
+    assert "WHERE workspace_id = $1" in count_query
+    assert count_args == (WORKSPACE_ID,)
+    assert "ORDER BY updated_at DESC, id DESC" in list_query
+    assert list_args == (WORKSPACE_ID, 25)
+
+
 def test_verified_wikimedia_rights_are_persisted_as_trusted_source_evidence() -> None:
     connection = _Connection()
     repository = _repository(connection)
@@ -128,8 +167,7 @@ def test_verified_wikimedia_rights_are_persisted_as_trusted_source_evidence() ->
             "rights_evidence": {
                 "source_type": "website",
                 "locator": (
-                    "https://commons.wikimedia.org/wiki/"
-                    "File:Apollo_11_Landing_first_steps.ogv"
+                    "https://commons.wikimedia.org/wiki/File:Apollo_11_Landing_first_steps.ogv"
                 ),
                 "provider": "wikimedia",
                 "attribution": "NASA",
@@ -162,10 +200,7 @@ def test_verified_wikimedia_rights_are_persisted_as_trusted_source_evidence() ->
         if "INSERT INTO asset_sources" in query
     )
     assert "evidence_type,verified_at" in query
-    assert args[4] == (
-        "https://commons.wikimedia.org/wiki/"
-        "File:Apollo_11_Landing_first_steps.ogv"
-    )
+    assert args[4] == ("https://commons.wikimedia.org/wiki/File:Apollo_11_Landing_first_steps.ogv")
     assert args[5:9] == (
         "wikimedia",
         "NASA",
@@ -379,9 +414,7 @@ def test_asset_library_lookup_is_workspace_scoped_and_preserves_status() -> None
         "ready_asset_count": 2,
     }
 
-    resource = asyncio.run(
-        _repository(connection).get_asset_library(WORKSPACE_ID, library_id)
-    )
+    resource = asyncio.run(_repository(connection).get_asset_library(WORKSPACE_ID, library_id))
 
     query, args = connection.executions[-1]
     assert "l.workspace_id=$1 AND l.id=$2" in query
@@ -902,9 +935,7 @@ def test_full_ai_repository_inserts_scheduler_and_control_records_in_one_transac
 
 
 def test_full_ai_idempotency_replay_lookup_is_workspace_scoped() -> None:
-    source = inspect.getsource(
-        PostgreSQLControlRepository.find_full_ai_run_by_idempotency_key
-    )
+    source = inspect.getsource(PostgreSQLControlRepository.find_full_ai_run_by_idempotency_key)
 
     assert "far.workspace_id = $1" in source
     assert "far.idempotency_key = $2" in source
@@ -996,10 +1027,13 @@ def test_bootstrap_inserts_official_pipeline_before_skill_versions() -> None:
     ]
     current_by_pipeline = {arguments[0]: arguments[1] for arguments in current_version_updates}
     assert current_by_pipeline[UUID("2c15b2d6-1460-5d30-a718-f4b06d8e28d7")] == UUID(
-        "4c7d9777-d754-5fa3-bf85-4bf5c9746dba"
+        "3cbfb0d5-69ab-507d-ac62-e9918b3c3462"
     )
     assert current_by_pipeline[UUID("7ed21b77-7e4c-5801-8fc0-bee133575101")] == UUID(
         "6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c"
+    )
+    assert current_by_pipeline[UUID("414940e8-81c1-5f47-b609-03fc01a1a3bc")] == UUID(
+        "0979fced-2c88-514a-a13a-1f7863798e62"
     )
     full_ai_update = next(
         arguments
@@ -1008,6 +1042,110 @@ def test_bootstrap_inserts_official_pipeline_before_skill_versions() -> None:
         and arguments[1] == UUID("6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c")
     )
     assert full_ai_update[5] == "active"
+    pipeline_integrity_checks = [
+        (query, args)
+        for query, args in connection.executions
+        if "SELECT 1 FROM pipeline_versions" in query
+    ]
+    assert len(pipeline_integrity_checks) == len(versions.pipelines)
+    assert all("graph = $5::jsonb" in query for query, _ in pipeline_integrity_checks)
+    assert all(
+        "capability_requirements = $6::jsonb" in query for query, _ in pipeline_integrity_checks
+    )
+    assert all(len(args) == 6 for _, args in pipeline_integrity_checks)
+    skill_integrity_checks = [
+        (query, args)
+        for query, args in connection.executions
+        if "SELECT 1 FROM skill_versions" in query
+    ]
+    assert len(skill_integrity_checks) == len(versions)
+    assert all("input_schema = $5::jsonb" in query for query, _ in skill_integrity_checks)
+    assert all(
+        "default_pipeline_version_id IS NOT DISTINCT FROM $13" in query
+        for query, _ in skill_integrity_checks
+    )
+    assert all(len(args) == 13 for _, args in skill_integrity_checks)
+
+
+def test_bootstrap_keeps_persisted_document_v1_1_and_adds_v1_2() -> None:
+    skills, versions = load_official_catalog(ContractValidator())
+    document_v1_1 = next(
+        version for version in versions if version["id"] == "91fb01cd-c519-51f8-b077-99a13cc7ef0d"
+    )
+
+    def persisted_signature(resource: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            UUID(resource["id"]),
+            UUID(resource["workspace_id"]),
+            UUID(resource["skill_id"]),
+            resource["content_hash"],
+            resource["input_schema"],
+            resource["research_policy"],
+            resource["writing_policy"],
+            resource["visual_policy"],
+            resource["asset_policy"],
+            resource["qc_policy"],
+            resource["capability_requirements"],
+            resource["output_contract"],
+            UUID(resource["default_pipeline_version_id"]),
+        )
+
+    class PersistedCatalogConnection(_Connection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.persisted_versions = {
+                UUID(document_v1_1["id"]): persisted_signature(document_v1_1)
+            }
+
+        async def execute(self, query: str, *args: Any) -> str:
+            self.executions.append((query, args))
+            if "INSERT INTO skill_versions" in query:
+                signature = (
+                    args[0],
+                    args[1],
+                    args[2],
+                    args[16],
+                    args[7],
+                    args[8],
+                    args[9],
+                    args[10],
+                    args[11],
+                    args[12],
+                    args[14],
+                    args[13],
+                    args[15],
+                )
+                self.persisted_versions.setdefault(args[0], signature)
+            return "OK"
+
+        async def fetchval(self, query: str, *args: Any) -> Any:
+            self.executions.append((query, args))
+            if "SELECT 1 FROM skill_versions" in query:
+                return self.persisted_versions.get(args[0]) == args
+            return self.fetchval_result
+
+    connection = PersistedCatalogConnection()
+    repository = PostgreSQLControlRepository(
+        _Pool(connection),
+        default_user_id=USER_ID,
+        default_workspace_id=WORKSPACE_ID,
+        default_workspace_name="FrameFactory",
+        official_skills=skills,
+        official_skill_versions=versions,
+    )
+
+    asyncio.run(repository.bootstrap())
+
+    assert connection.persisted_versions[UUID(document_v1_1["id"])][3] == (
+        "2174db855010503d735d10071d6f9af50afc1955b6e8667d64c927950bda47df"
+    )
+    document_v1_2_id = UUID("346045e2-779f-580f-9feb-839f70943827")
+    assert document_v1_2_id in connection.persisted_versions
+    assert any(
+        "UPDATE skills SET current_version_id" in query
+        and args[:2] == (UUID(document_v1_1["skill_id"]), document_v1_2_id)
+        for query, args in connection.executions
+    )
 
 
 def test_bootstrap_rejects_conflicting_persisted_pipeline_content() -> None:
@@ -1029,10 +1167,7 @@ def test_bootstrap_rejects_conflicting_persisted_pipeline_content() -> None:
 
 def test_official_pipeline_migration_allows_only_public_system_cross_workspace_refs() -> None:
     migration = (
-        Path(__file__).resolve().parents[3]
-        / "db"
-        / "migrations"
-        / "0004_official_pipeline.sql"
+        Path(__file__).resolve().parents[3] / "db" / "migrations" / "0004_official_pipeline.sql"
     ).read_text(encoding="utf-8")
 
     assert "runs_skill_version_id_fkey" in migration

@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
 import { UiSelect } from "@/components/ui-select";
+import { useSmartPolling } from "@/lib/use-smart-polling";
 
 function librarySlug(value: string) {
   const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -147,11 +148,10 @@ export function AssetHub() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!jobs.some((job) => job.status === "pending" || job.status === "running")) return;
-    const timer = window.setInterval(() => void load(), 8000);
-    return () => window.clearInterval(timer);
-  }, [jobs, load]);
+  useSmartPolling(load, {
+    enabled: jobs.some((job) => job.status === "pending" || job.status === "running"),
+    intervalMs: 8_000,
+  });
 
   useEffect(() => {
     if (!activeWorkspaceId || buildJob) return;
@@ -168,35 +168,27 @@ export function AssetHub() {
     return () => { stopped = true; };
   }, [activeWorkspaceId, adapter, buildJob]);
 
-  useEffect(() => {
+  const pollBuildJob = useCallback(async () => {
     if (!buildJob || terminalBuildStatuses.has(buildJob.status)) return;
-    let stopped = false;
-    let inFlight = false;
-    const poll = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const result = await adapter.getLibraryBuildJob(buildJob.id);
-        if (stopped) return;
-        if (!result.ok) {
-          setNotice(`素材采集任务状态同步失败：${result.error.message}`);
-          return;
-        }
-        setBuildJob(result.data);
-        if (terminalBuildStatuses.has(result.data.status)) {
-          const ready = result.data.progress.indexed;
-          setNotice(result.data.status === "completed"
-            ? `主题素材任务已完成，${ready} 个素材已建立索引。`
-            : `主题素材任务已结束：${ready} 个已索引，${result.data.progress.failed} 个失败。`);
-          await load();
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    const timer = window.setInterval(() => void poll(), 3000);
-    return () => { stopped = true; window.clearInterval(timer); };
+    const result = await adapter.getLibraryBuildJob(buildJob.id);
+    if (!result.ok) {
+      setNotice(`素材采集任务状态同步失败：${result.error.message}`);
+      return;
+    }
+    setBuildJob(result.data);
+    if (terminalBuildStatuses.has(result.data.status)) {
+      const ready = result.data.progress.indexed;
+      setNotice(result.data.status === "completed"
+        ? `主题素材任务已完成，${ready} 个素材已建立索引。`
+        : `主题素材任务已结束：${ready} 个已索引，${result.data.progress.failed} 个失败。`);
+      await load();
+    }
   }, [adapter, buildJob, load]);
+
+  useSmartPolling(pollBuildJob, {
+    enabled: Boolean(buildJob && !terminalBuildStatuses.has(buildJob.status)),
+    intervalMs: 3_000,
+  });
 
   function selectLocalFiles(selected: File[]) {
     const supported = selected.filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/"));

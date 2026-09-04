@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createFrameFactoryAdapter, type Run, type RunStatus } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { useSmartPolling } from "@/lib/use-smart-polling";
 
 type Filter = "all" | RunStatus;
 
@@ -18,32 +19,35 @@ const labels: Record<RunStatus, string> = {
 };
 
 const filters: Filter[] = ["all", "queued", "running", "awaiting_review", "retrying", "succeeded", "failed", "cancelled"];
+const activeStatuses = new Set<RunStatus>(["queued", "running", "awaiting_review", "retrying"]);
+
+function projectKindLabel(project: Run) {
+  if (project.projectKind === "document_video") return "文件讲解视频";
+  if (project.projectKind === "webpage_video") return "网页截图成片";
+  if (project.projectKind === "full_ai") return "全 AI 影片";
+  return "标准视频制作";
+}
 
 export function ProjectsView() {
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const [filter, setFilter] = useState<Filter>("all");
   const [projects, setProjects] = useState<Run[] | null>(null);
   const [error, setError] = useState("");
-  const [reloadToken, setReloadToken] = useState(0);
   const visible = (projects ?? []).filter((project) => filter === "all" || project.status === filter);
+  const hasActiveProjects = projects === null || projects.some((project) => activeStatuses.has(project.status));
 
-  useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      const result = await adapter.listRuns();
-      if (cancelled) return;
-      if (result.ok) { setProjects(result.data); setError(""); }
-      else { setError(result.error.message); }
-    }
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5_000);
-    return () => { cancelled = true; window.clearInterval(interval); };
-  }, [adapter, reloadToken]);
+  const refresh = useCallback(async () => {
+    const result = await adapter.listRuns();
+    if (result.ok) { setProjects(result.data); setError(""); }
+    else { setError(result.error.message); }
+  }, [adapter]);
+
+  useSmartPolling(refresh, { enabled: hasActiveProjects, intervalMs: 5_000, runImmediately: projects === null });
 
   function retry() {
     setError("");
     setProjects(null);
-    setReloadToken((value) => value + 1);
+    void refresh();
   }
 
   return (
@@ -90,9 +94,9 @@ export function ProjectsView() {
         <section className="project-list" aria-label="项目列表">
           {visible.map((project) => (
             <article className="project-row" key={project.id}>
-              <div><h2>{project.topic}</h2><p>{project.projectKind === "webpage_video" ? "网页视频" : project.projectKind === "full_ai" ? "AI 影片" : project.channelId ? `频道 ${project.channelId.slice(0, 8)}` : "未绑定频道"}</p></div>
+              <div><h2>{project.topic}</h2><p>{projectKindLabel(project)}{project.channelId ? " · 已绑定频道" : " · 独立项目"}</p></div>
               <Badge tone={project.status === "succeeded" ? "success" : ["failed", "cancelled"].includes(project.status) ? "warning" : "accent"}>{labels[project.status]}</Badge>
-              <p>Skill {project.composition.skillVersionId.slice(0, 8)} · Pipeline {project.composition.pipelineVersionId.slice(0, 8)}</p>
+              <p>{project.steps.length} 个步骤 · {project.artifacts.length} 个产物</p>
               <time dateTime={project.updatedAt}>{new Date(project.updatedAt).toLocaleString("zh-CN")}</time>
               <Link
                 className="button-ghost button-small"

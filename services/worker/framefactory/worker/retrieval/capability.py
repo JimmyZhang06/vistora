@@ -26,6 +26,11 @@ from .catalog import (
     RetrievalCatalog,
     SearchCandidates,
 )
+from .editorial_fallback import (
+    build_editorial_fallback,
+    build_editorial_fallback_payload,
+    editorial_fallback_enabled,
+)
 from .models import (
     ConstraintEvidence,
     EvaluatedCandidate,
@@ -144,7 +149,16 @@ class DatabaseRetrievalCapability:
         beats = normalize_beats(script)
         library_ids = asset_library_ids(context.input_snapshot)
         snapshot_id = catalog_snapshot_id(context.input_snapshot)
+        fallback_enabled = editorial_fallback_enabled(context.input_snapshot)
         if not library_ids and snapshot_id is None:
+            if fallback_enabled:
+                return build_editorial_fallback(
+                    context,
+                    self.storage,
+                    script_artifact=script_artifact,
+                    beats=beats,
+                    reason="no_selected_asset_library",
+                )
             raise PermanentStepError("run snapshot contains no selected asset library")
 
         ranked_by_beat = list(
@@ -156,7 +170,19 @@ class DatabaseRetrievalCapability:
             )
         )
         missing_beats = _missing_beats(ranked_by_beat)
-        if snapshot_id is not None and missing_beats:
+        if (
+            missing_beats
+            and len(missing_beats) == len(beats)
+            and fallback_enabled
+        ):
+            return build_editorial_fallback(
+                context,
+                self.storage,
+                script_artifact=script_artifact,
+                beats=beats,
+                reason="no_eligible_catalog_footage",
+            )
+        if snapshot_id is not None and missing_beats and not fallback_enabled:
             raise PermanentStepError(
                 "the frozen catalog snapshot cannot cover every script Beat",
                 code="asset_coverage_insufficient",
@@ -176,7 +202,7 @@ class DatabaseRetrievalCapability:
         queried_beat_ids: tuple[str, ...] = ()
         acquisition_skipped_reason: str | None = None
 
-        if missing_beats and acquisition["enabled"]:
+        if missing_beats and acquisition["enabled"] and snapshot_id is None:
             if not acquisition["rights_confirmed"]:
                 raise PermanentStepError(
                     "automatic asset acquisition requires explicit rights confirmation"
@@ -237,7 +263,11 @@ class DatabaseRetrievalCapability:
                         retry_after_seconds=30,
                     )
         elif missing_beats:
-            acquisition_skipped_reason = "disabled"
+            acquisition_skipped_reason = (
+                "frozen_snapshot_editorial_fallback"
+                if snapshot_id is not None and fallback_enabled
+                else "disabled"
+            )
         else:
             acquisition_skipped_reason = "local_coverage_complete"
 
@@ -263,6 +293,7 @@ class DatabaseRetrievalCapability:
             "sources": list(acquisition["sources"]),
             "max_assets": acquisition["max_assets"],
             "copyright_status": acquisition["copyright_status"],
+            "rights_mode": acquisition["rights_mode"],
             "imported_count": acquisition_result.imported_count,
             "unresolved_queries": list(acquisition_result.unresolved_queries),
             "provider_errors": provider_errors,
@@ -314,6 +345,46 @@ class DatabaseRetrievalCapability:
             rights_status=rights_status,
             acquisition=acquisition_audit,
         )
+        fallback_plan_ref: ArtifactRef | None = None
+        hybrid_fallback = bool(missing_beats and fallback_enabled)
+        if hybrid_fallback:
+            fallback_artifacts, fallback_plan_ref, fallback_manifest = (
+                build_editorial_fallback_payload(
+                    context,
+                    self.storage,
+                    script_artifact=script_artifact,
+                    beats=missing_beats,
+                    reason="partial_catalog_coverage",
+                )
+            )
+            fallback_by_beat = {
+                str(item["id"]): item for item in fallback_manifest["beats"]
+            }
+            manifest["beats"] = [
+                fallback_by_beat.get(str(item["id"]), item)
+                for item in manifest["beats"]
+            ]
+            manifest["materialized_assets"].extend(
+                fallback_manifest["materialized_assets"]
+            )
+            manifest.update(
+                {
+                    "provider": "hybrid-local-and-editorial",
+                    "catalog_scope": "run",
+                    "local_catalog_only": False,
+                    "coverage": {
+                        "status": "complete",
+                        "total_beats": len(beats),
+                        "covered_beats": len(beats),
+                        "missing_beat_ids": [],
+                    },
+                    "rights_status": "verified",
+                    "editorial_fallback": fallback_manifest["editorial_fallback"],
+                }
+            )
+            references.extend((*fallback_artifacts, fallback_plan_ref))
+            missing_beat_ids = ()
+            rights_status = "verified"
         manifest_ref = self.storage.publish(
             context,
             ProviderArtifact(
@@ -331,10 +402,14 @@ class DatabaseRetrievalCapability:
         requires_review = bool(missing_beat_ids)
         summary: dict[str, Any] = {
             "operation": self.operation,
-            "provider": "database-asset-library",
+            "provider": (
+                "hybrid-local-and-editorial"
+                if hybrid_fallback
+                else "database-asset-library"
+            ),
             # Candidate ranking is always against analyzed local catalog rows.
             # Remote acquisition is a separate, explicitly audited side effect.
-            "local_catalog_only": True,
+            "local_catalog_only": not hybrid_fallback,
             "catalog_snapshot_id": snapshot_id,
             "external_acquisition_involved": (
                 acquisition_attempted or resumed_after_analysis
@@ -343,7 +418,7 @@ class DatabaseRetrievalCapability:
             "covered_beats": len(beats) - len(missing_beat_ids),
             "missing_beat_ids": list(missing_beat_ids),
             "saved_candidates": sum(len(items) for _, items in ranked_by_beat),
-            "materialized_assets": len(references),
+            "materialized_assets": len(manifest["materialized_assets"]),
             "candidate_manifest_artifact_id": manifest_ref.id,
             "rights_status": rights_status,
             "auto_acquisition_enabled": acquisition["enabled"],
@@ -352,6 +427,17 @@ class DatabaseRetrievalCapability:
             "auto_resume_pending": auto_resume_pending,
             "acquisition": acquisition_audit,
         }
+        if hybrid_fallback:
+            summary.update(
+                {
+                    "visual_source_mode": "hybrid_editorial_fallback",
+                    "draft": True,
+                    "replacement_required": True,
+                    "fallback_reason": "partial_catalog_coverage",
+                    "temporary_visuals": len(missing_beats),
+                    "video_plan_artifact_id": fallback_plan_ref.id,
+                }
+            )
         if requires_review:
             if auto_resume_pending:
                 action_required = "auto_resume_after_asset_analysis"

@@ -13,14 +13,14 @@ import os
 import re
 import tempfile
 from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 from uuid import UUID
 
 from postgres_restore_gate import _pg_environment, _psql
 from release_gate_common import GateBlocked, GateFailure, load_json, require_env
 from s3_integrity_gate import _aws
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPORT = ROOT / "artifacts" / "release" / "asset-integrity-audit.json"

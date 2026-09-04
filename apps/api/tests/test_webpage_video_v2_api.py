@@ -199,6 +199,169 @@ def test_v2_crawl_limits_are_fail_closed() -> None:
             assert response.status_code == 422
 
 
+def test_successful_run_pilot_feedback_is_idempotent_revision_fenced_and_embedded() -> None:
+    repo = _repository()
+    app = create_app(
+        settings=Settings(worker_capabilities=CAPABILITIES),
+        repository=repo,
+        job_queue=Queue(),
+        object_storage=Storage(),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/webpage-video/runs",
+            headers={"Idempotency-Key": "pilot-create-run-0001"},
+            json=_create_body(),
+        )
+        assert created.status_code == 201, created.text
+        run = created.json()
+        endpoint = f"/v1/webpage-video/runs/{run['id']}/pilot-feedback"
+        body = {
+            "customer_segment": "香港中小型电商团队",
+            "baseline_minutes": 120,
+            "assisted_minutes": 30,
+            "revision_count": 1,
+            "outcome": "adopted",
+            "satisfaction_score": 5,
+            "willingness_to_pay_hkd": 1000,
+            "notes": "试点缩短了内容制作周转时间",
+            "expected_revision": 0,
+        }
+        incomplete = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-incomplete-0001"},
+            json=body,
+        )
+        assert incomplete.status_code == 409
+        assert incomplete.json()["code"] == "WEBPAGE_PILOT_FEEDBACK_RUN_INCOMPLETE"
+
+        repo._runs[run["project_run_id"]]["status"] = "succeeded"
+        saved = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-save-0001"},
+            json=body,
+        )
+        assert saved.status_code == 201, saved.text
+        assert saved.headers["etag"] == '"1"'
+        assert saved.json()["saved_minutes"] == 90
+        assert saved.json()["time_reduction_percent"] == 75.0
+
+        replay = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-save-0001"},
+            json=body,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["id"] == saved.json()["id"]
+
+        update = {
+            **body,
+            "assisted_minutes": 24,
+            "outcome": "evaluating",
+            "expected_revision": 1,
+        }
+        revised = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-save-0002"},
+            json=update,
+        )
+        assert revised.status_code == 200, revised.text
+        assert revised.json()["revision"] == 2
+        assert revised.json()["saved_minutes"] == 96
+
+        regressed = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-save-0003"},
+            json={**update, "assisted_minutes": 150, "expected_revision": 2},
+        )
+        assert regressed.status_code == 200, regressed.text
+        assert regressed.json()["revision"] == 3
+        assert regressed.json()["saved_minutes"] == -30
+        assert regressed.json()["time_reduction_percent"] == -25.0
+
+        stale = client.post(
+            endpoint,
+            headers={"Idempotency-Key": "pilot-save-stale-0001"},
+            json=update,
+        )
+        assert stale.status_code == 412, stale.text
+
+        loaded = client.get(f"/v1/webpage-video/runs/{run['id']}")
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json()["pilot_feedback"]["revision"] == 3
+        assert loaded.json()["pilot_feedback"]["customer_segment"] == body[
+            "customer_segment"
+        ]
+
+        for index, extra in enumerate(
+            (
+                {
+                    "customer_segment": "香港内容代理商",
+                    "baseline_minutes": 60,
+                    "assisted_minutes": 30,
+                    "revision_count": 2,
+                    "outcome": "adopted",
+                    "satisfaction_score": 4,
+                    "willingness_to_pay_hkd": 500,
+                    "notes": None,
+                    "expected_revision": 0,
+                },
+                {
+                    "customer_segment": "香港中小型电商团队",
+                    "baseline_minutes": 90,
+                    "assisted_minutes": 45,
+                    "revision_count": 1,
+                    "outcome": "rejected",
+                    "satisfaction_score": None,
+                    "willingness_to_pay_hkd": None,
+                    "notes": None,
+                    "expected_revision": 0,
+                },
+            ),
+            start=2,
+        ):
+            extra_created = client.post(
+                "/v1/webpage-video/runs",
+                headers={"Idempotency-Key": f"pilot-create-run-000{index}"},
+                json=_create_body(),
+            )
+            assert extra_created.status_code == 201, extra_created.text
+            extra_run = extra_created.json()
+            repo._runs[extra_run["project_run_id"]]["status"] = "succeeded"
+            extra_saved = client.post(
+                f"/v1/webpage-video/runs/{extra_run['id']}/pilot-feedback",
+                    headers={"Idempotency-Key": f"pilot-extra-save-000{index}"},
+                json=extra,
+            )
+            assert extra_saved.status_code == 201, extra_saved.text
+
+        summary = client.get("/v1/webpage-video/pilot-summary")
+        assert summary.status_code == 200, summary.text
+        assert summary.headers["cache-control"] == "private, no-store"
+        payload = summary.json()
+        assert payload["total_records"] == 3
+        assert payload["included_records"] == 3
+        assert payload["truncated"] is False
+        assert payload["pilot_target_met"] is True
+        assert payload["adopted_count"] == 1
+        assert payload["evaluating_count"] == 1
+        assert payload["rejected_count"] == 1
+        assert payload["baseline_minutes_total"] == 270
+        assert payload["assisted_minutes_total"] == 225
+        assert payload["saved_minutes_total"] == 45
+        assert payload["time_reduction_percent"] == 16.7
+        assert payload["average_satisfaction_score"] == 4.5
+        assert payload["average_willingness_to_pay_hkd"] == 750.0
+        assert payload["segments"][0]["customer_segment"] == "香港中小型电商团队"
+        assert "notes" not in payload["items"][0]
+
+        limited = client.get("/v1/webpage-video/pilot-summary?limit=2")
+        assert limited.status_code == 200, limited.text
+        assert limited.json()["total_records"] == 3
+        assert limited.json()["included_records"] == 2
+        assert limited.json()["truncated"] is True
+
+
 def test_v2_site_aggregation_and_two_hash_bound_review_gates() -> None:
     repo = _repository()
     app = create_app(
@@ -374,7 +537,15 @@ def test_v2_site_aggregation_and_two_hash_bound_review_gates() -> None:
                 "decision": "approve",
                 "expected_revision": 3,
                 "expected_sha256": storyboard_artifact["content_hash"],
-                "shots": [{"id": shot_id, "enabled": True, "order": 1}],
+                "shots": [
+                    {
+                        "id": shot_id,
+                        "enabled": True,
+                        "order": 1,
+                        "motion": "zoom_out",
+                        "transition": "cut",
+                    }
+                ],
             },
         )
         assert approved_storyboard.status_code == 202, approved_storyboard.text
@@ -388,5 +559,13 @@ def test_v2_site_aggregation_and_two_hash_bound_review_gates() -> None:
             "schema_version": "2.0.0",
             "kind": "storyboard_selection",
             "manifest_sha256": storyboard_artifact["content_hash"],
-            "shots": [{"id": shot_id, "enabled": True, "order": 1}],
+            "shots": [
+                {
+                    "id": shot_id,
+                    "enabled": True,
+                    "order": 1,
+                    "motion": "zoom_out",
+                    "transition": "cut",
+                }
+            ],
         }

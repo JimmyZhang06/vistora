@@ -73,7 +73,9 @@ class HttpsJsonResearchSearchGateway:
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("research search endpoint must be a credential-free HTTPS URL")
+            raise ValueError(
+                "research search endpoint must be a credential-free HTTPS URL"
+            )
         if not bearer_token:
             raise ValueError("research search bearer token must not be empty")
         if timeout_seconds <= 0:
@@ -124,7 +126,9 @@ class HttpsJsonResearchSearchGateway:
                 f"research search endpoint rejected the request with HTTP {response.status}"
             )
         if len(response.body) > self._maximum_response_bytes:
-            raise PermanentStepError("research search response exceeded its configured limit")
+            raise PermanentStepError(
+                "research search response exceeded its configured limit"
+            )
         try:
             envelope = json.loads(response.body)
             results = envelope["results"]
@@ -141,6 +145,146 @@ class HttpsJsonResearchSearchGateway:
         return tuple(results[:limit])
 
 
+class DashscopeResearchSearchGateway:
+    """DashScope Generation search adapter with explicit, attributable sources."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        bearer_token: str,
+        model: str,
+        timeout_seconds: float,
+        maximum_response_bytes: int = 1_048_576,
+        transport: HttpTransport | None = None,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "DashScope research endpoint must be a credential-free HTTPS URL"
+            )
+        if not bearer_token:
+            raise ValueError("DashScope research bearer token must not be empty")
+        if not model or len(model) > 200:
+            raise ValueError(
+                "DashScope research model must contain 1 to 200 characters"
+            )
+        if timeout_seconds <= 0:
+            raise ValueError("DashScope research timeout must be positive")
+        if not 1_024 <= maximum_response_bytes <= 4_194_304:
+            raise ValueError(
+                "DashScope research response limit is outside the safe range"
+            )
+        self._url = url
+        self._bearer_token = bearer_token
+        self._model = model
+        self._timeout_seconds = timeout_seconds
+        self._maximum_response_bytes = maximum_response_bytes
+        self._transport = transport or UrllibTransport()
+
+    async def search(
+        self,
+        *,
+        query: str,
+        limit: int,
+    ) -> Sequence[Mapping[str, Any]]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise PermanentStepError("research search query must not be empty")
+        if len(normalized_query) > 2_000:
+            raise PermanentStepError("research search query exceeded 2000 characters")
+        if not 1 <= limit <= 10:
+            raise PermanentStepError("research search limit must be between 1 and 10")
+        body = {
+            "model": self._model,
+            "input": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": normalized_query,
+                    }
+                ]
+            },
+            "parameters": {
+                "result_format": "message",
+                "enable_search": True,
+                "search_options": {
+                    "forced_search": True,
+                    "enable_source": True,
+                    "search_strategy": "turbo",
+                },
+            },
+        }
+        request = HttpRequest(
+            url=self._url,
+            headers={
+                "Authorization": f"Bearer {self._bearer_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            body=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+            timeout_seconds=self._timeout_seconds,
+            maximum_response_bytes=self._maximum_response_bytes,
+        )
+        response = await asyncio.to_thread(self._transport.send, request)
+        if response.status in {408, 409, 425, 429} or response.status >= 500:
+            raise RetryableStepError(
+                f"DashScope research search returned retryable HTTP {response.status}"
+            )
+        if response.status < 200 or response.status >= 300:
+            raise PermanentStepError(
+                f"DashScope research search rejected the request with HTTP {response.status}"
+            )
+        if len(response.body) > self._maximum_response_bytes:
+            raise PermanentStepError(
+                "DashScope research response exceeded its configured limit"
+            )
+        try:
+            envelope = json.loads(response.body)
+            search_info = envelope["output"]["search_info"]
+            raw_results = search_info["search_results"]
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PermanentStepError(
+                "DashScope research search returned an invalid JSON response"
+            ) from exc
+        if not isinstance(raw_results, list):
+            raise PermanentStepError(
+                "DashScope research search results must be an array"
+            )
+        results: list[dict[str, str]] = []
+        for item in raw_results:
+            if not isinstance(item, Mapping):
+                continue
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            site_name = str(item.get("site_name") or "").strip()
+            if _https_url_key(url) is None or not title:
+                continue
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": site_name or title,
+                }
+            )
+            if len(results) == limit:
+                break
+        if not results:
+            raise PermanentStepError(
+                "DashScope research search returned no usable sources"
+            )
+        return tuple(results)
+
+
 class UrllibTransport:
     def send(self, request: HttpRequest) -> HttpResponse:
         raw = urllib.request.Request(
@@ -155,12 +299,18 @@ class UrllibTransport:
             else -1
         )
         try:
-            with urllib.request.urlopen(raw, timeout=request.timeout_seconds) as response:
-                return HttpResponse(status=response.status, body=response.read(read_limit))
+            with urllib.request.urlopen(
+                raw, timeout=request.timeout_seconds
+            ) as response:
+                return HttpResponse(
+                    status=response.status, body=response.read(read_limit)
+                )
         except urllib.error.HTTPError as exc:
             return HttpResponse(status=exc.code, body=exc.read(read_limit))
         except (TimeoutError, urllib.error.URLError) as exc:
-            raise RetryableStepError("configured model provider is temporarily unreachable") from exc
+            raise RetryableStepError(
+                "configured model provider is temporarily unreachable"
+            ) from exc
 
 
 class OpenAICompatibleClient:
@@ -194,12 +344,18 @@ class OpenAICompatibleClient:
                 {"role": "system", "content": system},
                 {
                     "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    "content": json.dumps(
+                        payload, ensure_ascii=False, separators=(",", ":")
+                    ),
                 },
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": operation.replace(".", "_"), "strict": True, "schema": schema},
+                "json_schema": {
+                    "name": operation.replace(".", "_"),
+                    "strict": True,
+                    "schema": schema,
+                },
             },
         }
         request = HttpRequest(
@@ -225,7 +381,9 @@ class OpenAICompatibleClient:
                         "role": "system",
                         "content": (
                             f"{system}\nReturn one JSON object that conforms exactly to this schema: "
-                            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+                            + json.dumps(
+                                schema, ensure_ascii=False, separators=(",", ":")
+                            )
                         ),
                     },
                     body["messages"][1],
@@ -249,19 +407,59 @@ class OpenAICompatibleClient:
                 f"configured model provider rejected the request with HTTP {response.status}"
             )
         if len(response.body) > 4 * 1024 * 1024:
-            raise PermanentStepError("configured model provider response exceeded 4 MiB")
+            raise PermanentStepError(
+                "configured model provider response exceeded 4 MiB"
+            )
+        content: object = None
+        finish_reason: object = None
         try:
             envelope = json.loads(response.body)
-            content = envelope["choices"][0]["message"]["content"]
-            result = json.loads(content) if isinstance(content, str) else content
-        except (IndexError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            choice = envelope["choices"][0]
+            content = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason")
+            result = _decode_structured_content(content)
+        except (
+            IndexError,
+            KeyError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
             raise PermanentStepError(
-                "configured model provider returned an invalid structured response"
+                "configured model provider returned an invalid structured response",
+                code="model_structured_response_invalid",
+                details={
+                    "content_type": type(content).__name__,
+                    "content_length": len(content)
+                    if isinstance(content, str)
+                    else None,
+                    "finish_reason": str(finish_reason)
+                    if finish_reason is not None
+                    else None,
+                },
             ) from exc
         if not isinstance(result, Mapping):
-            raise PermanentStepError("configured model provider returned a non-object result")
+            raise PermanentStepError(
+                "configured model provider returned a non-object result"
+            )
         _validate_schema(result, schema, path="$")
         return result
+
+
+_JSON_FENCE = re.compile(r"\A```(?:json)?\s*(.*?)\s*```\Z", re.IGNORECASE | re.DOTALL)
+_THINK_PREFIX = re.compile(r"\A\s*<think>.*?</think>\s*", re.DOTALL)
+
+
+def _decode_structured_content(content: object) -> object:
+    """Decode one provider JSON object while tolerating common compatible wrappers."""
+
+    if not isinstance(content, str):
+        return content
+    candidate = _THINK_PREFIX.sub("", content, count=1).strip()
+    fence = _JSON_FENCE.fullmatch(candidate)
+    if fence is not None:
+        candidate = fence.group(1).strip()
+    return json.loads(candidate)
 
 
 class OpenAIResearchCapability:
@@ -370,9 +568,7 @@ class OpenAIResearchCapability:
             },
             schema=schema,
         )
-        valid_sources = _normalize_research_sources(
-            result.get("sources"), allowed_urls
-        )
+        valid_sources = _normalize_research_sources(result.get("sources"), allowed_urls)
         result = {**dict(result), "sources": valid_sources}
         required_supplied_sources = min(minimum_sources, len(allowed_urls))
         if len(valid_sources) < required_supplied_sources:
@@ -393,9 +589,7 @@ class OpenAIResearchCapability:
                 },
                 schema=schema,
             )
-        valid_sources = _normalize_research_sources(
-            result.get("sources"), allowed_urls
-        )
+        valid_sources = _normalize_research_sources(result.get("sources"), allowed_urls)
         result = {**dict(result), "sources": valid_sources}
         validation_issues = _research_validation_issues(
             result,
@@ -442,9 +636,7 @@ class OpenAIResearchCapability:
                 allowed_urls,
                 snapshot,
             )
-        valid_sources = _normalize_research_sources(
-            result.get("sources"), allowed_urls
-        )
+        valid_sources = _normalize_research_sources(result.get("sources"), allowed_urls)
         valid_sources, recovered_brief_sources = _recover_brief_citations(
             valid_sources,
             brief=result.get("brief"),
@@ -468,7 +660,8 @@ class OpenAIResearchCapability:
                 if (key := _https_url_key(value)) is not None
             }
             if len(valid_sources) < minimum_sources or (
-                research_mode == "required" and not used_keys.intersection(searched_keys)
+                research_mode == "required"
+                and not used_keys.intersection(searched_keys)
             ):
                 raise _research_sources_error(
                     mode=research_mode,
@@ -501,16 +694,15 @@ class OpenAIResearchCapability:
             },
             requires_review=(
                 bool(validation_issues)
-                or (
-                    research_mode is None
-                    and len(valid_sources) < minimum_sources
-                )
+                or (research_mode is None and len(valid_sources) < minimum_sources)
             ),
         )
 
 
 class OpenAIWritingCapability:
-    def __init__(self, client: OpenAICompatibleClient, storage: ArtifactStorage) -> None:
+    def __init__(
+        self, client: OpenAICompatibleClient, storage: ArtifactStorage
+    ) -> None:
         self.client = client
         self.storage = storage
 
@@ -534,6 +726,23 @@ class OpenAIWritingCapability:
             if isinstance(inventory_coverage, Mapping)
             and isinstance(inventory_coverage.get("missing_concepts", []), list)
             else []
+        )
+        inventory_catalog_mode = (
+            str(inventory_payload.get("catalog_mode") or "").strip()
+            if isinstance(inventory_payload, Mapping)
+            else ""
+        )
+        if not inventory_catalog_mode and isinstance(inventory_payload, Mapping):
+            inventory_catalog_mode = (
+                "frozen" if inventory_payload.get("catalog_snapshot_id") else "live"
+            )
+        frozen_inventory = (
+            inventory_payload is not None and inventory_catalog_mode == "frozen"
+        )
+        inventory_auto_acquisition_pending = (
+            isinstance(inventory_coverage, Mapping)
+            and inventory_coverage.get("status") == "pending_auto_acquisition"
+            and inventory_catalog_mode == "live"
         )
         narration_bounds = (
             _narration_character_bounds(target_duration)
@@ -569,6 +778,7 @@ class OpenAIWritingCapability:
                             "must_match": {
                                 "type": "array",
                                 "items": {"type": "string"},
+                                **({"minItems": 1} if frozen_inventory else {}),
                             },
                             "must_not_match": {
                                 "type": "array",
@@ -602,6 +812,13 @@ class OpenAIWritingCapability:
                 "as an overlay on conservative, searchable B-roll. When a frozen inventory summary "
                 "is supplied, keep required visual Beats within its covered concepts and representative "
                 "subjects; missing concepts are warnings, never evidence that footage exists. "
+                "When a live inventory is pending automatic acquisition, write conservative, "
+                "independently searchable visual Beats from the verified story; its missing concepts "
+                "are acquisition targets, not a reason to omit the story's necessary visuals. "
+                "If the run declares a geographic scope, every authored Beat must copy the relevant "
+                "place anchor into must_match so footage from a different location cannot satisfy it. "
+                "Keep visual_description as a short literal search phrase, never narration, metaphor, "
+                "policy copy, or an inferred action. "
                 "Do not invent a point outcome, "
                 "opponent error, crowd reaction or coaching action."
                 " Return scenes as chronological atomic visual beats: each array item must describe "
@@ -633,10 +850,17 @@ class OpenAIWritingCapability:
             research_payload,
             prompt_snapshot,
         )
+        initial_inventory_issues = _inventory_visual_issues(result, inventory_payload)
         if initial_grounding_issues:
             revision_reasons.append(
                 "Remove unsupported direct quotations and any detail not explicitly supported by "
                 "the immutable run input or research brief."
+            )
+        if initial_inventory_issues:
+            revision_reasons.append(
+                "Every visual_description and must_match list must use literal subjects, places, "
+                "or actions present in the frozen inventory representatives; do not copy narration "
+                "into visual_description."
             )
         if revision_reasons:
             result = await self.client.structured(
@@ -658,6 +882,9 @@ class OpenAIWritingCapability:
             )
             remaining_problems = list(
                 _blocking_script_issues(result, research_payload, prompt_snapshot)
+            )
+            remaining_problems.extend(
+                _inventory_visual_issues(result, inventory_payload)
             )
             if narration_bounds is not None and not _narration_length_ok(
                 str(result["narration"]), narration_bounds
@@ -700,6 +927,9 @@ class OpenAIWritingCapability:
                 maximum=narration_bounds[1],
             )
         result = _ensure_structured_beats(result)
+        result, inventory_repairs_applied = _repair_script_visuals_from_inventory(
+            result, inventory_payload
+        )
         actual_length = _narration_character_count(str(result["narration"]))
         duration_fit = narration_bounds is None or _narration_length_ok(
             str(result["narration"]), narration_bounds
@@ -709,9 +939,19 @@ class OpenAIWritingCapability:
             research_payload,
             prompt_snapshot,
         )
+        grounding_issues = tuple(
+            dict.fromkeys(
+                (
+                    *grounding_issues,
+                    *_inventory_visual_issues(result, inventory_payload),
+                )
+            )
+        )
         artifact = self.storage.publish(
             context,
-            ProviderArtifact("script", "script.json", "application/json", _json_bytes(result)),
+            ProviderArtifact(
+                "script", "script.json", "application/json", _json_bytes(result)
+            ),
         )
         return StepResult(
             artifacts=(artifact,),
@@ -724,8 +964,13 @@ class OpenAIWritingCapability:
                 "narration_character_bounds": list(narration_bounds or ()),
                 "duration_fit": duration_fit,
                 "grounding_issues": list(grounding_issues),
-                "inventory_constrained": inventory_payload is not None,
+                "inventory_constrained": (frozen_inventory),
+                "inventory_catalog_mode": inventory_catalog_mode or None,
+                "inventory_auto_acquisition_pending": (
+                    inventory_auto_acquisition_pending
+                ),
                 "inventory_missing_concepts": inventory_missing_concepts,
+                "inventory_repairs_applied": inventory_repairs_applied,
             },
             requires_review=not duration_fit or bool(grounding_issues),
         )
@@ -734,7 +979,9 @@ class OpenAIWritingCapability:
 class OpenAIQualityCapability:
     """Metadata-only QC; it always requests human review and never claims AV inspection."""
 
-    def __init__(self, client: OpenAICompatibleClient, storage: ArtifactStorage) -> None:
+    def __init__(
+        self, client: OpenAICompatibleClient, storage: ArtifactStorage
+    ) -> None:
         self.client = client
         self.storage = storage
 
@@ -746,7 +993,10 @@ class OpenAIQualityCapability:
                 "Evaluate only the supplied artifact metadata and Skill QC policy. You cannot inspect "
                 "the audiovisual bytes. Return risks for human review; never claim playback validation."
             ),
-            payload={"run": context.input_snapshot.to_dict(), "video_metadata": video.to_dict()},
+            payload={
+                "run": context.input_snapshot.to_dict(),
+                "video_metadata": video.to_dict(),
+            },
             schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -757,14 +1007,23 @@ class OpenAIQualityCapability:
                 },
             },
         )
-        report = {**dict(result), "scope": "metadata_only", "verdict": "needs_manual_review"}
+        report = {
+            **dict(result),
+            "scope": "metadata_only",
+            "verdict": "needs_manual_review",
+        }
         artifact = self.storage.publish(
             context,
-            ProviderArtifact("qc_report", "quality.json", "application/json", _json_bytes(report)),
+            ProviderArtifact(
+                "qc_report", "quality.json", "application/json", _json_bytes(report)
+            ),
         )
         return StepResult(
             artifacts=(artifact,),
-            output_summary={"provider_protocol": "openai-compatible", "scope": "metadata_only"},
+            output_summary={
+                "provider_protocol": "openai-compatible",
+                "scope": "metadata_only",
+            },
             requires_review=True,
         )
 
@@ -781,7 +1040,9 @@ def _optional_artifact(context: StepContext, kind: str) -> ArtifactRef | None:
 
 
 def _json_bytes(value: Mapping[str, Any]) -> bytes:
-    return json.dumps(thaw_json(value), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return json.dumps(thaw_json(value), ensure_ascii=False, sort_keys=True).encode(
+        "utf-8"
+    )
 
 
 def _research_mode(snapshot: Mapping[str, Any]) -> str | None:
@@ -961,9 +1222,7 @@ def _supplied_https_urls(snapshot: Mapping[str, Any]) -> tuple[str, ...]:
     user_input = _user_input_text(snapshot)
     values = (
         match.rstrip(".,;:!?)]}，。；：！？）】》")
-        for match in re.findall(
-            r"https://[^\s<>\"']+", user_input, flags=re.IGNORECASE
-        )
+        for match in re.findall(r"https://[^\s<>\"']+", user_input, flags=re.IGNORECASE)
     )
     result: list[str] = []
     seen: set[str] = set()
@@ -1037,9 +1296,7 @@ def _recover_brief_citations(
         if supplied in brief_text and (key := _https_url_key(supplied)) is not None
     }
     present = {
-        key
-        for item in sources
-        if (key := _https_url_key(item.get("url"))) is not None
+        key for item in sources if (key := _https_url_key(item.get("url"))) is not None
     }
     result = list(sources)
     recovered = 0
@@ -1065,11 +1322,7 @@ def _recover_brief_citations(
 
 def _https_url_key(value: object) -> str | None:
     text = str(value or "").strip()
-    if (
-        not text
-        or len(text) > 2048
-        or any(character.isspace() for character in text)
-    ):
+    if not text or len(text) > 2048 or any(character.isspace() for character in text):
         return None
     try:
         parsed = urllib.parse.urlsplit(text)
@@ -1168,6 +1421,12 @@ def _research_validation_issues(
             issues.append(f"source_{index + 1}_year_conflict")
 
     brief = str(research.get("brief", ""))
+    # Search providers commonly return article URLs whose path contains a
+    # numeric document identifier.  Those digits are provenance, not factual
+    # claims, and must remain byte-for-byte intact for citation matching.
+    brief_claim_text = brief
+    for allowed_url in supplied_urls:
+        brief_claim_text = brief_claim_text.replace(allowed_url, "")
     input_text = _user_input_text(run_input or {})
     numeric_pattern = r"(?<![A-Za-z0-9])\d+(?:\.\d+)?(?![A-Za-z0-9])"
     input_numbers = set(re.findall(numeric_pattern, input_text))
@@ -1179,12 +1438,12 @@ def _research_validation_issues(
     )
     if input_text:
         for value in sorted(
-            set(re.findall(numeric_pattern, brief)),
+            set(re.findall(numeric_pattern, brief_claim_text)),
             key=lambda item: (float(item), item),
         ):
             if value not in input_numbers:
                 issues.append(f"unsupported_numeric_claim:{value}")
-        for value in _quantity_claims(brief):
+        for value in _quantity_claims(brief_claim_text):
             if value not in input_text:
                 issues.append(f"unsupported_quantity_claim:{value}")
     parsed_dates: list[date] = []
@@ -1235,7 +1494,11 @@ def _minimum_research_sources(snapshot: Mapping[str, Any]) -> int:
     policy = skill.get("research_policy", {})
     policy = policy if isinstance(policy, Mapping) else {}
     value = policy.get("minimum_sources", 1)
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 1
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 1
+    )
 
 
 def _target_duration_seconds(snapshot: Mapping[str, Any]) -> int | None:
@@ -1346,14 +1609,12 @@ def _qualitatively_redact_research_quantities(
     rejected_quantities = tuple(
         issue.partition(":")[2]
         for issue in issues
-        if issue.startswith("unsupported_quantity_claim:")
-        and issue.partition(":")[2]
+        if issue.startswith("unsupported_quantity_claim:") and issue.partition(":")[2]
     )
     rejected_numbers = tuple(
         issue.partition(":")[2]
         for issue in issues
-        if issue.startswith("unsupported_numeric_claim:")
-        and issue.partition(":")[2]
+        if issue.startswith("unsupported_numeric_claim:") and issue.partition(":")[2]
     )
     if not rejected_quantities and not rejected_numbers:
         return dict(research)
@@ -1364,8 +1625,7 @@ def _qualitatively_redact_research_quantities(
         dict.fromkeys(
             str(item.get("url", ""))
             for item in source_items
-            if isinstance(item, Mapping)
-            and _https_url_key(item.get("url")) is not None
+            if isinstance(item, Mapping) and _https_url_key(item.get("url")) is not None
         )
     )
 
@@ -1569,22 +1829,38 @@ def _script_grounding_issues(
     dialogue_forbidden = "对白" in input_text and any(
         marker in input_text for marker in ("不得", "禁止", "不要")
     )
-    if _DIRECT_QUOTE.search(narration) and (not has_sources or dialogue_forbidden):
+    source_claims = (
+        "\n".join(
+            str(item.get("claim", "")) for item in sources if isinstance(item, Mapping)
+        )
+        if isinstance(sources, list)
+        else ""
+    )
+    factual_evidence = f"{input_text}\n{research.get('brief', '')}\n{source_claims}"
+    direct_quotes = tuple(
+        match.group(0).strip('‘’“”"').strip()
+        for match in _DIRECT_QUOTE.finditer(narration)
+    )
+    if direct_quotes and (
+        dialogue_forbidden
+        or not has_sources
+        or any(quote not in factual_evidence for quote in direct_quotes)
+    ):
         issues.append("unsupported_direct_quote")
     for term in _FORBIDDEN_GROUNDING_TERMS:
         if term in narration and _explicitly_forbidden(term, input_text):
             issues.append(f"forbidden_term:{term}")
     if not has_sources and _strict_grounding_requested(input_text):
         issues.append("strict_grounding_requires_review")
-    source_claims = "\n".join(
-        str(item.get("claim", ""))
-        for item in sources if isinstance(item, Mapping)
-    ) if isinstance(sources, list) else ""
-    factual_evidence = f"{input_text}\n{research.get('brief', '')}\n{source_claims}"
     for claim in _quantity_claims(narration):
         if claim not in factual_evidence:
             issues.append(f"unsupported_quantity:{claim}")
     evidence_text = f"{factual_evidence}\n{narration}"
+    strict_location_anchors = (
+        _strict_location_anchors(input_text)
+        if _strict_grounding_requested(input_text)
+        else ()
+    )
     scenes = script.get("scenes", [])
     if isinstance(scenes, list):
         for index, raw_scene in enumerate(scenes):
@@ -1594,6 +1870,186 @@ def _script_grounding_issues(
             for marker in _UNSUPPORTED_SHOT_ASSERTIONS:
                 if marker in scene and marker not in evidence_text:
                     issues.append(f"unsupported_shot_detail:{index + 1}:{marker}")
+    beats = script.get("beats", [])
+    if isinstance(beats, list):
+        for index, raw_beat in enumerate(beats):
+            if not isinstance(raw_beat, Mapping):
+                continue
+            visual = str(raw_beat.get("visual_description", ""))
+            beat_id = str(raw_beat.get("id") or index + 1)
+            raw_must_match = raw_beat.get("must_match", ())
+            must_match = (
+                tuple(str(item).strip() for item in raw_must_match if str(item).strip())
+                if isinstance(raw_must_match, list)
+                else ()
+            )
+            if strict_location_anchors and not any(
+                anchor in term
+                for anchor in strict_location_anchors
+                for term in must_match
+            ):
+                issues.append(f"beat_location_evidence_missing:{beat_id}")
+            if any(marker in visual for marker in _NON_FOOTAGE_SCENE_MARKERS):
+                issues.append(f"non_footage_beat:{beat_id}")
+            for marker in _UNSUPPORTED_SHOT_ASSERTIONS:
+                if marker in visual and marker not in evidence_text:
+                    issues.append(f"unsupported_beat_detail:{beat_id}:{marker}")
+    return tuple(issues)
+
+
+def _frozen_inventory_representatives(
+    inventory: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(inventory, Mapping):
+        return ()
+    catalog_mode = str(inventory.get("catalog_mode") or "").strip()
+    if not catalog_mode:
+        catalog_mode = "frozen" if inventory.get("catalog_snapshot_id") else "live"
+    if catalog_mode != "frozen":
+        return ()
+    result: list[dict[str, Any]] = []
+    concepts = inventory.get("concepts", [])
+    if not isinstance(concepts, list):
+        return ()
+    for concept in concepts:
+        if not isinstance(concept, Mapping):
+            continue
+        representatives = concept.get("representatives", [])
+        if not isinstance(representatives, list):
+            continue
+        for representative in representatives:
+            if isinstance(representative, Mapping):
+                result.append(dict(representative))
+    return tuple(result)
+
+
+def _repair_script_visuals_from_inventory(
+    script: Mapping[str, Any],
+    inventory: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], int]:
+    """Replace non-retrievable model shot prose with verified frozen-catalog B-roll."""
+    representatives = _frozen_inventory_representatives(inventory)
+    result = dict(script)
+    beats = result.get("beats", [])
+    if not representatives or not isinstance(beats, list):
+        return result, 0
+
+    repaired: list[dict[str, Any]] = []
+    repairs = 0
+    for index, raw_beat in enumerate(beats):
+        if not isinstance(raw_beat, Mapping):
+            repaired.append(dict(raw_beat) if isinstance(raw_beat, dict) else {})
+            continue
+        beat = dict(raw_beat)
+        visual = str(beat.get("visual_description") or "").strip()
+        existing_match = beat.get("must_match", [])
+        existing_terms = (
+            [str(item).strip() for item in existing_match if str(item).strip()]
+            if isinstance(existing_match, list)
+            else []
+        )
+        evidence_text = "\n".join((visual, *existing_terms)).casefold()
+
+        selected: dict[str, Any] | None = None
+        selected_label = ""
+        for representative in representatives:
+            labels = representative.get("labels", [])
+            if not isinstance(labels, list):
+                continue
+            for label in labels:
+                candidate = str(label).strip()
+                if len(candidate) >= 2 and candidate.casefold() in evidence_text:
+                    selected = representative
+                    selected_label = candidate
+                    break
+            if selected is not None:
+                break
+        visual_was_supported = selected is not None
+        if selected is None:
+            selected = representatives[index % len(representatives)]
+            labels = selected.get("labels", [])
+            if isinstance(labels, list):
+                selected_label = next(
+                    (
+                        str(label).strip()
+                        for label in labels
+                        if len(str(label).strip()) >= 2 and ":" not in str(label)
+                    ),
+                    "",
+                )
+
+        if not selected_label:
+            selected_label = str(selected.get("title") or "").strip()
+        if not existing_terms:
+            beat["must_match"] = [selected_label] if selected_label else []
+            repairs += 1
+
+        single_beat = {"beats": [beat]}
+        if not visual_was_supported or _inventory_visual_issues(single_beat, inventory):
+            replacement = str(
+                selected.get("description") or selected.get("title") or ""
+            ).strip()
+            if replacement:
+                beat["visual_description"] = replacement
+                beat["must_match"] = [selected_label] if selected_label else []
+                repairs += 1
+        repaired.append(beat)
+
+    result["beats"] = repaired
+    result["scenes"] = [str(beat.get("visual_description") or "") for beat in repaired]
+    return result, repairs
+
+
+def _inventory_visual_issues(
+    script: Mapping[str, Any],
+    inventory: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Reject Beats that cannot be tied to a frozen inventory representative."""
+    representatives = _frozen_inventory_representatives(inventory)
+    if not representatives:
+        return ()
+
+    anchors: set[str] = set()
+    for representative in representatives:
+        labels = representative.get("labels", [])
+        if isinstance(labels, list):
+            anchors.update(
+                str(label).strip().casefold()
+                for label in labels
+                if len(str(label).strip()) >= 2
+            )
+        for evidence_field in ("title", "description"):
+            text = str(representative.get(evidence_field) or "").casefold()
+            anchors.update(
+                token
+                for token in re.findall(r"[a-z0-9][a-z0-9._-]{2,}", text)
+                if len(token) >= 3
+            )
+    anchors.discard("")
+    if not anchors:
+        return ()
+
+    issues: list[str] = []
+    beats = script.get("beats", [])
+    if not isinstance(beats, list):
+        return ("inventory_beats_missing",)
+    for index, beat in enumerate(beats):
+        if not isinstance(beat, Mapping):
+            issues.append(f"inventory_beat_invalid:{index + 1}")
+            continue
+        beat_id = str(beat.get("id") or index + 1)
+        visual = str(beat.get("visual_description") or "").strip().casefold()
+        raw_match = beat.get("must_match", [])
+        must_match = (
+            [str(item).strip().casefold() for item in raw_match if str(item).strip()]
+            if isinstance(raw_match, list)
+            else []
+        )
+        evidence_text = "\n".join((visual, *must_match))
+        if not must_match:
+            issues.append(f"inventory_must_match_missing:{beat_id}")
+        if not any(anchor in evidence_text for anchor in anchors):
+            issues.append(f"inventory_visual_unsupported:{beat_id}")
     return tuple(issues)
 
 
@@ -1618,8 +2074,28 @@ def _strict_grounding_requested(topic: str) -> bool:
             "只可转述",
             "仅可转述",
             "只使用已确认",
+            "必须保留来源证据",
+            "只使用运行绑定素材库",
         )
     )
+
+
+def _strict_location_anchors(input_text: str) -> tuple[str, ...]:
+    match = re.search(
+        r"(?:地点范围|地域范围|地点)\s*[:：]\s*([^\r\n]+)",
+        input_text,
+    )
+    if match is None:
+        return ()
+    anchors: list[str] = []
+    for raw in re.split(r"[,，、;；及和与或]+", match.group(1)):
+        value = raw.strip()
+        if not value or any(marker in value for marker in ("典型", "所在地", "不限")):
+            continue
+        value = re.sub(r"(?:山区|地区|省内|全省|省|市|州|县|区)$", "", value).strip()
+        if len(value) >= 2 and value not in anchors:
+            anchors.append(value)
+    return tuple(anchors[:8])
 
 
 def _explicitly_forbidden(term: str, input_text: str) -> bool:
@@ -1658,6 +2134,13 @@ _NON_FOOTAGE_SCENE_MARKERS = (
     "镜头环绕",
     "画面拼接",
     "赛事标志",
+    "无生成画面",
+    "不使用生成画面",
+    "未作虚构",
+    "不做虚构",
+    "所有事实与画面",
+    "与源文件一致",
+    "来源一致",
 )
 
 # A writer may name an event, athlete and broad action from evidence.  It may

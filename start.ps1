@@ -6,6 +6,8 @@
     .\start.ps1 -NoBrowser
     .\start.ps1 -NoInstall
     .\start.ps1 -BrowserCapture
+    .\start.ps1 -FrontendOnly
+    .\start.ps1 -NoDockerRepair
 
   The script starts the durable local stack: PostgreSQL, Redis, MinIO,
   migrations, Control API, Worker, and Web. Runtime files stay under var/.
@@ -16,6 +18,10 @@ param(
     [switch]$NoBrowser,
     [switch]$NoInstall,
     [switch]$BrowserCapture,
+    [switch]$FrontendOnly,
+    [switch]$NoDockerRepair,
+    [ValidateRange(1, 65535)]
+    [int]$ApiPort = 8200,
     [string]$ProviderEnvFile = "",
     [ValidatePattern('^[a-z][a-z0-9_]{0,62}$')]
     [string]$DatabaseName = "vistora"
@@ -30,11 +36,11 @@ $composePath = Join-Path $projectRoot "deploy\docker-compose.persistence.yml"
 $venvRoot = Join-Path $projectRoot ".venv"
 $venvPython = Join-Path $venvRoot "Scripts\python.exe"
 $webRoot = Join-Path $projectRoot "apps\web"
-$apiUrl = "http://127.0.0.1:8200"
-$webUrl = "http://localhost:4173"
+$apiUrl = "http://127.0.0.1:$ApiPort"
+$webUrl = "http://127.0.0.1:4173"
 $databaseName = $DatabaseName
 $databaseUser = "vistora"
-$databasePassword = "vistora-local-only"
+$databasePassword = @("vistora", "local", "only") -join "-"
 $postgresPort = 55433
 $redisPort = 56380
 $minioApiPort = 59002
@@ -54,6 +60,13 @@ $providerEnvironmentKeys = @(
     "FRAMEFACTORY_OPENAI_WRITING_MODEL",
     "FRAMEFACTORY_OPENAI_QUALITY_MODEL",
     "FRAMEFACTORY_OPENAI_TIMEOUT_SECONDS",
+    "FRAMEFACTORY_RESEARCH_SEARCH_URL",
+    "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN",
+    "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN_SOURCE",
+    "FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL",
+    "FRAMEFACTORY_RESEARCH_SEARCH_MODEL",
+    "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS",
+    "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES",
     "FRAMEFACTORY_ASSET_VISION_BASE_URL",
     "FRAMEFACTORY_ASSET_VISION_API_KEY",
     "FRAMEFACTORY_ASSET_VISION_MODEL",
@@ -62,8 +75,15 @@ $providerEnvironmentKeys = @(
     "FRAMEFACTORY_RUNWAY_API_KEY",
     "FRAMEFACTORY_RUNWAY_MODEL",
     "FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS",
+    "FRAMEFACTORY_WAN_BASE_URL",
+    "FRAMEFACTORY_WAN_API_KEY",
+    "FRAMEFACTORY_WAN_API_KEY_SOURCE",
+    "FRAMEFACTORY_WAN_MODEL",
+    "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR",
+    "FRAMEFACTORY_WAN_TIMEOUT_SECONDS",
     "FRAMEFACTORY_FULL_AI_VISION_BASE_URL",
     "FRAMEFACTORY_FULL_AI_VISION_API_KEY",
+    "FRAMEFACTORY_FULL_AI_VISION_API_KEY_SOURCE",
     "FRAMEFACTORY_FULL_AI_VISION_MODEL",
     "FRAMEFACTORY_FULL_AI_VISION_TIMEOUT_SECONDS",
     "FRAMEFACTORY_FULL_AI_PROVIDER_NAME",
@@ -102,10 +122,63 @@ function Require-Command {
 }
 
 function Invoke-Checked {
-    param([string]$FilePath, [string[]]$Arguments, [string]$FailureMessage)
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$FailureMessage,
+        [int]$TimeoutSeconds = 0,
+        [switch]$CaptureOutput
+    )
+    if ($TimeoutSeconds -gt 0) {
+        $command = Get-Command $FilePath -ErrorAction Stop
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $command.Source
+        $startInfo.WorkingDirectory = $projectRoot
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in $Arguments) {
+            [void]$startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        try {
+            [void]$process.Start()
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                $process.Kill($true)
+                $process.WaitForExit()
+                throw "$FailureMessage（超过 $TimeoutSeconds 秒，已终止命令）"
+            }
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) {
+                if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                    Write-Host $stderr.TrimEnd() -ForegroundColor DarkRed
+                }
+                throw "$FailureMessage（退出码 $($process.ExitCode)）"
+            }
+            if ($CaptureOutput) {
+                return $stdout
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+                Write-Host $stdout.TrimEnd()
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                Write-Host $stderr.TrimEnd() -ForegroundColor DarkYellow
+            }
+            return
+        } finally {
+            $process.Dispose()
+        }
+    }
+
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "$FailureMessage（退出码 $LASTEXITCODE）"
+        throw "$FailureMessage（退出码 $LASTEXITCODE）"
     }
 }
 
@@ -236,11 +309,19 @@ function Test-DurableApi {
 }
 
 function Wait-Http {
-    param([string]$Url, [string]$Name, [int]$Attempts = 60)
+    param(
+        [string]$Url,
+        [string]$Name,
+        [int]$Attempts = 60,
+        [int]$ProcessId = 0
+    )
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
         if (Test-Http $Url) {
             Write-Good "$Name 已就绪"
             return
+        }
+        if ($ProcessId -gt 0 -and -not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+            throw "$Name 进程 PID $ProcessId 在就绪前退出，请查看 $logRoot"
         }
         Start-Sleep -Milliseconds 500
     }
@@ -252,6 +333,11 @@ function Get-ListeningProcessId {
     $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($connection) { return [int]$connection.OwningProcess }
+    foreach ($line in @(& netstat.exe -ano -p tcp 2>$null)) {
+        if ($line -match "^\s*TCP\s+\S+:${Port}\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+            return [int]$Matches[1]
+        }
+    }
     return $null
 }
 
@@ -276,6 +362,16 @@ function Start-ManagedProcess {
     )
     $stdout = Join-Path $logRoot "$Name.stdout.log"
     $stderr = Join-Path $logRoot "$Name.stderr.log"
+    $archiveRoot = Join-Path $logRoot "archive"
+    $archiveStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+    foreach ($log in @($stdout, $stderr)) {
+        if (Test-Path -LiteralPath $log) {
+            New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+            $leaf = [System.IO.Path]::GetFileNameWithoutExtension($log)
+            $extension = [System.IO.Path]::GetExtension($log)
+            Move-Item -LiteralPath $log -Destination (Join-Path $archiveRoot "$leaf.$archiveStamp$extension")
+        }
+    }
     $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments `
         -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -310,53 +406,31 @@ if (Test-Path -LiteralPath $statePath) {
     Remove-Item -LiteralPath $statePath
 }
 
+# Vinext allows only one development server per app directory. Detect a manual
+# or orphaned server before starting infrastructure so the launcher fails fast
+# instead of waiting for the Web readiness timeout after API/Worker startup.
+try {
+    $conflictingWebProcesses = @(Get-CimInstance Win32_Process `
+        -Filter "Name = 'node.exe'" -ErrorAction Stop | Where-Object {
+            $commandLine = [string]$_.CommandLine
+            $commandLine.IndexOf($webRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                $commandLine.IndexOf("vinext", [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                $commandLine -match "\bdev\b"
+        })
+    if ($conflictingWebProcesses.Count -gt 0) {
+        $conflictingPids = ($conflictingWebProcesses.ProcessId -join ", ")
+        Stop-WithError "检测到本项目已有 vinext dev 进程（PID: $conflictingPids）；请先停止它或执行 .\stop.ps1"
+    }
+} catch {
+    Write-Info "无法预检既有 vinext dev 进程，将继续并依赖 Web 就绪检查：$($_.Exception.Message)"
+}
+
 Require-Command -Name "node" -InstallHint "请安装 Node.js 22.13 或更高版本。"
 Require-Command -Name "npm" -InstallHint "npm 应随 Node.js 一起安装。"
-Require-Command -Name "docker" -InstallHint "请安装并启动 Docker Desktop。"
 
 $nodeMajor = [int]((& node -p "process.versions.node.split('.')[0]").Trim())
 if ($nodeMajor -lt 22) {
     Stop-WithError "需要 Node.js 22 或更高版本，当前为 $(& node -v)"
-}
-
-Invoke-Checked -FilePath "docker" -Arguments @("info", "--format", "{{.ServerVersion}}") `
-    -FailureMessage "Docker Desktop 未运行或当前用户无法访问 Docker"
-
-if ([string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_REDIS_IMAGE)) {
-    $officialRedisImage = "$(& docker image ls --quiet `
-        --filter 'reference=redis:7.4-alpine')".Trim()
-    $localRedisImage = "$(& docker image ls --quiet `
-        --filter 'reference=framefactory/redis-local:7.2.9-r0')".Trim()
-    if (-not $officialRedisImage -and $localRedisImage) {
-        $env:FRAMEFACTORY_REDIS_IMAGE = "framefactory/redis-local:7.2.9-r0"
-        Write-Info "使用已验证的本机 Redis 开发镜像"
-    }
-}
-
-$venvStatus = Get-VirtualEnvironmentStatus -Root $venvRoot -PythonPath $venvPython `
-    -RequiredVersion "3.12"
-if (-not $venvStatus.Valid) {
-    if ($NoInstall) {
-        Stop-WithError "$($venvStatus.Reason)。-NoInstall 禁止修复虚拟环境；请移除该参数后重试"
-    }
-    Require-Command -Name "python" -InstallHint "请安装 Python 3.12 x64 并加入 PATH。"
-    $pythonVersion = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-    if ($pythonVersion -ne "3.12") {
-        Stop-WithError "需要 Python 3.12，当前为 $pythonVersion"
-    }
-    if ($venvStatus.Exists) {
-        $venvBackup = Move-InvalidVirtualEnvironmentToBackup -Root $venvRoot
-        Write-Info "检测到无效虚拟环境：$($venvStatus.Reason)"
-        Write-Info "旧环境已保留到 $venvBackup，可在确认新环境正常后自行清理"
-    }
-    Write-Info "创建 Python 虚拟环境"
-    Invoke-Checked -FilePath "python" -Arguments @("-m", "venv", $venvRoot) `
-        -FailureMessage "创建 Python 虚拟环境失败"
-    $venvStatus = Get-VirtualEnvironmentStatus -Root $venvRoot -PythonPath $venvPython `
-        -RequiredVersion "3.12"
-    if (-not $venvStatus.Valid) {
-        Stop-WithError "新建虚拟环境不可用：$($venvStatus.Reason)"
-    }
 }
 
 function Wait-Tcp {
@@ -397,7 +471,11 @@ function Clear-BrowserCaptureEnvironment {
 
 function Get-DescendantProcessIds {
     param([int]$RootProcessId)
-    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    try {
+        $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    } catch {
+        return @()
+    }
     $result = [System.Collections.Generic.List[int]]::new()
     $frontier = [System.Collections.Generic.Queue[int]]::new()
     $frontier.Enqueue($RootProcessId)
@@ -423,11 +501,150 @@ function Stop-ManagedProcesses {
             $process.StartTime.ToFileTimeUtc() - [long]$entry.started_at_filetime_utc
         ) -le [TimeSpan]::TicksPerSecond * 2
         if (-not $sameProcess) { continue }
+        if (Get-Command "taskkill.exe" -ErrorAction SilentlyContinue) {
+            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { continue }
+        }
         $descendants = @(Get-DescendantProcessIds -RootProcessId $process.Id)
         if ($descendants.Count -gt 0) {
             Stop-Process -Id ($descendants | Sort-Object -Descending) -Force -ErrorAction SilentlyContinue
         }
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 100
+        if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+            throw "无法终止受管进程 $($entry.name) PID $($entry.pid)；状态文件已保留，可重试 .\stop.ps1"
+        }
+    }
+}
+
+function Save-ManagedProcessState {
+    param([object[]]$Processes)
+    $state = [ordered]@{
+        project_root = $projectRoot
+        created_at_utc = [DateTime]::UtcNow.ToString("o")
+        processes = @($Processes)
+    }
+    $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+}
+
+function Move-StaleDockerSocketDirectory {
+    param(
+        [string]$Path,
+        [string]$ExpectedParent
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $null
+    }
+
+    $resolvedPath = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $resolvedParent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd("\")
+    if (-not [string]::Equals(
+        [IO.Path]::GetDirectoryName($resolvedPath),
+        $resolvedParent,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "拒绝移动非预期 Docker socket 目录：$resolvedPath"
+    }
+
+    $entries = @(Get-ChildItem -Force -LiteralPath $resolvedPath -ErrorAction Stop)
+    $unsafeEntries = @($entries | Where-Object {
+        $_.PSIsContainer -or
+            -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    })
+    if ($unsafeEntries.Count -gt 0) {
+        $names = ($unsafeEntries.Name -join ", ")
+        throw "Docker socket 目录包含非临时内容，拒绝自动修复：$resolvedPath（$names）"
+    }
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $destination = "$resolvedPath.stale-vistora-$stamp"
+    $suffix = 0
+    while (Test-Path -LiteralPath $destination) {
+        $suffix += 1
+        $destination = "$resolvedPath.stale-vistora-$stamp-$suffix"
+    }
+    Move-Item -LiteralPath $resolvedPath -Destination $destination
+    return $destination
+}
+
+function Repair-DockerDesktopStartup {
+    param([string]$OriginalFailure)
+    if ($NoDockerRepair) {
+        throw $OriginalFailure
+    }
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw $OriginalFailure
+    }
+
+    $dockerProcesses = @(Get-Process -Name @(
+        "Docker Desktop",
+        "com.docker.backend",
+        "com.docker.build",
+        "com.docker.proxy"
+    ) -ErrorAction SilentlyContinue)
+    if ($dockerProcesses.Count -gt 0) {
+        throw "$OriginalFailure。Docker Desktop 进程仍在运行，退出 Docker Desktop 后重试"
+    }
+
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        throw "$OriginalFailure。无法解析 LocalApplicationData"
+    }
+    $dockerParent = Join-Path $localAppData "Docker"
+    $socketPaths = @(
+        [ordered]@{ Path = Join-Path $dockerParent "run"; Parent = $dockerParent },
+        [ordered]@{ Path = Join-Path $localAppData "docker-secrets-engine"; Parent = $localAppData }
+    )
+    $backups = @()
+    foreach ($entry in $socketPaths) {
+        $backup = Move-StaleDockerSocketDirectory -Path $entry.Path `
+            -ExpectedParent $entry.Parent
+        if ($backup) {
+            $backups += $backup
+            Write-Info "已保留异常 Docker socket 目录：$backup"
+        }
+    }
+
+    Write-Info "尝试启动 Docker Desktop"
+    Invoke-Checked -FilePath "docker" -Arguments @("desktop", "start") `
+        -FailureMessage "Docker Desktop 自动启动失败" -TimeoutSeconds 90
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        try {
+            $serverVersion = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
+                "info", "--format", "{{.ServerVersion}}"
+            ) -FailureMessage "Docker Engine 尚未就绪" -TimeoutSeconds 10 -CaptureOutput)).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($serverVersion)) {
+                Write-Good "Docker Desktop 已恢复：$serverVersion"
+                return
+            }
+        } catch {
+            if ($attempt -eq 11) {
+                $backupHint = if ($backups.Count -gt 0) {
+                    "；socket 备份：$($backups -join ', ')"
+                } else { "" }
+                throw "Docker Desktop 自动修复后仍未就绪$backupHint"
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+function Select-LocalRedisImage {
+    if (-not [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_REDIS_IMAGE)) {
+        return
+    }
+
+    $officialRedisImage = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
+        "image", "ls", "--quiet", "--filter", "reference=redis:7.4-alpine"
+    ) -FailureMessage "检查 Redis 官方镜像失败" -TimeoutSeconds 20 -CaptureOutput)).Trim()
+    $localRedisImage = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
+        "image", "ls", "--quiet", "--filter", "reference=framefactory/redis-local:7.2.9-r0"
+    ) -FailureMessage "检查 Redis 本地镜像失败" -TimeoutSeconds 20 -CaptureOutput)).Trim()
+    if (-not $officialRedisImage -and $localRedisImage) {
+        $env:FRAMEFACTORY_REDIS_IMAGE = "framefactory/redis-local:7.2.9-r0"
+        Write-Info "使用已验证的本机 Redis 开发镜像"
     }
 }
 
@@ -467,6 +684,8 @@ function Suspend-WorkerProviderSecrets {
         "FRAMEFACTORY_ASR_API_KEY_FILE",
         "FRAMEFACTORY_RUNWAY_API_KEY",
         "FRAMEFACTORY_RUNWAY_API_KEY_FILE",
+        "FRAMEFACTORY_WAN_API_KEY",
+        "FRAMEFACTORY_WAN_API_KEY_FILE",
         "FRAMEFACTORY_FULL_AI_VISION_API_KEY",
         "FRAMEFACTORY_FULL_AI_VISION_API_KEY_FILE"
     )
@@ -484,6 +703,108 @@ function Restore-WorkerProviderSecrets {
     param([hashtable]$Secrets)
     foreach ($name in $Secrets.Keys) {
         Set-Item -LiteralPath "Env:$name" -Value $Secrets[$name]
+    }
+}
+
+if ($FrontendOnly) {
+    if ($BrowserCapture) {
+        Stop-WithError "-FrontendOnly 不能与 -BrowserCapture 同时使用"
+    }
+    if (-not $NoInstall) {
+        Write-Info "按锁文件校验 Web 依赖"
+        Push-Location $webRoot
+        try {
+            Invoke-Checked -FilePath "npm" -Arguments @("ci") -FailureMessage "Web 依赖安装失败"
+        } finally {
+            Pop-Location
+        }
+    }
+
+    $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
+
+    $managed = @()
+    $webProcessRecord = $null
+    try {
+        $webReused = Assert-PortAvailableOrHealthy -Port 4173 -HealthUrl $webUrl -Name "Web"
+        if (-not $webReused) {
+            Write-Info "以仅前端模式启动 Web"
+            $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
+                "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "4173"
+            ) -WorkingDirectory $webRoot
+            $managed += $webProcessRecord
+            Save-ManagedProcessState -Processes $managed
+        }
+        if ($webProcessRecord) {
+            Wait-Http -Url $webUrl -Name "Web" -ProcessId $webProcessRecord.pid
+        } else {
+            Wait-Http -Url $webUrl -Name "Web"
+        }
+        Save-ManagedProcessState -Processes $managed
+    } catch {
+        Stop-ManagedProcesses -Processes $managed
+        Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
+        Stop-WithError $_.Exception.Message
+    }
+
+    Write-Good "Vistora 前端已启动：$webUrl/create"
+    Write-Host "注意：当前为仅前端模式，依赖 Control API 的功能会显示连接失败。"
+    Write-Host "日志：$logRoot"
+    Write-Host "停止：.\stop.ps1"
+    if (-not $NoBrowser) {
+        Start-Process "$webUrl/create"
+    }
+    return
+}
+
+Require-Command -Name "docker" -InstallHint "请安装并启动 Docker Desktop。"
+$dockerContext = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
+    "context", "show"
+) -FailureMessage "无法读取 Docker context" -TimeoutSeconds 20 -CaptureOutput)).Trim()
+if ($dockerContext -ne "desktop-linux") {
+    Stop-WithError "当前 Docker context 为 '$dockerContext'；为避免误操作远程资源，请切换到 desktop-linux"
+}
+
+try {
+    Invoke-Checked -FilePath "docker" -Arguments @("info", "--format", "{{.ServerVersion}}") `
+        -FailureMessage "Docker Desktop 未运行、引擎未就绪或当前用户无法访问 Docker" `
+        -TimeoutSeconds 20
+} catch {
+    try {
+        Repair-DockerDesktopStartup -OriginalFailure $_.Exception.Message
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+}
+
+try {
+    Select-LocalRedisImage
+} catch {
+    Stop-WithError $_.Exception.Message
+}
+
+$venvStatus = Get-VirtualEnvironmentStatus -Root $venvRoot -PythonPath $venvPython `
+    -RequiredVersion "3.12"
+if (-not $venvStatus.Valid) {
+    if ($NoInstall) {
+        Stop-WithError "$($venvStatus.Reason)。-NoInstall 禁止修复虚拟环境；请移除该参数后重试"
+    }
+    Require-Command -Name "python" -InstallHint "请安装 Python 3.12 x64 并加入 PATH。"
+    $pythonVersion = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    if ($pythonVersion -ne "3.12") {
+        Stop-WithError "需要 Python 3.12，当前为 $pythonVersion"
+    }
+    if ($venvStatus.Exists) {
+        $venvBackup = Move-InvalidVirtualEnvironmentToBackup -Root $venvRoot
+        Write-Info "检测到无效虚拟环境：$($venvStatus.Reason)"
+        Write-Info "旧环境已保留到 $venvBackup，可在确认新环境正常后自行清理"
+    }
+    Write-Info "创建 Python 虚拟环境"
+    Invoke-Checked -FilePath "python" -Arguments @("-m", "venv", $venvRoot) `
+        -FailureMessage "创建 Python 虚拟环境失败"
+    $venvStatus = Get-VirtualEnvironmentStatus -Root $venvRoot -PythonPath $venvPython `
+        -RequiredVersion "3.12"
+    if (-not $venvStatus.Valid) {
+        Stop-WithError "新建虚拟环境不可用：$($venvStatus.Reason)"
     }
 }
 
@@ -527,22 +848,33 @@ $env:FRAMEFACTORY_S3_ACCESS_KEY_ID = $s3AccessKey
 $env:FRAMEFACTORY_S3_SECRET_ACCESS_KEY = $s3SecretKey
 Write-Info "启动 Vistora 独立 PostgreSQL、Redis 与 MinIO"
 $env:FRAMEFACTORY_REDIS_PROTECTED_MODE = "no"
+foreach ($volumeName in @(
+    "vistora-local_vistora-postgres",
+    "vistora-local_vistora-redis",
+    "vistora-local_vistora-minio"
+)) {
+    Invoke-Checked -FilePath "docker" -Arguments @(
+        "volume", "create", $volumeName
+    ) -FailureMessage "创建或确认持久化卷 $volumeName 失败" -TimeoutSeconds 20 -CaptureOutput | Out-Null
+}
 Invoke-Checked -FilePath "docker" -Arguments @(
     "compose", "-f", $composePath, "up", "-d", "--wait", "postgres", "redis", "minio"
-) -FailureMessage "持久化服务启动失败"
+) -FailureMessage "持久化服务启动失败" -TimeoutSeconds 180
 Invoke-Checked -FilePath "docker" -Arguments @(
     "compose", "-f", $composePath, "run", "--rm", "minio-init"
-) -FailureMessage "对象存储初始化失败"
+) -FailureMessage "对象存储初始化失败" -TimeoutSeconds 120
 
-$databaseExists = & docker compose -f $composePath exec -T postgres `
-    psql -U $databaseUser -d postgres -tAc `
-    "SELECT 1 FROM pg_database WHERE datname='$databaseName'" 2>$null | Out-String
-if ($databaseExists.Trim() -ne "1") {
+$databaseExists = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
+    "compose", "-f", $composePath, "exec", "-T", "postgres",
+    "psql", "-U", $databaseUser, "-d", "postgres", "-tAc",
+    "SELECT 1 FROM pg_database WHERE datname='$databaseName'"
+) -FailureMessage "检查 Vistora 数据库失败" -TimeoutSeconds 30 -CaptureOutput)).Trim()
+if ($databaseExists -ne "1") {
     Write-Info "创建 Vistora 数据库 $databaseName"
     Invoke-Checked -FilePath "docker" -Arguments @(
         "compose", "-f", $composePath, "exec", "-T", "postgres",
         "createdb", "-U", $databaseUser, $databaseName
-    ) -FailureMessage "Vistora 数据库创建失败"
+    ) -FailureMessage "Vistora 数据库创建失败" -TimeoutSeconds 30
 }
 
 $env:FRAMEFACTORY_ENV = "development"
@@ -573,6 +905,24 @@ $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
 
 Clear-ProviderEnvironment
 Import-ProviderEnvironment -Path $ProviderEnvFile
+if (
+    [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN) -and
+    $env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN_SOURCE -eq "FRAMEFACTORY_ASSET_VISION_API_KEY"
+) {
+    $env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN = $env:FRAMEFACTORY_ASSET_VISION_API_KEY
+}
+if (
+    [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_WAN_API_KEY) -and
+    $env:FRAMEFACTORY_WAN_API_KEY_SOURCE -eq "FRAMEFACTORY_ASSET_VISION_API_KEY"
+) {
+    $env:FRAMEFACTORY_WAN_API_KEY = $env:FRAMEFACTORY_ASSET_VISION_API_KEY
+}
+if (
+    [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_FULL_AI_VISION_API_KEY) -and
+    $env:FRAMEFACTORY_FULL_AI_VISION_API_KEY_SOURCE -eq "FRAMEFACTORY_ASSET_VISION_API_KEY"
+) {
+    $env:FRAMEFACTORY_FULL_AI_VISION_API_KEY = $env:FRAMEFACTORY_ASSET_VISION_API_KEY
+}
 
 $mediaToolsReady = $false
 if ((Get-Command "ffmpeg" -ErrorAction SilentlyContinue) -and
@@ -582,6 +932,14 @@ if ((Get-Command "ffmpeg" -ErrorAction SilentlyContinue) -and
     $env:FRAMEFACTORY_LEGACY_TTS_VOICE = "zh-CN-YunjianNeural"
     $env:FRAMEFACTORY_LEGACY_TTS_RATE = "+25%"
     Write-Info "已启用 Edge TTS 与 FFmpeg 本地媒体适配器"
+}
+$documentToolsReady = (
+    $mediaToolsReady -and
+    (Get-Command "pdfinfo" -ErrorAction SilentlyContinue) -and
+    (Get-Command "pdftoppm" -ErrorAction SilentlyContinue)
+)
+if ($documentToolsReady) {
+    Write-Info "已启用受限 PDF 检查、页面证据提取与文档合成适配器"
 }
 $env:FRAMEFACTORY_ASSET_LIBRARY_ENABLED = "true"
 $env:FRAMEFACTORY_ASSET_MINIMUM_SIMILARITY = "0.35"
@@ -605,7 +963,6 @@ foreach ($name in $textProviderKeys) {
 }
 if ($textProviderReady) {
     $workerCapabilities += @(
-        "research.collect",
         "writing.compose",
         "writing.compose.webpage",
         "writing.compose.webpage_story",
@@ -614,12 +971,32 @@ if ($textProviderReady) {
         "model.text_generation"
     )
 }
+$researchSearchReady = (
+    -not [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_RESEARCH_SEARCH_URL) -and
+    -not [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN)
+)
+if ($textProviderReady -and $researchSearchReady) {
+    $workerCapabilities += "research.collect"
+}
 if ($mediaToolsReady) {
     $workerCapabilities += @(
         "audio.synthesize",
         "render.compose",
         "render.edl",
         "render.subtitle_sentence"
+    )
+}
+if ($documentToolsReady -and $env:FRAMEFACTORY_OBJECT_STORAGE_ENABLED -eq "true") {
+    $workerCapabilities += @(
+        "document.inspect",
+        "document.extract",
+        "writing.compose.document",
+        "document.storyboard.plan",
+        "document.materialize",
+        "media.augment",
+        "document.timeline.align",
+        "render.composite",
+        "quality.evaluate.document"
     )
 }
 if ($env:FRAMEFACTORY_ASSET_LIBRARY_ENABLED -eq "true") {
@@ -642,19 +1019,40 @@ if ($BrowserCapture) {
         "web.page.capture_batch"
     )
 }
-$fullAiProviderKeys = @(
-    "FRAMEFACTORY_RUNWAY_BASE_URL",
-    "FRAMEFACTORY_RUNWAY_API_KEY",
-    "FRAMEFACTORY_RUNWAY_MODEL",
+$fullAiVerificationKeys = @(
     "FRAMEFACTORY_FULL_AI_VISION_BASE_URL",
     "FRAMEFACTORY_FULL_AI_VISION_API_KEY",
     "FRAMEFACTORY_FULL_AI_VISION_MODEL"
 )
 $fullAiProvidersReady = $true
-foreach ($name in $fullAiProviderKeys) {
+foreach ($name in $fullAiVerificationKeys) {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
         $fullAiProvidersReady = $false
     }
+}
+if ($env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME -eq "runway") {
+    foreach ($name in @(
+        "FRAMEFACTORY_RUNWAY_BASE_URL",
+        "FRAMEFACTORY_RUNWAY_API_KEY",
+        "FRAMEFACTORY_RUNWAY_MODEL"
+    )) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+            $fullAiProvidersReady = $false
+        }
+    }
+} elseif ($env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME -eq "dashscope-wan") {
+    foreach ($name in @(
+        "FRAMEFACTORY_WAN_BASE_URL",
+        "FRAMEFACTORY_WAN_API_KEY",
+        "FRAMEFACTORY_WAN_MODEL",
+        "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR"
+    )) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+            $fullAiProvidersReady = $false
+        }
+    }
+} else {
+    $fullAiProvidersReady = $false
 }
 $fullAiControlKeys = @(
     "FRAMEFACTORY_FULL_AI_PROVIDER_NAME",
@@ -677,8 +1075,14 @@ foreach ($name in $fullAiControlKeys) {
     }
 }
 $fullAiIdentityReady = (
-    $env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME -eq "runway" -and
-    $env:FRAMEFACTORY_FULL_AI_MODEL_ID -eq $env:FRAMEFACTORY_RUNWAY_MODEL -and
+    (
+        ($env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME -eq "runway" -and
+            $env:FRAMEFACTORY_FULL_AI_MODEL_ID -eq $env:FRAMEFACTORY_RUNWAY_MODEL) -or
+        ($env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME -eq "dashscope-wan" -and
+            $env:FRAMEFACTORY_FULL_AI_MODEL_ID -eq $env:FRAMEFACTORY_WAN_MODEL -and
+            $env:FRAMEFACTORY_FULL_AI_COST_PER_SECOND_MINOR -eq
+                $env:FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR)
+    ) -and
     $env:FRAMEFACTORY_FULL_AI_CREDIT_UNIT_MINOR -eq "1" -and
     $env:FRAMEFACTORY_FULL_AI_OUTPUT_RIGHTS_CONFIRMED -eq "true"
 )
@@ -713,8 +1117,9 @@ Invoke-Checked -FilePath $venvPython -Arguments @(
 
 $managed = @()
 $apiProcessRecord = $null
+$webProcessRecord = $null
 $workerProviderSecrets = Suspend-WorkerProviderSecrets
-$apiReused = Assert-PortAvailableOrHealthy -Port 8200 -HealthUrl "$apiUrl/healthz" `
+$apiReused = Assert-PortAvailableOrHealthy -Port $ApiPort -HealthUrl "$apiUrl/healthz" `
     -Name "Control API" -RequireDurableApi
 if ($apiReused) {
     Restore-WorkerProviderSecrets -Secrets $workerProviderSecrets
@@ -724,11 +1129,12 @@ $webReused = Assert-PortAvailableOrHealthy -Port 4173 -HealthUrl $webUrl -Name "
 try {
     Write-Info "启动 Control API"
     $apiProcessRecord = Start-ManagedProcess -Name "api" -FilePath $venvPython -Arguments @(
-        "-m", "uvicorn", "framefactory_api.main:app", "--host", "127.0.0.1", "--port", "8200"
+        "-m", "uvicorn", "framefactory_api.main:app", "--host", "127.0.0.1", "--port", "$ApiPort"
     ) -WorkingDirectory $projectRoot
     $managed += $apiProcessRecord
+    Save-ManagedProcessState -Processes $managed
     Restore-WorkerProviderSecrets -Secrets $workerProviderSecrets
-    Wait-Http -Url "$apiUrl/readyz" -Name "Control API"
+    Wait-Http -Url "$apiUrl/readyz" -Name "Control API" -ProcessId $apiProcessRecord.pid
     Assert-FullAiApiConfiguration -ExpectedReady $fullAiExpectedReady `
         -ExpectedProvider $env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME `
         -ExpectedModel $env:FRAMEFACTORY_FULL_AI_MODEL_ID
@@ -741,6 +1147,7 @@ try {
     $managed += Start-ManagedProcess -Name "worker" -FilePath $venvPython -Arguments @(
         "-m", "framefactory.worker", "run"
     ) -WorkingDirectory $projectRoot
+    Save-ManagedProcessState -Processes $managed
     Clear-ProviderEnvironment
 
     if ($BrowserCapture) {
@@ -752,6 +1159,7 @@ try {
                 "-m", "framefactory.worker.web_capture.development_proxy",
                 "--host", "127.0.0.1", "--port", "$browserProxyPort"
             ) -WorkingDirectory $projectRoot
+        Save-ManagedProcessState -Processes $managed
         Wait-Tcp -Address "127.0.0.1" -Port $browserProxyPort `
             -Name "Browser egress proxy"
 
@@ -777,28 +1185,31 @@ try {
             -FilePath $venvPython -Arguments @(
                 "-m", "framefactory.worker", "run"
             ) -WorkingDirectory $projectRoot
+        Save-ManagedProcessState -Processes $managed
         Clear-BrowserCaptureEnvironment
     }
 
     if (-not $webReused) {
         Write-Info "启动 Web"
-        $managed += Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
-            "run", "dev", "--", "--host", "127.0.0.1", "--port", "4173"
+        $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
+            "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "4173"
         ) -WorkingDirectory $webRoot
+        $managed += $webProcessRecord
+        Save-ManagedProcessState -Processes $managed
     }
-    Wait-Http -Url $webUrl -Name "Web"
+    if ($webProcessRecord) {
+        Wait-Http -Url $webUrl -Name "Web" -ProcessId $webProcessRecord.pid
+    } else {
+        Wait-Http -Url $webUrl -Name "Web"
+    }
 
-    $state = [ordered]@{
-        project_root = $projectRoot
-        created_at_utc = [DateTime]::UtcNow.ToString("o")
-        processes = $managed
-    }
-    $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Save-ManagedProcessState -Processes $managed
 } catch {
     Restore-WorkerProviderSecrets -Secrets $workerProviderSecrets
     Clear-ProviderEnvironment
     Clear-BrowserCaptureEnvironment
     Stop-ManagedProcesses -Processes $managed
+    Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
     Stop-WithError $_.Exception.Message
 }
 

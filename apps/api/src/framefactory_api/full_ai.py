@@ -31,6 +31,9 @@ Direction = Literal["cinematic", "graphic", "illustrated"]
 AspectRatio = Literal["9:16", "16:9"]
 DurationSeconds = Literal[15, 30, 45, 60]
 VariantsPerScene = Literal[1, 2, 3]
+FullAiCurrency = Literal["CNY", "USD"]
+WAN_PROVIDER_NAME = "dashscope-wan"
+WAN_MODEL_ID = "wan2.7-t2v-2026-06-12"
 
 
 class FullAiBlocker(StrictModel):
@@ -105,7 +108,7 @@ class FullAiPlan(StrictModel):
 
 
 class FullAiQuote(StrictModel):
-    currency: Literal["USD"] = "USD"
+    currency: FullAiCurrency
     amount_minor: int = Field(ge=0)
     expires_at: datetime
 
@@ -122,7 +125,7 @@ class FullAiEstimateResponse(StrictModel):
 class FullAiRunCreate(FullAiVideoSpec):
     estimate_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     max_cost_minor: int = Field(ge=0, le=100_000_000)
-    currency: Literal["USD"] = "USD"
+    currency: FullAiCurrency
 
     def spec(self) -> FullAiVideoSpec:
         return FullAiVideoSpec.model_validate(
@@ -248,19 +251,28 @@ class FullAiRuntimeConfiguration:
                     retryable=False,
                 )
             )
-        elif self.model_id != "gen4.5":
+        elif self.model_id not in {"gen4.5", WAN_MODEL_ID}:
             blockers.append(
                 FullAiBlocker(
                     code="FULL_AI_PROVIDER_MODEL_UNSUPPORTED",
-                    message="P1 supports only the Runway gen4.5 model",
+                    message="The configured Full-AI provider model is unsupported",
                     retryable=False,
                 )
             )
-        if self.provider_name and self.provider_name.casefold() != "runway":
+        provider_model_supported = (
+            self.provider_name is None
+            or self.model_id is None
+            or (self.provider_name.casefold() == "runway" and self.model_id == "gen4.5")
+            or (
+                self.provider_name.casefold() == WAN_PROVIDER_NAME
+                and self.model_id == WAN_MODEL_ID
+            )
+        )
+        if not provider_model_supported:
             blockers.append(
                 FullAiBlocker(
                     code="FULL_AI_PROVIDER_UNSUPPORTED",
-                    message="P1 supports only the Runway provider",
+                    message="The configured Full-AI provider/model pair is unsupported",
                     retryable=False,
                 )
             )
@@ -277,7 +289,7 @@ class FullAiRuntimeConfiguration:
                 FullAiBlocker(
                     code="FULL_AI_PRICING_UNIT_NOT_CONFIGURED",
                     message=(
-                        "Runway credit pricing must be frozen as one USD cent per credit"
+                        "Provider pricing must use one currency minor unit per ledger unit"
                     ),
                     retryable=False,
                 )
@@ -473,6 +485,13 @@ class FullAiControlService:
                 max_cost_minor=command.max_cost_minor,
                 currency=command.currency,
             )
+        if command.currency != estimate.quote.currency:
+            raise ConflictError(
+                "FULL_AI_CURRENCY_MISMATCH",
+                "The authorized currency does not match the frozen provider quote",
+                quoted_currency=estimate.quote.currency,
+                authorized_currency=command.currency,
+            )
 
         timestamp = self._now().astimezone(UTC)
         full_ai_run_id = uuid4()
@@ -574,7 +593,7 @@ class FullAiControlService:
                         "ref": self.configuration.pricing_reference,
                         "content_hash": self.configuration.pricing_content_hash,
                         "captured_at": self.configuration.pricing_captured_at,
-                        "currency": "USD",
+                        "currency": self._currency(),
                         "credit_unit_minor": self.configuration.credit_unit_minor,
                         "cost_per_second_minor": self.configuration.cost_per_second_minor,
                     },
@@ -744,11 +763,16 @@ class FullAiControlService:
             request_fingerprint=_fingerprint(quote_domain),
             plan=plan,
             quote=FullAiQuote(
+                currency=self._currency(),
                 amount_minor=amount_minor,
                 expires_at=expires_at,
             ),
             blockers=[],
         )
+
+    def _currency(self) -> FullAiCurrency:
+        provider = (self.configuration.provider_name or "").casefold()
+        return "CNY" if provider == WAN_PROVIDER_NAME else "USD"
 
 
 def _plan(spec: FullAiVideoSpec) -> FullAiPlan:
@@ -793,6 +817,12 @@ def _production_settings(spec: FullAiVideoSpec) -> Resource:
             "copyright_status": "licensed",
             "rights_confirmed": False,
         },
+        "no_asset_draft": {
+            "enabled": False,
+            "mode": "procedural_cards",
+            "draft": True,
+            "replacement_required": True,
+        },
         "sources": {
             "language": "system_default",
             "aspect_ratio": "run_override",
@@ -804,6 +834,7 @@ def _production_settings(spec: FullAiVideoSpec) -> Resource:
             "frame_rate": "system_default",
             "subtitles": "system_default",
             "asset_acquisition": "system_default",
+            "no_asset_draft": "system_default",
         },
     }
 

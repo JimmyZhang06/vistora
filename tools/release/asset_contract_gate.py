@@ -10,10 +10,10 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPEC = Path(__file__).with_name("asset_release_contract.json")
@@ -40,7 +40,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read contract {path}: {exc}") from exc
     if not isinstance(value, dict):
-        raise ValueError(f"contract {path} must contain a JSON object")
+        raise TypeError(f"contract {path} must contain a JSON object")
     return value
 
 
@@ -54,7 +54,7 @@ def _load_openapi(path: Path) -> Mapping[str, Any]:
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"cannot read OpenAPI contract {path}: {exc}") from exc
     if not isinstance(value, Mapping):
-        raise ValueError(f"OpenAPI contract {path} must contain an object")
+        raise TypeError(f"OpenAPI contract {path} must contain an object")
     return value
 
 

@@ -22,6 +22,7 @@
     "rights_status": { "type": "string", "enum": ["verified", "requires_review"] },
     "acquisition": { "$ref": "#/$defs/AcquisitionAudit" },
     "generation": { "$ref": "#/$defs/GenerationAudit" },
+    "editorial_fallback": { "$ref": "#/$defs/EditorialFallbackAudit" },
     "beats": {
       "type": "array",
       "minItems": 1,
@@ -44,6 +45,30 @@
             "provider": { "const": "database-asset-library" },
             "catalog_scope": { "const": "local" },
             "local_catalog_only": { "const": true },
+            "generation": false,
+            "editorial_fallback": false
+          }
+        },
+        {
+          "required": ["editorial_fallback"],
+          "properties": {
+            "operation": { "const": "media.retrieve" },
+            "provider": { "const": "procedural-editorial-cards" },
+            "catalog_scope": { "const": "run" },
+            "local_catalog_only": { "const": false },
+            "catalog_snapshot_id": false,
+            "retrieval_policy": false,
+            "acquisition": false,
+            "generation": false
+          }
+        },
+        {
+          "required": ["retrieval_policy", "acquisition", "editorial_fallback"],
+          "properties": {
+            "operation": { "const": "media.retrieve" },
+            "provider": { "const": "hybrid-local-and-editorial" },
+            "catalog_scope": { "const": "run" },
+            "local_catalog_only": { "const": false },
             "generation": false
           }
         },
@@ -55,13 +80,34 @@
             "local_catalog_only": { "const": false },
             "catalog_snapshot_id": false,
             "retrieval_policy": false,
-            "acquisition": false
+            "acquisition": false,
+            "editorial_fallback": false
           }
         }
       ]
     }
   ],
   "$defs": {
+    "EditorialFallbackAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled", "mode", "draft", "replacement_required", "reason",
+        "video_plan_artifact_id", "video_plan_content_hash"
+      ],
+      "properties": {
+        "enabled": { "const": true },
+        "mode": { "const": "procedural_cards" },
+        "draft": { "const": true },
+        "replacement_required": { "const": true },
+        "reason": {
+          "type": "string",
+          "enum": ["no_selected_asset_library", "no_eligible_catalog_footage", "partial_catalog_coverage"]
+        },
+        "video_plan_artifact_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "video_plan_content_hash": { "$ref": "common.schema.json#/$defs/Sha256" }
+      }
+    },
     "GenerationAudit": {
       "type": "object",
       "additionalProperties": false,
@@ -82,7 +128,7 @@
       "required": [
         "enabled", "attempted", "step_attempt", "resumed_after_asset_analysis",
         "library_id", "missing_beat_ids_before", "queried_beat_ids", "queries",
-        "sources", "max_assets", "copyright_status", "imported_count",
+        "sources", "max_assets", "copyright_status", "rights_mode", "imported_count",
         "unresolved_queries", "provider_errors", "provider_errors_total",
         "provider_errors_truncated", "auto_resume_pending", "skipped_reason"
       ],
@@ -116,6 +162,10 @@
         },
         "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
         "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
+        "rights_mode": {
+          "type": "string",
+          "enum": ["provider_verified_public_domain", "user_attested"]
+        },
         "imported_count": { "type": "integer", "minimum": 0, "maximum": 6 },
         "unresolved_queries": {
           "type": "array",
@@ -383,6 +433,7 @@
         "sources": ["wikimedia"],
         "max_assets": 2,
         "copyright_status": "public_domain",
+        "rights_mode": "provider_verified_public_domain",
         "imported_count": 0,
         "unresolved_queries": [],
         "provider_errors": [],

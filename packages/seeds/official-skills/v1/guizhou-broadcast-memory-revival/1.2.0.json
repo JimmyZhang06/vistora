@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0.0",
+  "id": "fd8b67c7-af31-5b20-a813-a6fcbba293b7",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "skill_id": "23bf8575-7699-55f8-b568-61de24487693",
+  "version": "1.2.0",
+  "state": "published",
+  "execution_kind": "declarative",
+  "input_schema": {
+    "type": "object",
+    "title": "贵州广电记忆活化输入",
+    "description": "提供历史媒资再创作主题；地点、年代、文化线索和终端要求可直接写入主题说明。",
+    "properties": {
+      "topic": {"type": "string", "title": "活化主题", "minLength": 6, "maxLength": 1200},
+      "audience": {"type": "string", "title": "目标受众", "maxLength": 160},
+      "inventory_concepts": {
+        "type": "array",
+        "title": "本地媒资检索概念",
+        "description": "只包含主题、年代、地点与画面线索，不包含版权、审核和流程指令。",
+        "items": {"type": "string"},
+        "minItems": 1,
+        "maxItems": 8
+      }
+    },
+    "required": ["topic"],
+    "additionalProperties": false
+  },
+  "research_policy": {
+    "mode": "required",
+    "allowed_source_types": ["primary", "official", "academic", "licensed_archive", "user_provided"],
+    "require_https": true,
+    "fact_treatment": "cite",
+    "citation_style": "artifact_only",
+    "minimum_sources": 3,
+    "maximum_sources": 16,
+    "freshness_days": null,
+    "blocked_domains": []
+  },
+  "writing_policy": {
+    "language": "zh-CN",
+    "target_duration_seconds": 180,
+    "tone_tags": ["纪实", "克制", "地方文化", "跨年代对照"],
+    "structure": [
+      {"name": "证据驱动的今昔叙事", "purpose": "从一个可核验的当下问题切入，按时间组织历史影像、原声采访与变化证据，解释地方经验并回到今天。", "target_share": 1}
+    ],
+    "markdown_instructions": "先读取冻结素材库存摘要，再开展事实研究并写稿。优先使用运行绑定素材库中的节目原片、采访原声和官方档案。每个历史事实、直接引语、人物身份、地名、年代和因果判断都必须可追溯到研究 Artifact 或具体媒资片段；区分节目原述、后续研究和编辑推论。尊重贵州各民族文化语境，保留必要方言原声并提供准确字幕。不得用生成画面冒充历史档案，不得为了戏剧性拼接出原素材不支持的因果关系。脚本 Beat 素材不足时才进入补采，补采失败则明确请求编辑补充，不以无来源内容补齐。",
+    "prohibited_content": ["虚构史料、采访或直接引语", "用生成画面冒充历史档案", "篡改原采访语义或制造虚假因果", "无授权使用受限素材", "对民族文化作猎奇化或刻板化表达", "未标明来源的争议性历史结论"]
+  },
+  "visual_policy": {
+    "aspect_ratio": "16:9",
+    "frame_rate": 25,
+    "visual_tags": ["广电纪实", "档案质感", "今昔对照", "原声优先"],
+    "shot_duration_seconds": {"minimum": 2, "target": 6, "maximum": 12},
+    "text_safe_area_percent": 10,
+    "generated_media_allowed": false
+  },
+  "asset_policy": {
+    "library_binding": "run_composition",
+    "allowed_kinds": ["image", "video", "audio", "document"],
+    "minimum_assets": 8,
+    "license_required": true,
+    "fallback": "fail",
+    "deduplicate_by_hash": true
+  },
+  "qc_policy": {
+    "rules": [
+      {"id": "archive-claim-lineage", "category": "factuality", "description": "历史事实、人物、地点、年代、引语与画面均可追溯到研究证据或具体媒资片段。", "severity": "error", "action": "fail"},
+      {"id": "archive-rights", "category": "copyright", "description": "所有入选素材具备来源、权利状态、允许用途和审核记录。", "severity": "error", "action": "fail"},
+      {"id": "no-false-historical-media", "category": "visual", "description": "不存在将生成画面、网页截图或无关素材表述为历史档案的情况。", "severity": "error", "action": "fail"},
+      {"id": "cultural-context", "category": "safety", "description": "民族、方言、民俗和地方文化表达准确、尊重语境且避免猎奇化。", "severity": "warning", "action": "request_review"},
+      {"id": "editorial-final-review", "category": "technical", "description": "脚本、镜头、字幕、原声、版权与播出规格均经过编辑终审。", "severity": "error", "action": "request_review"}
+    ],
+    "human_review": "always",
+    "minimum_pass_rate": 1
+  },
+  "capability_requirements": [
+    {"name": "model.text_generation", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "research.source_grounding", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "media.inventory", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "media.retrieve", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "timeline.align", "level": "required", "minimum_version": "1.0.0"},
+    {"name": "render.subtitle_sentence", "level": "required", "minimum_version": "1.0.0"}
+  ],
+  "output_contract": {
+    "artifacts": [
+      {"name": "research-notes", "kind": "research", "media_types": ["application/json"], "required": true, "maximum_bytes": 31457280},
+      {"name": "narration-script", "kind": "script", "media_types": ["application/json", "text/markdown"], "required": true, "maximum_bytes": 10485760},
+      {"name": "candidate-manifest", "kind": "candidate_manifest", "media_types": ["application/json"], "required": true, "maximum_bytes": 52428800},
+      {"name": "edit-decision-list", "kind": "timeline", "media_types": ["application/json"], "required": true, "maximum_bytes": 52428800},
+      {"name": "final-video", "kind": "video", "media_types": ["video/mp4"], "required": true, "maximum_bytes": 2147483648},
+      {"name": "quality-report", "kind": "qc_report", "media_types": ["application/json"], "required": true, "maximum_bytes": 10485760}
+    ],
+    "allow_undeclared_artifacts": false
+  },
+  "default_pipeline_version_id": "3cbfb0d5-69ab-507d-ac62-e9918b3c3462",
+  "content_hash": "db3f61065778ebd15e9e9d2d794792861b523e3baad2f33a27990c0bbe8e291b",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-28T07:35:00Z",
+  "published_at": "2026-08-28T07:35:00Z"
+}

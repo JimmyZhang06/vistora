@@ -12,6 +12,7 @@ dependencies = [
   "boto3>=1.35,<2",
   "edge-tts>=7.2.8,<8",
   "psycopg[binary]>=3.2,<4",
+  "pypdf>=6.16.1,<7",
   "redis>=5,<7",
 ]
 
@@ -23,6 +24,7 @@ browser-capture = [
 [project.scripts]
 framefactory-worker = "framefactory.worker.__main__:main"
 framefactory-semantic-timeline-benchmark = "framefactory.worker.semantic_timeline_benchmark:main"
+framefactory-document-hybrid-pilot = "framefactory.worker.document_hybrid.pilot:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

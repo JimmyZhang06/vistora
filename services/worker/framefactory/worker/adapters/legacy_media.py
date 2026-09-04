@@ -268,6 +268,8 @@ class FFmpegQualityCapability:
         black_seconds = _detected_duration(analysis_log, "black_start", "black_end")
         silent_seconds = _detected_duration(analysis_log, "silence_start", "silence_end")
         risks: list[str] = []
+        if video.filename == "editorial-draft.mp4":
+            risks.append("editorial_draft_requires_material_replacement")
         if not video_streams:
             risks.append("video_stream_missing")
         if not audio_streams:
@@ -486,6 +488,11 @@ class FFmpegRenderCapability:
                         shot.get("motion_focus")
                         if isinstance(shot.get("motion_focus"), Mapping)
                         else entry.get("motion_focus")
+                    ),
+                    fade_in=index > 1 and shot.get("transition") == "fade_black",
+                    fade_out=(
+                        index < len(timeline)
+                        and timeline[index].get("transition") == "fade_black"
                     ),
                 )
                 await _run_command(command, context, cwd=work, timeout_seconds=900)
@@ -1235,6 +1242,8 @@ def _segment_command(
     source_end_seconds: float | None = None,
     image_motion: str = "static",
     motion_focus: object = None,
+    fade_in: bool = False,
+    fade_out: bool = False,
 ) -> tuple[str, ...]:
     is_image = source.suffix.lower() in _IMAGE_SUFFIXES
     input_args: tuple[str, ...]
@@ -1263,13 +1272,31 @@ def _segment_command(
         media_fit=media_fit,
         background_color=background_color,
     )
-    if is_image and image_motion == "zoom_in":
-        video_filter += _slow_zoom_filter(
-            width,
-            height,
-            frame_rate,
-            duration,
-            motion_focus,
+    if is_image:
+        if image_motion in {"zoom_in", "zoom_out"}:
+            video_filter += _slow_zoom_filter(
+                width,
+                height,
+                frame_rate,
+                duration,
+                motion_focus,
+                zoom_out=image_motion == "zoom_out",
+            )
+        elif image_motion == "pan":
+            video_filter += _slow_pan_filter(
+                width,
+                height,
+                frame_rate,
+                duration,
+                motion_focus,
+            )
+    fade_duration = min(0.35, max(0.08, duration / 4))
+    if fade_in:
+        video_filter += f",fade=t=in:st=0:d={fade_duration:.6f}:color=black"
+    if fade_out:
+        fade_start = max(0.0, duration - fade_duration)
+        video_filter += (
+            f",fade=t=out:st={fade_start:.6f}:d={fade_duration:.6f}:color=black"
         )
     if padding > 0:
         video_filter += f",tpad=stop_mode=clone:stop_duration={padding:.6f}"
@@ -1565,6 +1592,8 @@ def _slow_zoom_filter(
     frame_rate: int,
     duration: float,
     focus: object,
+    *,
+    zoom_out: bool = False,
 ) -> str:
     value = focus if isinstance(focus, Mapping) else {}
     focus_x = min(
@@ -1574,14 +1603,46 @@ def _slow_zoom_filter(
         1.0, max(0.0, _number(value.get("y", 0.5)) if value else 0.5)
     )
     last_frame = max(1, round(duration * frame_rate) - 1)
-    zoom = (
-        "1+0.10*(0.5-0.5*cos(PI*"
-        f"min(on,{last_frame})/{last_frame}))"
-    )
+    ease = f"(0.5-0.5*cos(PI*min(on,{last_frame})/{last_frame}))"
+    zoom = f"1.10-0.10*{ease}" if zoom_out else f"1+0.10*{ease}"
     x = f"max(0,min(iw-iw/zoom,{focus_x:.6f}*iw-iw/(2*zoom)))"
     y = f"max(0,min(ih-ih/zoom,{focus_y:.6f}*ih-ih/(2*zoom)))"
     return (
         f",zoompan=z='{zoom}':x='{x}':y='{y}':d=1:"
+        f"s={width}x{height}:fps={frame_rate},format=yuv420p"
+    )
+
+
+def _slow_pan_filter(
+    width: int,
+    height: int,
+    frame_rate: int,
+    duration: float,
+    focus: object,
+) -> str:
+    value = focus if isinstance(focus, Mapping) else {}
+    focus_x = min(
+        1.0, max(0.0, _number(value.get("x", 0.5)) if value else 0.5)
+    )
+    focus_y = min(
+        1.0, max(0.0, _number(value.get("y", 0.5)) if value else 0.5)
+    )
+    last_frame = max(1, round(duration * frame_rate) - 1)
+    ease = f"(0.5-0.5*cos(PI*min(on,{last_frame})/{last_frame}))"
+    direction = -1.0 if focus_x >= 0.5 else 1.0
+    zoom = 1.08
+    target_x = f"({focus_x:.6f}*iw-iw/(2*{zoom:.2f}))"
+    target_y = f"({focus_y:.6f}*ih-ih/(2*{zoom:.2f}))"
+    x = (
+        f"max(0,min(iw-iw/{zoom:.2f},{target_x}+"
+        f"{direction:.1f}*0.04*iw*(1-{ease})))"
+    )
+    y = (
+        f"max(0,min(ih-ih/{zoom:.2f},{target_y}+"
+        f"0.02*ih*(1-{ease})))"
+    )
+    return (
+        f",zoompan=z='{zoom:.2f}':x='{x}':y='{y}':d=1:"
         f"s={width}x{height}:fps={frame_rate},format=yuv420p"
     )
 

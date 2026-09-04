@@ -20,7 +20,9 @@ function localeFromCookie(): InterfaceLocale | null {
     .split(";")
     .map((item) => item.trim())
     .find((item) => item.startsWith(`${interfaceLocaleCookie}=`));
-  return match ? normalizeLocale(decodeURIComponent(match.slice(match.indexOf("=") + 1))) : null;
+  if (!match) return null;
+  const locale = normalizeLocale(decodeURIComponent(match.slice(match.indexOf("=") + 1)));
+  return locale === "zh-CN" ? locale : null;
 }
 
 function interpolate(message: string, parameters?: MessageParameters) {

@@ -32,13 +32,14 @@ async function render(worker, pathname) {
   );
 }
 
-test("keeps the legacy product introduction at both public entry routes", async () => {
+test("keeps the Vistora product introduction at both public entry routes", async () => {
   const worker = await loadWorker();
   for (const pathname of ["/", "/product"]) {
     const response = await render(worker, pathname);
     assert.equal(response.status, 200, pathname);
     const html = await response.text();
-    assert.match(html, /<title>FrameFactory — 从主题到成片<\/title>/);
+    assert.match(html, /<title>Vistora — 从主题到成片<\/title>/);
+    assert.doesNotMatch(html, /FrameFactory/);
     assert.match(html, /一个主题，/);
     assert.match(html, /href="\/login\?returnTo=\/create"/);
   }
@@ -49,7 +50,8 @@ test("keeps the legacy login presentation and delegates credentials to hosted si
   const response = await render(worker, "/login?returnTo=/skills");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /<title>登录 — FrameFactory<\/title>/);
+  assert.match(html, /<title>登录 — Vistora<\/title>/);
+  assert.doesNotMatch(html, /FrameFactory/);
   assert.match(html, /让想法，继续生长。/);
   assert.match(html, /\/signin-with-chatgpt\?return_to=/);
   assert.doesNotMatch(html, /type="password"/);

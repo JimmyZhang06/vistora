@@ -715,6 +715,9 @@ def test_migration_and_openapi_preserve_capture_audit_contract() -> None:
         root / "db/migrations/0023_webpage_video_schema_convergence.sql"
     ).read_text(encoding="utf-8")
     openapi = (root / "packages/contracts/openapi/v1.yaml").read_text(encoding="utf-8")
+    pilot_migration = (
+        root / "db/migrations/0025_webpage_video_pilot_feedback.sql"
+    ).read_text(encoding="utf-8")
 
     assert "webpage_capture_attempts_prevent_update" in migration
     assert "webpage_capture_attempts_prevent_delete" in migration
@@ -725,3 +728,10 @@ def test_migration_and_openapi_preserve_capture_audit_contract() -> None:
     assert "/v1/webpage-video/runs/{webpage_video_run_id}/capture/review:" in openapi
     assert "decision: { type: string, enum: [approve, recapture, reject] }" in openapi
     assert "url_capture:review" in openapi
+    assert "UNIQUE (workspace_id, webpage_video_run_id)" in pilot_migration
+    assert "CHECK (outcome IN ('evaluating', 'adopted', 'rejected'))" in pilot_migration
+    assert "webpage_video_pilot_feedback_tenant_access" in pilot_migration
+    assert "/v1/webpage-video/runs/{webpage_video_run_id}/pilot-feedback:" in openapi
+    assert "WebpagePilotFeedbackSave:" in openapi
+    assert "/v1/webpage-video/pilot-summary:" in openapi
+    assert "WebpagePilotSummary:" in openapi

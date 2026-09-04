@@ -17,9 +17,7 @@ from .errors import ConflictError, NotFoundError, PreconditionFailedError
 Resource = dict[str, Any]
 
 
-def _catalog_snapshot_content_hash(
-    library_ids: Sequence[str], items: Sequence[Resource]
-) -> str:
+def _catalog_snapshot_content_hash(library_ids: Sequence[str], items: Sequence[Resource]) -> str:
     """Hash only frozen catalog identity, using a stable order and encoding."""
 
     normalized_library_ids = sorted({str(value) for value in library_ids})
@@ -47,9 +45,7 @@ def _catalog_snapshot_content_hash(
         "library_ids": normalized_library_ids,
         "items": normalized_items,
     }
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -122,9 +118,7 @@ class ChannelRepository(Protocol):
         self, resource: Resource, *, operation_key: str, request_fingerprint: str
     ) -> tuple[Resource, bool]: ...
 
-    async def replace_channel(
-        self, resource: Resource, *, expected_revision: int
-    ) -> Resource: ...
+    async def replace_channel(self, resource: Resource, *, expected_revision: int) -> Resource: ...
 
     async def archive_channel(
         self, workspace_id: UUID, channel_id: UUID, *, expected_revision: int
@@ -132,9 +126,7 @@ class ChannelRepository(Protocol):
 
 
 class RunRepository(Protocol):
-    async def get_pipeline_version(
-        self, workspace_id: UUID, version_id: UUID
-    ) -> Resource: ...
+    async def get_pipeline_version(self, workspace_id: UUID, version_id: UUID) -> Resource: ...
 
     async def list_runs(self, workspace_id: UUID) -> list[Resource]: ...
 
@@ -216,9 +208,7 @@ class FullAiRepository(Protocol):
         request_fingerprint: str,
     ) -> tuple[Resource, bool]: ...
 
-    async def get_full_ai_run(
-        self, workspace_id: UUID, full_ai_run_id: UUID
-    ) -> Resource: ...
+    async def get_full_ai_run(self, workspace_id: UUID, full_ai_run_id: UUID) -> Resource: ...
 
 
 class WebpageVideoRepository(Protocol):
@@ -238,21 +228,34 @@ class WebpageVideoRepository(Protocol):
         self, workspace_id: UUID, webpage_video_run_id: UUID
     ) -> Resource: ...
 
-    async def append_webpage_capture_attempt(
-        self, resource: Resource
-    ) -> tuple[Resource, bool]: ...
+    async def append_webpage_capture_attempt(self, resource: Resource) -> tuple[Resource, bool]: ...
 
     async def list_webpage_capture_attempts(
         self, workspace_id: UUID, webpage_video_run_id: UUID
     ) -> list[Resource]: ...
 
+    async def get_webpage_pilot_feedback(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource | None: ...
+
+    async def list_webpage_pilot_feedback(
+        self, workspace_id: UUID, *, limit: int
+    ) -> tuple[list[Resource], int]: ...
+
+    async def upsert_webpage_pilot_feedback_idempotently(
+        self,
+        resource: Resource,
+        *,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
+
 
 class GenerationBatchRepository(Protocol):
     async def list_generation_batches(self, workspace_id: UUID) -> list[Resource]: ...
 
-    async def get_generation_batch(
-        self, workspace_id: UUID, batch_id: UUID
-    ) -> Resource: ...
+    async def get_generation_batch(self, workspace_id: UUID, batch_id: UUID) -> Resource: ...
 
     async def list_generation_batch_items(
         self,
@@ -285,9 +288,7 @@ class CatalogRepository(Protocol):
         created_by: UUID | None = None,
     ) -> Resource: ...
 
-    async def get_catalog_snapshot(
-        self, workspace_id: UUID, snapshot_id: UUID
-    ) -> Resource: ...
+    async def get_catalog_snapshot(self, workspace_id: UUID, snapshot_id: UUID) -> Resource: ...
 
     async def create_library_build_job_idempotently(
         self,
@@ -297,9 +298,7 @@ class CatalogRepository(Protocol):
         request_fingerprint: str,
     ) -> tuple[Resource, bool]: ...
 
-    async def get_library_build_job(
-        self, workspace_id: UUID, job_id: UUID
-    ) -> Resource: ...
+    async def get_library_build_job(self, workspace_id: UUID, job_id: UUID) -> Resource: ...
 
     async def cancel_library_build_job(
         self,
@@ -311,11 +310,59 @@ class CatalogRepository(Protocol):
 
 
 class AssetRepository(Protocol):
+    async def create_document_source_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
+
+    async def get_document_source(self, workspace_id: UUID, source_id: UUID) -> Resource: ...
+
+    async def complete_document_source(
+        self, workspace_id: UUID, source_id: UUID, *, byte_size: int
+    ) -> Resource: ...
+
+    async def update_document_retention(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        retention_until: datetime | None,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource: ...
+
+    async def set_document_legal_hold(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        active: bool,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource: ...
+
+    async def request_document_purge_idempotently(
+        self,
+        resource: Resource,
+        *,
+        actor_id: UUID,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
+
+    async def get_document_purge_request(
+        self, workspace_id: UUID, request_id: UUID
+    ) -> Resource: ...
+
     async def list_asset_libraries(self, workspace_id: UUID) -> list[Resource]: ...
 
-    async def get_asset_library(
-        self, workspace_id: UUID, library_id: UUID
-    ) -> Resource: ...
+    async def get_asset_library(self, workspace_id: UUID, library_id: UUID) -> Resource: ...
 
     async def create_asset_library(self, resource: Resource) -> Resource: ...
 
@@ -451,6 +498,8 @@ class InMemoryControlRepository:
         generation_batch_items: list[Resource] | None = None,
         asset_libraries: list[Resource] | None = None,
         assets: list[Resource] | None = None,
+        document_sources: list[Resource] | None = None,
+        document_purge_requests: list[Resource] | None = None,
         catalog_snapshots: list[Resource] | None = None,
         library_build_jobs: list[Resource] | None = None,
     ) -> None:
@@ -477,6 +526,7 @@ class InMemoryControlRepository:
         self._full_ai_paid_operations: dict[str, Resource] = {}
         self._webpage_video_runs: dict[str, Resource] = {}
         self._webpage_capture_attempts: dict[str, Resource] = {}
+        self._webpage_pilot_feedback: dict[str, Resource] = {}
         self._run_steps: dict[str, Resource] = {
             resource["id"]: deepcopy(resource) for resource in (run_steps or [])
         }
@@ -490,8 +540,7 @@ class InMemoryControlRepository:
             resource["id"]: deepcopy(resource) for resource in (generation_batches or [])
         }
         self._generation_batch_items: dict[str, Resource] = {
-            resource["id"]: deepcopy(resource)
-            for resource in (generation_batch_items or [])
+            resource["id"]: deepcopy(resource) for resource in (generation_batch_items or [])
         }
         self._asset_libraries: dict[str, Resource] = {
             resource["id"]: deepcopy(resource) for resource in (asset_libraries or [])
@@ -499,6 +548,20 @@ class InMemoryControlRepository:
         self._assets: dict[str, Resource] = {
             resource["id"]: deepcopy(resource) for resource in (assets or [])
         }
+        self._document_sources: dict[str, Resource] = {
+            resource["id"]: deepcopy(resource) for resource in (document_sources or [])
+        }
+        self._document_purge_requests: dict[str, Resource] = {
+            resource["id"]: deepcopy(resource) for resource in (document_purge_requests or [])
+        }
+        for source in self._document_sources.values():
+            source.setdefault("retention_until", None)
+            source.setdefault("legal_hold", False)
+            source.setdefault("legal_hold_reason", None)
+            source.setdefault("legal_hold_set_by", None)
+            source.setdefault("legal_hold_set_at", None)
+            source.setdefault("deletion_requested_at", None)
+            source.setdefault("purged_at", None)
         for asset in self._assets.values():
             asset.setdefault("revision", 1)
             asset.setdefault("analysis_status", "pending")
@@ -583,9 +646,7 @@ class InMemoryControlRepository:
             self._profiles[key] = deepcopy(resource)
             return deepcopy(resource)
 
-    async def get_creation_preferences(
-        self, workspace_id: UUID, user_id: UUID
-    ) -> Resource:
+    async def get_creation_preferences(self, workspace_id: UUID, user_id: UUID) -> Resource:
         resource = self._creation_preferences.get((str(workspace_id), str(user_id)))
         if resource is None:
             raise NotFoundError("creation_preferences", str(user_id))
@@ -603,14 +664,11 @@ class InMemoryControlRepository:
             self._creation_preferences[key] = deepcopy(resource)
             return deepcopy(resource)
 
-    async def list_account_sessions(
-        self, workspace_id: UUID, user_id: UUID
-    ) -> list[Resource]:
+    async def list_account_sessions(self, workspace_id: UUID, user_id: UUID) -> list[Resource]:
         return self._sorted_copy(
             self._public_session(session)
             for session in self._account_sessions.values()
-            if session["workspace_id"] == str(workspace_id)
-            and session["user_id"] == str(user_id)
+            if session["workspace_id"] == str(workspace_id) and session["user_id"] == str(user_id)
         )
 
     async def revoke_account_session(
@@ -643,9 +701,7 @@ class InMemoryControlRepository:
             self._api_keys[resource["id"]] = deepcopy(resource)
             return self._public_api_key(resource)
 
-    async def revoke_api_key(
-        self, workspace_id: UUID, user_id: UUID, key_id: UUID
-    ) -> Resource:
+    async def revoke_api_key(self, workspace_id: UUID, user_id: UUID, key_id: UUID) -> Resource:
         del user_id
         async with self._lock:
             key = self._api_keys.get(str(key_id))
@@ -697,9 +753,7 @@ class InMemoryControlRepository:
             and (status is None or channel.get("status") == status)
         )
 
-    async def get_platform_connection(
-        self, workspace_id: UUID, connection_id: UUID
-    ) -> Resource:
+    async def get_platform_connection(self, workspace_id: UUID, connection_id: UUID) -> Resource:
         connection = self._platform_connections.get(str(connection_id))
         if connection is None or connection["workspace_id"] != str(workspace_id):
             raise NotFoundError("platform_connection", str(connection_id))
@@ -731,9 +785,7 @@ class InMemoryControlRepository:
     def _create_channel_unlocked(self, resource: Resource) -> Resource:
         resource_id = resource["id"]
         if resource_id in self._channels:
-            raise ConflictError(
-                "CHANNEL_ALREADY_EXISTS", "A Channel with this id already exists"
-            )
+            raise ConflictError("CHANNEL_ALREADY_EXISTS", "A Channel with this id already exists")
         if any(
             channel["workspace_id"] == resource["workspace_id"]
             and channel["slug"] == resource["slug"]
@@ -744,11 +796,15 @@ class InMemoryControlRepository:
                 "A Channel with this slug already exists in the workspace",
                 slug=resource["slug"],
             )
-        if resource["platform"] is not None and resource["handle"] is not None and any(
-            channel["workspace_id"] == resource["workspace_id"]
-            and channel["platform"] == resource["platform"]
-            and channel["handle"] == resource["handle"]
-            for channel in self._channels.values()
+        if (
+            resource["platform"] is not None
+            and resource["handle"] is not None
+            and any(
+                channel["workspace_id"] == resource["workspace_id"]
+                and channel["platform"] == resource["platform"]
+                and channel["handle"] == resource["handle"]
+                for channel in self._channels.values()
+            )
         ):
             raise ConflictError(
                 "CHANNEL_HANDLE_ALREADY_EXISTS",
@@ -759,9 +815,7 @@ class InMemoryControlRepository:
         self._channels[resource_id] = deepcopy(resource)
         return deepcopy(resource)
 
-    async def replace_channel(
-        self, resource: Resource, *, expected_revision: int
-    ) -> Resource:
+    async def replace_channel(self, resource: Resource, *, expected_revision: int) -> Resource:
         async with self._lock:
             resource_id = resource["id"]
             current = self._channels.get(resource_id)
@@ -779,12 +833,16 @@ class InMemoryControlRepository:
                     "A Channel with this slug already exists in the workspace",
                     slug=resource["slug"],
                 )
-            if resource["platform"] is not None and resource["handle"] is not None and any(
-                channel_id != resource_id
-                and channel["workspace_id"] == resource["workspace_id"]
-                and channel["platform"] == resource["platform"]
-                and channel["handle"] == resource["handle"]
-                for channel_id, channel in self._channels.items()
+            if (
+                resource["platform"] is not None
+                and resource["handle"] is not None
+                and any(
+                    channel_id != resource_id
+                    and channel["workspace_id"] == resource["workspace_id"]
+                    and channel["platform"] == resource["platform"]
+                    and channel["handle"] == resource["handle"]
+                    for channel_id, channel in self._channels.items()
+                )
             ):
                 raise ConflictError(
                     "CHANNEL_HANDLE_ALREADY_EXISTS",
@@ -918,8 +976,7 @@ class InMemoryControlRepository:
                     "SKILL_VERSION_ALREADY_EXISTS", "A skill version with this id already exists"
                 )
             if any(
-                item["skill_id"] == resource["skill_id"]
-                and item["version"] == resource["version"]
+                item["skill_id"] == resource["skill_id"] and item["version"] == resource["version"]
                 for item in self._versions.values()
             ):
                 raise ConflictError(
@@ -973,9 +1030,7 @@ class InMemoryControlRepository:
                 run["composition_snapshot"]["skill_version"]["id"] == str(version_id)
                 for run in self._runs.values()
             ):
-                raise ConflictError(
-                    "SKILL_VERSION_IN_USE", "The draft is referenced by a Run"
-                )
+                raise ConflictError("SKILL_VERSION_IN_USE", "The draft is referenced by a Run")
             del self._versions[str(version_id)]
 
     async def fork_skill_idempotently(
@@ -1006,9 +1061,7 @@ class InMemoryControlRepository:
             if self._visible(resource, workspace_id)
         )
 
-    async def get_pipeline_version(
-        self, workspace_id: UUID, version_id: UUID
-    ) -> Resource:
+    async def get_pipeline_version(self, workspace_id: UUID, version_id: UUID) -> Resource:
         resource = self._pipelines.get(str(version_id))
         if resource is None or not self._visible(resource, workspace_id):
             raise NotFoundError("pipeline_version", str(version_id))
@@ -1030,9 +1083,7 @@ class InMemoryControlRepository:
         ]
         return sorted(values, key=lambda item: (item["created_at"], item["id"]), reverse=True)
 
-    async def get_generation_batch(
-        self, workspace_id: UUID, batch_id: UUID
-    ) -> Resource:
+    async def get_generation_batch(self, workspace_id: UUID, batch_id: UUID) -> Resource:
         batch = self._generation_batches.get(str(batch_id))
         if batch is None or batch["workspace_id"] != str(workspace_id):
             raise NotFoundError("generation_batch", str(batch_id))
@@ -1183,15 +1234,11 @@ class InMemoryControlRepository:
                 scheduler = self._runs.get(resource["underlying_run_id"])
                 if scheduler is not None:
                     result["status"] = self._full_ai_status(resource, scheduler)
-                    result["updated_at"] = max(
-                        result["updated_at"], scheduler["updated_at"]
-                    )
+                    result["updated_at"] = max(result["updated_at"], scheduler["updated_at"])
                 return result
         return None
 
-    async def get_full_ai_run(
-        self, workspace_id: UUID, full_ai_run_id: UUID
-    ) -> Resource:
+    async def get_full_ai_run(self, workspace_id: UUID, full_ai_run_id: UUID) -> Resource:
         resource = self._full_ai_runs.get(str(full_ai_run_id))
         if resource is None or resource["workspace_id"] != str(workspace_id):
             raise NotFoundError("full_ai_run", str(full_ai_run_id))
@@ -1281,14 +1328,10 @@ class InMemoryControlRepository:
         if scheduler is not None:
             result["scheduler_status"] = scheduler["status"]
             result["scheduler_updated_at"] = scheduler["updated_at"]
-            result["cancellation_requested_at"] = scheduler.get(
-                "cancellation_requested_at"
-            )
+            result["cancellation_requested_at"] = scheduler.get("cancellation_requested_at")
         return result
 
-    async def append_webpage_capture_attempt(
-        self, resource: Resource
-    ) -> tuple[Resource, bool]:
+    async def append_webpage_capture_attempt(self, resource: Resource) -> tuple[Resource, bool]:
         async with self._lock:
             run = self._webpage_video_runs.get(resource["webpage_video_run_id"])
             if (
@@ -1296,21 +1339,16 @@ class InMemoryControlRepository:
                 or run["workspace_id"] != resource["workspace_id"]
                 or run["underlying_run_id"] != resource["underlying_run_id"]
             ):
-                raise NotFoundError(
-                    "webpage_video_run", resource["webpage_video_run_id"]
-                )
+                raise NotFoundError("webpage_video_run", resource["webpage_video_run_id"])
             for existing in self._webpage_capture_attempts.values():
                 same_attempt = (
                     existing["workspace_id"] == resource["workspace_id"]
-                    and existing["webpage_video_run_id"]
-                    == resource["webpage_video_run_id"]
-                    and int(existing["attempt_number"])
-                    == int(resource["attempt_number"])
+                    and existing["webpage_video_run_id"] == resource["webpage_video_run_id"]
+                    and int(existing["attempt_number"]) == int(resource["attempt_number"])
                 )
-                same_artifact = (
-                    resource.get("artifact_id") is not None
-                    and existing.get("artifact_id") == resource.get("artifact_id")
-                )
+                same_artifact = resource.get("artifact_id") is not None and existing.get(
+                    "artifact_id"
+                ) == resource.get("artifact_id")
                 if not same_attempt and not same_artifact:
                     continue
                 if existing != resource:
@@ -1339,6 +1377,60 @@ class InMemoryControlRepository:
             key=lambda item: (int(item["attempt_number"]), item["created_at"]),
         )
 
+    async def get_webpage_pilot_feedback(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource | None:
+        await self.get_webpage_video_run(workspace_id, webpage_video_run_id)
+        resource = self._webpage_pilot_feedback.get(str(webpage_video_run_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            return None
+        return deepcopy(resource)
+
+    async def list_webpage_pilot_feedback(
+        self, workspace_id: UUID, *, limit: int
+    ) -> tuple[list[Resource], int]:
+        resources = [
+            deepcopy(resource)
+            for resource in self._webpage_pilot_feedback.values()
+            if resource["workspace_id"] == str(workspace_id)
+        ]
+        resources.sort(key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+        return resources[:limit], len(resources)
+
+    async def upsert_webpage_pilot_feedback_idempotently(
+        self,
+        resource: Resource,
+        *,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        async with self._lock:
+            replay = self._idempotent_replay(operation_key, request_fingerprint)
+            if replay is not None:
+                return replay, False
+            run = self._webpage_video_runs.get(resource["webpage_video_run_id"])
+            if run is None or run["workspace_id"] != resource["workspace_id"]:
+                raise NotFoundError("webpage_video_run", resource["webpage_video_run_id"])
+            current = self._webpage_pilot_feedback.get(resource["webpage_video_run_id"])
+            if current is None:
+                if expected_revision != 0:
+                    raise PreconditionFailedError(0, expected_revision)
+                persisted = deepcopy(resource)
+                created = True
+            else:
+                self._check_revision(current, expected_revision)
+                persisted = {
+                    **deepcopy(resource),
+                    "id": current["id"],
+                    "created_at": current["created_at"],
+                    "revision": int(current["revision"]) + 1,
+                }
+                created = False
+            self._webpage_pilot_feedback[resource["webpage_video_run_id"]] = persisted
+            self._record_idempotent(operation_key, request_fingerprint, persisted)
+            return deepcopy(persisted), created
+
     async def cancel_run_idempotently(
         self,
         workspace_id: UUID,
@@ -1358,9 +1450,7 @@ class InMemoryControlRepository:
                 response = self._public_run(run)
             else:
                 now = self._now()
-                run["cancellation_requested_at"] = (
-                    run.get("cancellation_requested_at") or now
-                )
+                run["cancellation_requested_at"] = run.get("cancellation_requested_at") or now
                 run["updated_at"] = now
                 found_steps = False
                 for step in self._run_steps.values():
@@ -1371,9 +1461,7 @@ class InMemoryControlRepository:
                     ):
                         continue
                     found_steps = True
-                    step["cancellation_requested_at"] = (
-                        step.get("cancellation_requested_at") or now
-                    )
+                    step["cancellation_requested_at"] = step.get("cancellation_requested_at") or now
                     step["updated_at"] = now
                     step["revision"] = int(step.get("revision", 0)) + 1
                     if step["status"] != "running":
@@ -1412,8 +1500,7 @@ class InMemoryControlRepository:
         return self._sorted_copy(
             step
             for step in self._run_steps.values()
-            if step["workspace_id"] == str(workspace_id)
-            and step["run_id"] == str(run_id)
+            if step["workspace_id"] == str(workspace_id) and step["run_id"] == str(run_id)
         )
 
     async def get_run_step(self, workspace_id: UUID, step_id: str) -> Resource:
@@ -1454,9 +1541,7 @@ class InMemoryControlRepository:
                     status=step["status"],
                 )
             now = self._now()
-            step["maximum_attempts"] = max(
-                int(step.get("maximum_attempts", 3)), attempt + 1
-            )
+            step["maximum_attempts"] = max(int(step.get("maximum_attempts", 3)), attempt + 1)
             step["status"] = "retrying"
             step["next_attempt_at"] = now
             step["finished_at"] = None
@@ -1663,8 +1748,7 @@ class InMemoryControlRepository:
                 or asset.get("kind") not in {"image", "video"}
                 or asset.get("status") != "ready"
                 or asset.get("analysis_status") != "completed"
-                or asset.get("copyright_status")
-                not in {"owned", "licensed", "public_domain"}
+                or asset.get("copyright_status") not in {"owned", "licensed", "public_domain"}
             ):
                 continue
             file = asset.get("file") or {}
@@ -1714,9 +1798,7 @@ class InMemoryControlRepository:
         )
         content_hash = _catalog_snapshot_content_hash(normalized_library_ids, items)
         async with self._lock:
-            existing_id = self._catalog_snapshots_by_hash.get(
-                (str(workspace_id), content_hash)
-            )
+            existing_id = self._catalog_snapshots_by_hash.get((str(workspace_id), content_hash))
             if existing_id is not None:
                 return deepcopy(self._catalog_snapshots[existing_id])
             snapshot_id = str(
@@ -1740,9 +1822,7 @@ class InMemoryControlRepository:
             self._catalog_snapshots_by_hash[(str(workspace_id), content_hash)] = snapshot_id
             return deepcopy(snapshot)
 
-    async def get_catalog_snapshot(
-        self, workspace_id: UUID, snapshot_id: UUID
-    ) -> Resource:
+    async def get_catalog_snapshot(self, workspace_id: UUID, snapshot_id: UUID) -> Resource:
         snapshot = self._catalog_snapshots.get(str(snapshot_id))
         if snapshot is None or snapshot["workspace_id"] != str(workspace_id):
             raise NotFoundError("catalog_snapshot", str(snapshot_id))
@@ -1800,9 +1880,7 @@ class InMemoryControlRepository:
             self._record_idempotent(operation_key, request_fingerprint, public)
             return public, True
 
-    async def get_library_build_job(
-        self, workspace_id: UUID, job_id: UUID
-    ) -> Resource:
+    async def get_library_build_job(self, workspace_id: UUID, job_id: UUID) -> Resource:
         resource = self._library_build_jobs.get(str(job_id))
         if resource is None or resource["workspace_id"] != str(workspace_id):
             raise NotFoundError("library_build_job", str(job_id))
@@ -1848,15 +1926,11 @@ class InMemoryControlRepository:
                 and asset.get("status") != "deleted"
             ]
             item["asset_count"] = len(assets)
-            item["ready_asset_count"] = sum(
-                asset.get("status") == "ready" for asset in assets
-            )
+            item["ready_asset_count"] = sum(asset.get("status") == "ready" for asset in assets)
             libraries.append(item)
         return self._sorted_copy(libraries)
 
-    async def get_asset_library(
-        self, workspace_id: UUID, library_id: UUID
-    ) -> Resource:
+    async def get_asset_library(self, workspace_id: UUID, library_id: UUID) -> Resource:
         resource = self._asset_libraries.get(str(library_id))
         if resource is None or resource["workspace_id"] != str(workspace_id):
             raise NotFoundError("asset_library", str(library_id))
@@ -1869,9 +1943,7 @@ class InMemoryControlRepository:
             and asset.get("status") != "deleted"
         ]
         result["asset_count"] = len(assets)
-        result["ready_asset_count"] = sum(
-            asset.get("status") == "ready" for asset in assets
-        )
+        result["ready_asset_count"] = sum(asset.get("status") == "ready" for asset in assets)
         return result
 
     async def create_asset_library(self, resource: Resource) -> Resource:
@@ -1889,6 +1961,220 @@ class InMemoryControlRepository:
             self._asset_libraries[resource["id"]] = deepcopy(resource)
             return deepcopy(resource)
 
+    async def create_document_source_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        async with self._lock:
+            previous = self._idempotency.get(operation_key)
+            if previous is not None:
+                if previous.request_fingerprint != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return deepcopy(previous.response), False
+            persisted = deepcopy(resource)
+            self._document_sources[persisted["id"]] = persisted
+            self._idempotency[operation_key] = _IdempotentRecord(
+                request_fingerprint=request_fingerprint,
+                response=deepcopy(persisted),
+            )
+            return deepcopy(persisted), True
+
+    async def get_document_source(self, workspace_id: UUID, source_id: UUID) -> Resource:
+        resource = self._document_sources.get(str(source_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            raise NotFoundError("document_source", str(source_id))
+        return deepcopy(resource)
+
+    async def complete_document_source(
+        self, workspace_id: UUID, source_id: UUID, *, byte_size: int
+    ) -> Resource:
+        async with self._lock:
+            resource = self._document_sources.get(str(source_id))
+            if resource is None or resource["workspace_id"] != str(workspace_id):
+                raise NotFoundError("document_source", str(source_id))
+            if int(resource["byte_size"]) != byte_size:
+                raise ConflictError(
+                    "DOCUMENT_SOURCE_SIZE_MISMATCH",
+                    "Uploaded PDF size does not match the initiated source",
+                )
+            if resource["status"] == "uploaded":
+                return deepcopy(resource)
+            resource["status"] = "uploaded"
+            resource["revision"] = int(resource["revision"]) + 1
+            resource["uploaded_at"] = self._now()
+            resource["updated_at"] = self._now()
+            return deepcopy(resource)
+
+    async def update_document_retention(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        retention_until: datetime | None,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource:
+        del actor_id, reason
+        async with self._lock:
+            resource = self._document_sources.get(str(source_id))
+            if resource is None or resource["workspace_id"] != str(workspace_id):
+                raise NotFoundError("document_source", str(source_id))
+            self._check_revision(resource, expected_revision)
+            if resource["status"] in {"deletion_pending", "purging", "purged"}:
+                raise ConflictError(
+                    "DOCUMENT_RETENTION_IMMUTABLE",
+                    "Retention cannot change after deletion has started",
+                )
+            resource["retention_until"] = (
+                retention_until.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                if retention_until is not None
+                else None
+            )
+            resource["revision"] = int(resource["revision"]) + 1
+            resource["updated_at"] = self._now()
+            return deepcopy(resource)
+
+    async def set_document_legal_hold(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        active: bool,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource:
+        async with self._lock:
+            resource = self._document_sources.get(str(source_id))
+            if resource is None or resource["workspace_id"] != str(workspace_id):
+                raise NotFoundError("document_source", str(source_id))
+            self._check_revision(resource, expected_revision)
+            if resource["status"] in {"purging", "purged"}:
+                raise ConflictError(
+                    "DOCUMENT_PURGE_ALREADY_STARTED",
+                    "Legal hold cannot change after object deletion has started",
+                )
+            now = self._now()
+            resource["legal_hold"] = active
+            resource["legal_hold_reason"] = reason if active else None
+            resource["legal_hold_set_by"] = str(actor_id) if active else None
+            resource["legal_hold_set_at"] = now if active else None
+            if active and resource["status"] == "deletion_pending":
+                resource["status"] = "uploaded"
+                for request in self._document_purge_requests.values():
+                    if (
+                        request["workspace_id"] == str(workspace_id)
+                        and request["source_id"] == str(source_id)
+                        and request["status"] in {"queued", "retrying"}
+                    ):
+                        request["status"] = "blocked"
+                        request["last_error"] = {
+                            "code": "DOCUMENT_LEGAL_HOLD_ACTIVE",
+                            "message": "Deletion was blocked by a legal hold",
+                        }
+                        request["updated_at"] = now
+            resource["revision"] = int(resource["revision"]) + 1
+            resource["updated_at"] = now
+            return deepcopy(resource)
+
+    async def request_document_purge_idempotently(
+        self,
+        resource: Resource,
+        *,
+        actor_id: UUID,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        del actor_id
+        async with self._lock:
+            previous = self._idempotency.get(operation_key)
+            if previous is not None:
+                if previous.request_fingerprint != request_fingerprint:
+                    raise ConflictError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                return deepcopy(previous.response), False
+            source = self._document_sources.get(resource["source_id"])
+            if source is None or source["workspace_id"] != resource["workspace_id"]:
+                raise NotFoundError("document_source", resource["source_id"])
+            self._check_revision(source, expected_revision)
+            if source.get("legal_hold"):
+                raise ConflictError(
+                    "DOCUMENT_LEGAL_HOLD_ACTIVE",
+                    "The document is protected by an active legal hold",
+                )
+            retention_until = source.get("retention_until")
+            if retention_until is not None:
+                retained_until = datetime.fromisoformat(str(retention_until).replace("Z", "+00:00"))
+                if retained_until > datetime.now(UTC):
+                    raise ConflictError(
+                        "DOCUMENT_RETENTION_ACTIVE",
+                        "The document has not reached the end of its retention period",
+                        retention_until=retention_until,
+                    )
+            if source["status"] not in {"uploaded", "rejected"}:
+                raise ConflictError(
+                    "DOCUMENT_NOT_PURGEABLE",
+                    "Only completed, non-purging document sources can be deleted",
+                    status=source["status"],
+                )
+            active = next(
+                (
+                    run
+                    for run in self._runs.values()
+                    if run["workspace_id"] == resource["workspace_id"]
+                    and str((run.get("input") or {}).get("document_source_id"))
+                    == resource["source_id"]
+                    and run.get("status") not in {"succeeded", "failed", "cancelled"}
+                ),
+                None,
+            )
+            if active is not None:
+                raise ConflictError(
+                    "DOCUMENT_RUN_ACTIVE",
+                    "A document Run must finish or be cancelled before deletion",
+                    run_id=active["id"],
+                    status=active["status"],
+                )
+            persisted = deepcopy(resource)
+            upload_expires_at = source.get("upload_expires_at")
+            if upload_expires_at is not None:
+                persisted["next_attempt_at"] = (
+                    max(
+                        datetime.fromisoformat(
+                            str(persisted["next_attempt_at"]).replace("Z", "+00:00")
+                        ),
+                        datetime.fromisoformat(str(upload_expires_at).replace("Z", "+00:00")),
+                    )
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            self._document_purge_requests[persisted["id"]] = persisted
+            source["status"] = "deletion_pending"
+            source["deletion_requested_at"] = persisted["created_at"]
+            source["revision"] = int(source["revision"]) + 1
+            source["updated_at"] = persisted["created_at"]
+            self._idempotency[operation_key] = _IdempotentRecord(
+                request_fingerprint=request_fingerprint,
+                response=deepcopy(persisted),
+            )
+            return deepcopy(persisted), True
+
+    async def get_document_purge_request(self, workspace_id: UUID, request_id: UUID) -> Resource:
+        resource = self._document_purge_requests.get(str(request_id))
+        if resource is None or resource["workspace_id"] != str(workspace_id):
+            raise NotFoundError("document_purge_request", str(request_id))
+        return deepcopy(resource)
+
     async def create_asset_upload(self, resource: Resource) -> Resource:
         async with self._lock:
             await self.get_asset_library(
@@ -1899,8 +2185,7 @@ class InMemoryControlRepository:
                     item
                     for item in self._assets.values()
                     if item["workspace_id"] == resource["workspace_id"]
-                    and item["file"]["content_hash"]
-                    == resource["file"]["content_hash"]
+                    and item["file"]["content_hash"] == resource["file"]["content_hash"]
                 ),
                 None,
             )
@@ -1946,10 +2231,7 @@ class InMemoryControlRepository:
         needle = search.casefold().strip() if search else None
         selected: list[Resource] = []
         for value in self._assets.values():
-            if (
-                value["workspace_id"] != str(workspace_id)
-                or value["library_id"] != str(library_id)
-            ):
+            if value["workspace_id"] != str(workspace_id) or value["library_id"] != str(library_id):
                 continue
             asset = await self.get_asset(workspace_id, UUID(value["id"]))
             if not statuses and asset["status"] == "deleted":
@@ -2053,15 +2335,9 @@ class InMemoryControlRepository:
             return [] if source is None else [{"id": f"source:{asset_id}", **deepcopy(source)}]
         if relation == "rights_evidence":
             evidence = (asset.get("metadata") or {}).get("rights_evidence")
-            return (
-                []
-                if evidence is None
-                else [{"id": f"rights:{asset_id}", **deepcopy(evidence)}]
-            )
+            return [] if evidence is None else [{"id": f"rights:{asset_id}", **deepcopy(evidence)}]
         if relation == "analyses":
-            values = asset.get("analyses") or (
-                [asset["analysis"]] if asset.get("analysis") else []
-            )
+            values = asset.get("analyses") or ([asset["analysis"]] if asset.get("analysis") else [])
             return deepcopy(values)
         if relation == "segments":
             return deepcopy(asset.get("segments", []))
@@ -2071,23 +2347,19 @@ class InMemoryControlRepository:
             values = [
                 deepcopy(job)
                 for job in self._asset_analysis_jobs.values()
-                if job["workspace_id"] == str(workspace_id)
-                and job["asset_id"] == str(asset_id)
+                if job["workspace_id"] == str(workspace_id) and job["asset_id"] == str(asset_id)
             ]
             return self._sorted_copy(values)
         if relation == "audit_events":
             values = [
                 deepcopy(event)
                 for event in self._asset_audit_events.values()
-                if event["workspace_id"] == str(workspace_id)
-                and event["asset_id"] == str(asset_id)
+                if event["workspace_id"] == str(workspace_id) and event["asset_id"] == str(asset_id)
             ]
             return self._sorted_copy(values)
         raise ValueError(f"unsupported asset relation: {relation}")
 
-    async def list_asset_import_jobs(
-        self, workspace_id: UUID, library_id: UUID
-    ) -> list[Resource]:
+    async def list_asset_import_jobs(self, workspace_id: UUID, library_id: UUID) -> list[Resource]:
         await self.get_asset_library(workspace_id, library_id)
         return []
 
@@ -2147,9 +2419,7 @@ class InMemoryControlRepository:
                 after=current,
                 metadata={"job_id": job_id, "reason": reason},
             )
-            self._idempotency[operation_key] = _IdempotentRecord(
-                request_fingerprint, deepcopy(job)
-            )
+            self._idempotency[operation_key] = _IdempotentRecord(request_fingerprint, deepcopy(job))
             return job, True
 
     async def run_asset_batch_idempotently(
@@ -2447,9 +2717,7 @@ class InMemoryControlRepository:
             if self._visible(resource, workspace_id)
         )
 
-    async def get_skill_test_execution(
-        self, workspace_id: UUID, execution_id: UUID
-    ) -> Resource:
+    async def get_skill_test_execution(self, workspace_id: UUID, execution_id: UUID) -> Resource:
         resource = self._test_executions.get(str(execution_id))
         if resource is None or not self._visible(resource, workspace_id):
             raise NotFoundError("skill_test_execution", str(execution_id))
@@ -2475,8 +2743,7 @@ class InMemoryControlRepository:
         if resource_id in self._skills:
             raise ConflictError("SKILL_ALREADY_EXISTS", "A skill with this id already exists")
         if any(
-            item["workspace_id"] == resource["workspace_id"]
-            and item["slug"] == resource["slug"]
+            item["workspace_id"] == resource["workspace_id"] and item["slug"] == resource["slug"]
             for item in self._skills.values()
         ):
             raise ConflictError(
@@ -2492,8 +2759,7 @@ class InMemoryControlRepository:
                 "SKILL_VERSION_ALREADY_EXISTS", "A skill version with this id already exists"
             )
         if any(
-            item["skill_id"] == resource["skill_id"]
-            and item["version"] == resource["version"]
+            item["skill_id"] == resource["skill_id"] and item["version"] == resource["version"]
             for item in self._versions.values()
         ):
             raise ConflictError(
@@ -2502,9 +2768,7 @@ class InMemoryControlRepository:
                 version=resource["version"],
             )
 
-    def _idempotent_replay(
-        self, operation_key: str, request_fingerprint: str
-    ) -> Any | None:
+    def _idempotent_replay(self, operation_key: str, request_fingerprint: str) -> Any | None:
         previous = self._idempotency.get(operation_key)
         if previous is None:
             return None

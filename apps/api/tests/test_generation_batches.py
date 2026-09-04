@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from framefactory_api.main import create_app
 from framefactory_api.repository import InMemoryControlRepository
-from framefactory_api.settings import DEVELOPMENT_USER_ID, DEVELOPMENT_WORKSPACE_ID
+from framefactory_api.settings import DEVELOPMENT_USER_ID, DEVELOPMENT_WORKSPACE_ID, Settings
 
 
 def _repository() -> tuple[InMemoryControlRepository, dict, dict]:
@@ -166,6 +166,121 @@ def test_batch_research_off_requires_distinct_https_sources_per_item() -> None:
             }
         ],
     }
+    assert repository._generation_batches == {}
+
+
+def test_batch_offline_sources_exempt_only_research_collect() -> None:
+    repository, version, pipeline = _repository()
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.collect"
+    }
+    payload = {
+        "name": "Offline research with supplied sources",
+        "research_mode": "off",
+        "items": [
+            {
+                "topic": "Grounded topic",
+                "inputs": {
+                    "source_urls": [
+                        "https://example.com/source-a",
+                        "https://example.org/source-b",
+                    ]
+                },
+            }
+        ],
+        "composition": {
+            "skill_version_id": version["id"],
+            "pipeline_version_id": pipeline["id"],
+        },
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    headers = {"Idempotency-Key": "batch-offline-research-sources-0001"}
+    with TestClient(create_app(settings=settings, repository=repository)) as client:
+        created = client.post("/v1/generation-batches", json=payload, headers=headers)
+        replay = client.post("/v1/generation-batches", json=payload, headers=headers)
+
+    assert created.status_code == replay.status_code == 202
+    assert created.json()["id"] == replay.json()["id"]
+    item = next(iter(repository._generation_batch_items.values()))
+    assert item["input"]["research_mode"] == "off"
+    assert item["input"]["source_urls"] == payload["items"][0]["inputs"]["source_urls"]
+
+
+def test_batch_offline_sources_do_not_exempt_other_capabilities() -> None:
+    repository, version, pipeline = _repository()
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] not in {"research.collect", "writing.compose"}
+    }
+    payload = {
+        "name": "Offline research with another missing capability",
+        "research_mode": "off",
+        "items": [
+            {
+                "topic": "Grounded topic",
+                "inputs": {
+                    "source_urls": [
+                        "https://example.com/source-a",
+                        "https://example.org/source-b",
+                    ]
+                },
+            }
+        ],
+        "composition": {
+            "skill_version_id": version["id"],
+            "pipeline_version_id": pipeline["id"],
+        },
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as client:
+        response = client.post(
+            "/v1/generation-batches",
+            json=payload,
+            headers={"Idempotency-Key": "batch-offline-other-gap-0001"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "RUN_CAPABILITY_UNAVAILABLE"
+    assert {
+        gap["capability"] for gap in response.json()["details"]["capability_gaps"]
+    } == {"writing.compose"}
+    assert repository._generation_batches == {}
+
+
+def test_batch_preflight_enforces_required_abstract_capabilities() -> None:
+    repository, version, pipeline = _repository()
+    repository._versions[version["id"]]["capability_requirements"] = [
+        {
+            "name": "model.video_generation",
+            "level": "required",
+            "minimum_version": "1.0.0",
+        }
+    ]
+    operations = tuple(sorted(str(node["operation"]) for node in pipeline["nodes"]))
+    payload = {
+        "name": "Abstract capability preflight",
+        "items": [{"topic": "Grounded topic"}],
+        "composition": {
+            "skill_version_id": version["id"],
+            "pipeline_version_id": pipeline["id"],
+        },
+    }
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as client:
+        response = client.post(
+            "/v1/generation-batches",
+            json=payload,
+            headers={"Idempotency-Key": "batch-abstract-capability-0001"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "RUN_CAPABILITY_UNAVAILABLE"
+    assert {
+        gap["capability"] for gap in response.json()["details"]["capability_gaps"]
+    } == {"model.video_generation"}
     assert repository._generation_batches == {}
 
 

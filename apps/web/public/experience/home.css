@@ -20,17 +20,26 @@
 }
 
 .brand-mark {
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 0.8vw, 11px);
   width: clamp(132px, 12vw, 174px);
+  height: clamp(33px, 3vw, 44px);
 }
 
 .brand-mark img {
-  width: 100%;
-  filter: invert(1);
+  width: auto;
+  height: 100%;
 }
 
-/* 白天模式：字标恢复原色（原图为深色） */
-:root[data-theme="light"] .brand-mark img { filter: none; }
-:root[data-theme="light"] .footer-brand img { filter: none; }
+.brand-mark span {
+  color: var(--color-foreground);
+  font-family: Arial, sans-serif;
+  font-size: clamp(1.35rem, 1.9vw, 1.9rem);
+  font-weight: 700;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
 
 .menu-trigger {
   display: flex;

@@ -61,9 +61,11 @@ test("page identity and review workbench follow the shared layout grid", async (
   assert.match(assets, /05 \/ ASSETS/);
   assert.match(channels, /06 \/ CHANNELS/);
   assert.match(settings, /07 \/ ACCOUNT & SETTINGS/);
-  for (const image of ["research-planning", "voice-recording", "editing-timeline", "final-grade"]) {
-    assert.match(create, new RegExp(`/create/${image}\\.webp`));
+  assert.doesNotMatch(create, /cinema-board|film-frame|research-planning\.webp/);
+  for (const destination of ["application-demo", "ai", "webpage-video", "document-video", "broadcast-revival"]) {
+    assert.match(create, new RegExp(`/create/${destination}`));
   }
+  assert.match(create, /选择最接近目标的起点/);
   assert.match(detail, /review-drawer-header/);
   assert.match(detail, /review-artifact-grid--single/);
   assert.match(detail, /查看最终成片/);
@@ -74,6 +76,24 @@ test("page identity and review workbench follow the shared layout grid", async (
   assert.match(css, /\.review-drawer-header \{[^}]*grid-template-columns/);
   assert.match(css, /\.review-evidence \{[^}]*align-items: start/);
   assert.doesNotMatch(css, /\.review-evidence dd \{[^}]*overflow: auto/);
+});
+
+test("document-video entry uses the governed upload and production Run API", async () => {
+  const [route, studio, composer, adapter, contracts] = await Promise.all([
+    source("app/create/document-video/page.tsx"),
+    source("components/document-video-pilot-studio.tsx"),
+    source("components/create-composer.tsx"),
+    source("lib/api/adapter.ts"),
+    source("lib/api/contracts.ts"),
+  ]);
+  assert.match(route, /DocumentVideoPilotStudio/);
+  assert.match(composer, /href="\/create\/document-video"/);
+  assert.match(studio, /adapter\.createDocumentVideoRun/);
+  assert.match(studio, /router\.push\(`\/projects\/\$\{encodeURIComponent\(result\.data\.runId\)\}`\)/);
+  assert.match(studio, /用原幂等键安全重试/);
+  assert.match(adapter, /createDocumentVideoRun/);
+  assert.match(contracts, /DocumentVideoCreateRequest/);
+  assert.doesNotMatch(studio, /framefactory\.worker\.document_hybrid\.pilot/);
 });
 
 test("full-AI creation uses only its typed generated-only API and fail-closed state machine", async () => {
@@ -245,7 +265,8 @@ test("interface locale is cookie-restored, account-synchronized, and separate fr
   assert.match(context, /vistora_locale/);
   assert.match(context, /localeFromCookie/);
   assert.match(context, /document\.documentElement\.lang = locale/);
-  assert.match(shell, /setLocale\(result\.data\.user\.locale\)/);
+  assert.match(shell, /setLocale\("zh-CN"\)/);
+  assert.match(settings, /locale: "zh-CN"/);
   assert.match(settings, /setLocale\(result\.data\.value\.locale\)/);
   assert.match(settings, /settings\.interfaceLanguage/);
   assert.match(settings, /settings\.contentLanguage/);
@@ -318,8 +339,9 @@ test("channel management uses canonical responses, multi-library defaults, and o
 });
 
 test("Run controls use the real adapter contract without simulated progress", async () => {
-  const [detail, adapter, http] = await Promise.all([
+  const [detail, create, adapter, http] = await Promise.all([
     source("components/run-detail.tsx"),
+    source("components/create-composer.tsx"),
     source("lib/api/adapter.ts"),
     source("lib/api/http-adapter.ts"),
   ]);
@@ -330,7 +352,51 @@ test("Run controls use the real adapter contract without simulated progress", as
   assert.match(http, /\/review/);
   assert.match(detail, /Worker 尚未创建步骤记录/);
   assert.match(detail, /不会展示模拟进度/);
+  assert.match(detail, /EDITORIAL|编辑草案不可批准发布/);
+  assert.match(detail, /脚本事实门禁未通过/);
+  assert.match(detail, /beat_location_evidence_missing/);
+  assert.match(detail, /\/create\?replace=/);
+  assert.match(create, /requestedReplacementId/);
+  assert.match(create, /noAssetDraft: \{ enabled: false \}/);
+  assert.match(create, /替换重剪需要选择真实素材库或开启自动补充/);
+  assert.match(create, /无需预先建立素材库/);
+  assert.match(create, /内容研究模式/);
+  assert.match(create, /不联网，使用所填来源/);
+  assert.match(create, /researchMode/);
+  assert.match(create, /sourceUrls: researchSourceUrls/);
+  assert.match(http, /research_mode: draft\.researchMode/);
   assert.doesNotMatch(detail, /setTimeout\([^)]*succeeded/);
+});
+
+test("application-first navigation, readable typography, and shared confirmations remain enforced", async () => {
+  const [composer, css, settings, skillLibrary, confirmDialog, polling, ...operationSources] = await Promise.all([
+    source("components/create-composer.tsx"),
+    source("app/globals.css"),
+    source("components/settings-view.tsx"),
+    source("components/skill-library.tsx"),
+    source("components/confirm-dialog.tsx"),
+    source("lib/use-smart-polling.ts"),
+    source("components/asset-detail.tsx"),
+    source("components/asset-library-workbench.tsx"),
+    source("components/batch-console.tsx"),
+    source("components/webpage-video-detail.tsx"),
+  ]);
+
+  assert.match(composer, /href="\/create\/application-demo">开始推荐演示/);
+  assert.match(composer, /className="create-path-card create-path-card--recommended"/);
+  assert.match(composer, /id="standard-composer"/);
+  assert.doesNotMatch(css, /font-size:\s*(?:7|8|9|10)px/);
+  assert.equal((css.match(/^:root\s*\{/gm) ?? []).length, 1);
+  assert.match(settings, /英文界面将在所有创作与审核页面完成翻译后开放/);
+  assert.match(skillLibrary, /setDebouncedQuery/);
+  assert.doesNotMatch(skillLibrary, /window\.location\.reload/);
+  assert.match(confirmDialog, /showModal\(\)/);
+  assert.match(confirmDialog, /onCancel/);
+  assert.match(polling, /visibilitychange/);
+  for (const operationSource of operationSources) {
+    assert.match(operationSource, /useConfirmDialog/);
+    assert.doesNotMatch(operationSource, /window\.confirm/);
+  }
 });
 
 test("batch production stays paginated and uses durable batch endpoints", async () => {

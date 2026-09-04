@@ -146,11 +146,23 @@ class _SiteAdapter:
 
 
 class _StoryClient:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
     async def structured(self, **kwargs: Any) -> dict[str, Any]:
+        self.requests.append(kwargs)
         count = kwargs["schema"]["properties"]["scenes"]["minItems"]
         return {
             "title": "站点介绍",
-            "scenes": [{"narration": f"镜头 {index}"} for index in range(count)],
+            "scenes": [
+                {
+                    "narration": (
+                        f"镜头 {index} 展示经过审核的网页信息，并保持来源和画面绑定，"
+                        "让观众可以直接核对。"
+                    )
+                }
+                for index in range(count)
+            ],
         }
 
 
@@ -194,9 +206,27 @@ def _storyboard_review(manifest: ArtifactRef) -> dict[str, Any]:
         "kind": "storyboard_selection",
         "manifest_sha256": manifest.content_hash,
         "shots": [
-            {"id": "shot-01", "enabled": True, "order": 2},
-            {"id": "shot-02", "enabled": False, "order": 1},
-            {"id": "shot-03", "enabled": True, "order": 0},
+            {
+                "id": "shot-01",
+                "enabled": True,
+                "order": 2,
+                "motion": "pan",
+                "transition": "fade_black",
+            },
+            {
+                "id": "shot-02",
+                "enabled": False,
+                "order": 1,
+                "motion": "static",
+                "transition": "cut",
+            },
+            {
+                "id": "shot-03",
+                "enabled": True,
+                "order": 0,
+                "motion": "zoom_out",
+                "transition": "fade_black",
+            },
         ],
     }
 
@@ -211,6 +241,12 @@ class WebCaptureSiteV2Tests(unittest.TestCase):
         self.assertEqual(
             "热门手持设备，总有一款适合你。",
             _canonical_scene_narration(value),
+        )
+
+    def test_scene_narration_preserves_multiple_spoken_sentences(self) -> None:
+        self.assertEqual(
+            "这是第一句。这是第二句。",
+            _canonical_scene_narration("这是第一句。这是第二句。"),
         )
 
     def setUp(self) -> None:
@@ -461,6 +497,11 @@ class WebCaptureSiteV2Tests(unittest.TestCase):
         shots = self.storage.read_json(storyboard.artifacts[0])["shots"]
         self.assertEqual(3, len(shots))
         self.assertTrue(all(shot["reason"].startswith("页面概览：") for shot in shots))
+        ui_manifest = storyboard.output_summary["manifest"]
+        self.assertEqual(3, len(ui_manifest["shots"]))
+        self.assertTrue(
+            all(shot["region_id"] is None for shot in ui_manifest["shots"])
+        )
 
     def test_region_analysis_rejects_low_information_dom_capture(self) -> None:
         class _BlankRegionAdapter(_SiteAdapter):
@@ -615,12 +656,21 @@ class WebCaptureSiteV2Tests(unittest.TestCase):
         self.assertEqual(
             3, len({shot["page_id"] for shot in storyboard_document["shots"]})
         )
+        self.assertEqual("zoom_out", storyboard_document["shots"][0]["motion"])
+        self.assertEqual("cut", storyboard_document["shots"][0]["transition"])
+        self.assertTrue(
+            all(
+                shot["transition"] == "fade_black"
+                for shot in storyboard_document["shots"][1:]
+            )
+        )
 
         sources = next(
             item for item in capture.artifacts if item.filename == "page-sources.json"
         )
+        story_client = _StoryClient()
         write = asyncio.run(
-            WebpageStoryWritingCapability(_StoryClient(), self.storage).execute(
+            WebpageStoryWritingCapability(story_client, self.storage).execute(
                 _context(
                     "write-step",
                     storyboard.artifacts[0],
@@ -643,6 +693,12 @@ class WebCaptureSiteV2Tests(unittest.TestCase):
         self.assertTrue(
             all(scene["narration"].endswith("。") for scene in script["scenes"])
         )
+        self.assertEqual(
+            [45, 97],
+            story_client.requests[0]["payload"]["task"][
+                "narration_character_bounds"
+            ],
+        )
 
         images = tuple(item for item in capture.artifacts if item.kind == "image")
         materialized = asyncio.run(
@@ -662,8 +718,13 @@ class WebCaptureSiteV2Tests(unittest.TestCase):
         assets = [item for item in materialized.artifacts if item.kind == "asset"]
         self.assertEqual(2, len(assets))
         asset_manifest = self.storage.read_json(materialized.artifacts[-1])
-        self.assertTrue(
-            all(item["motion"] == "zoom_in" for item in asset_manifest["assets"])
+        self.assertEqual(
+            ["zoom_out", "pan"],
+            [item["motion"] for item in asset_manifest["assets"]],
+        )
+        self.assertEqual(
+            ["cut", "fade_black"],
+            [item["transition"] for item in asset_manifest["assets"]],
         )
         self.assertEqual(
             ["shot-03", "shot-01"],

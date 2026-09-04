@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, TypeVar
@@ -29,6 +29,12 @@ from .models import (
     BatchItemCreate,
     ChannelDefaultComposition,
     ChannelWrite,
+    DocumentLegalHoldUpdate,
+    DocumentPurgeCreate,
+    DocumentRetentionUpdate,
+    DocumentSourceComplete,
+    DocumentSourceCreate,
+    DocumentVideoRunCreate,
     ForkSkillRequest,
     GenerationBatchCreate,
     GenerationBatchRetryFailed,
@@ -66,9 +72,7 @@ _ASPECT_RESOLUTIONS = {
     "1:1": (1080, 1080),
     "4:3": (1440, 1080),
 }
-_FULL_AI_ONLY_OPERATIONS = frozenset(
-    {"media.generate", "writing.compose.generated"}
-)
+_FULL_AI_ONLY_OPERATIONS = frozenset({"media.generate", "writing.compose.generated"})
 _WEBPAGE_VIDEO_ONLY_OPERATIONS = frozenset(
     {
         "web.capture.validate",
@@ -89,6 +93,32 @@ _WEBPAGE_VIDEO_PIPELINE_VERSION_IDS = frozenset(
         "2110e922-329d-565f-ba7a-3616c9d5070b",
     }
 )
+_AUTO_ACQUISITION_LIBRARY_SLUG = "auto-acquired-footage"
+_DOCUMENT_VIDEO_SKILL_VERSION_ID = UUID("346045e2-779f-580f-9feb-839f70943827")
+_DOCUMENT_VIDEO_PIPELINE_VERSION_ID = UUID("0979fced-2c88-514a-a13a-1f7863798e62")
+
+# Skill and Pipeline contracts use stable, provider-neutral capability names while
+# workers advertise the concrete operations they can execute. Keep that
+# translation in one place so every Run entry point evaluates the same contract.
+_ABSTRACT_CAPABILITY_OPERATIONS: dict[str, tuple[str, ...]] = {
+    "model.text_generation": (
+        "writing.compose",
+        "writing.compose.generated",
+        "writing.compose.webpage",
+        "writing.compose.webpage_story",
+    ),
+    "model.video_generation": ("media.generate",),
+    "model.generated_video_verification": ("media.generate",),
+    "research.source_grounding": ("research.collect",),
+    "research.web_acquisition": ("research.collect",),
+    "render.subtitle_sentence": (
+        "render.compose",
+        "render.composite",
+        "render.edl",
+    ),
+}
+_CAPABILITY_CONTRACT_VERSION = (1, 0, 0)
+_OFFLINE_RESEARCH_CAPABILITY_EXEMPTIONS = frozenset({"research.web_acquisition"})
 
 
 def _now() -> str:
@@ -112,6 +142,23 @@ def _fingerprint(value: Any) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _contains_editorial_draft(steps: list[Resource]) -> bool:
+    """Return whether a Run used visuals that must be replaced before approval."""
+
+    for item in steps:
+        summary = item.get("output_summary")
+        if not isinstance(summary, Mapping):
+            continue
+        if (
+            summary.get("draft") is True
+            and summary.get("replacement_required") is True
+            and summary.get("visual_source_mode")
+            in {"editorial_fallback", "hybrid_editorial_fallback"}
+        ):
+            return True
+    return False
 
 
 def _content_hash(value: dict[str, Any]) -> str:
@@ -170,13 +217,28 @@ class ControlService:
         self._action_idempotency: dict[str, tuple[str, Any]] = {}
         self._action_lock = asyncio.Lock()
 
-    def _pipeline_capability_gaps(self, pipeline: Resource) -> list[Resource]:
+    def _pipeline_capability_gaps(
+        self,
+        version: Resource,
+        pipeline: Resource,
+        *,
+        exempt_operations: Collection[str] = (),
+        exempt_capabilities: Collection[str] = (),
+    ) -> list[Resource]:
         if self.worker_capabilities is None:
             return []
+        operation_exemptions = frozenset(exempt_operations)
+        capability_exemptions = frozenset(exempt_capabilities)
+        available_operations = self.worker_capabilities | operation_exemptions
+        pipeline_operations = {
+            str(node.get("operation", "")).strip()
+            for node in pipeline.get("nodes", [])
+            if node.get("required", True) is True and str(node.get("operation", "")).strip()
+        }
         gaps: list[Resource] = []
-        for node in pipeline.get("nodes", []):
-            operation = str(node.get("operation", "")).strip()
-            if operation and operation not in self.worker_capabilities:
+        seen: set[str] = set()
+        for operation in sorted(pipeline_operations):
+            if operation not in available_operations:
                 gaps.append(
                     {
                         "capability": operation,
@@ -184,7 +246,107 @@ class ControlService:
                         "message": f"当前执行器尚未配置 {operation} 的生产 Provider。",
                     }
                 )
+                seen.add(operation)
+
+        requirements: dict[str, tuple[tuple[int, int, int], str]] = {
+            str(name): (_CAPABILITY_CONTRACT_VERSION, "pipeline")
+            for name in pipeline.get("capability_requirements", [])
+            if str(name).strip()
+        }
+        for requirement in version.get("capability_requirements", []):
+            if requirement.get("level") != "required":
+                continue
+            name = str(requirement.get("name", "")).strip()
+            if not name:
+                continue
+            minimum_version = self._capability_version(
+                str(requirement.get("minimum_version", "1.0.0"))
+            )
+            current = requirements.get(name)
+            if current is None or minimum_version > current[0]:
+                requirements[name] = (minimum_version, "skill_version")
+
+        for capability, (minimum_version, resource) in sorted(requirements.items()):
+            if capability in capability_exemptions or capability in seen:
+                continue
+            provider_operations = _ABSTRACT_CAPABILITY_OPERATIONS.get(capability, (capability,))
+            selected_providers = pipeline_operations.intersection(provider_operations)
+            version_supported = minimum_version <= _CAPABILITY_CONTRACT_VERSION
+            provider_ready = bool(selected_providers.intersection(available_operations))
+            if selected_providers and provider_ready and version_supported:
+                continue
+            if not version_supported:
+                message = (
+                    f"{capability} 要求至少版本 {'.'.join(map(str, minimum_version))}; "
+                    "当前仅支持 1.0.0。"
+                )
+            elif not selected_providers:
+                message = f"所选 Pipeline 没有可满足 {capability} 的必需执行 operation。"
+            else:
+                message = f"当前执行器尚未配置可满足 {capability} 的生产 Provider。"
+            gaps.append(
+                {
+                    "capability": capability,
+                    "resource": resource,
+                    "message": message,
+                }
+            )
         return gaps
+
+    @staticmethod
+    def _capability_version(value: str) -> tuple[int, int, int]:
+        major, minor, patch = value.split(".")
+        return int(major), int(minor), int(patch)
+
+    @staticmethod
+    def _pipeline_requires_operation(pipeline: Resource, operation: str) -> bool:
+        return any(
+            node.get("operation") == operation and node.get("required") is True
+            for node in pipeline.get("nodes", [])
+        )
+
+    @classmethod
+    def _offline_research_exemptions(
+        cls,
+        version: Resource,
+        pipeline: Resource,
+        run_input: Mapping[str, Any],
+    ) -> frozenset[str]:
+        if run_input.get("research_mode") != "off" or not cls._pipeline_requires_operation(
+            pipeline, "research.collect"
+        ):
+            return frozenset()
+        minimum_sources = int((version.get("research_policy") or {}).get("minimum_sources", 0))
+        supplied_sources = _deduplicated_https_sources(run_input.get("source_urls"))
+        if len(supplied_sources) < minimum_sources:
+            return frozenset()
+        return frozenset({"research.collect"})
+
+    @classmethod
+    def _require_offline_research_sources(
+        cls,
+        version: Resource,
+        pipeline: Resource,
+        run_input: Mapping[str, Any],
+    ) -> frozenset[str]:
+        if run_input.get("research_mode") != "off" or not cls._pipeline_requires_operation(
+            pipeline, "research.collect"
+        ):
+            return frozenset()
+        minimum_sources = int((version.get("research_policy") or {}).get("minimum_sources", 0))
+        supplied_sources = _deduplicated_https_sources(run_input.get("source_urls"))
+        if len(supplied_sources) < minimum_sources:
+            raise ApiError(
+                422,
+                "RUN_RESEARCH_SOURCES_INSUFFICIENT",
+                "research_mode=off requires enough supplied HTTPS source_urls",
+                details={
+                    "path": "input.source_urls",
+                    "minimum_sources": minimum_sources,
+                    "provided": len(supplied_sources),
+                },
+            )
+        return frozenset({"research.collect"})
 
     @staticmethod
     def _pipeline_requires_asset_library(pipeline: Resource) -> bool:
@@ -194,10 +356,9 @@ class ControlService:
         )
 
     @staticmethod
-    def _pipeline_requires_research(pipeline: Resource) -> bool:
+    def _pipeline_requires_inventory(pipeline: Resource) -> bool:
         return any(
-            str(node.get("operation", "")).startswith("research.")
-            and node.get("required") is True
+            node.get("operation") == "media.inventory" and node.get("required") is True
             for node in pipeline.get("nodes", [])
         )
 
@@ -210,17 +371,14 @@ class ControlService:
         )
 
     @classmethod
-    def _reject_full_ai_pipeline_on_standard_endpoint(
-        cls, pipeline: Resource
-    ) -> None:
+    def _reject_full_ai_pipeline_on_standard_endpoint(cls, pipeline: Resource) -> None:
         if not cls._pipeline_requires_full_ai_endpoint(pipeline):
             return
         operations = sorted(
             {
                 str(node.get("operation"))
                 for node in pipeline.get("nodes", [])
-                if isinstance(node, Mapping)
-                and node.get("operation") in _FULL_AI_ONLY_OPERATIONS
+                if isinstance(node, Mapping) and node.get("operation") in _FULL_AI_ONLY_OPERATIONS
             }
         )
         raise ApiError(
@@ -243,9 +401,7 @@ class ControlService:
         )
 
     @classmethod
-    def _reject_webpage_video_pipeline_on_standard_endpoint(
-        cls, pipeline: Resource
-    ) -> None:
+    def _reject_webpage_video_pipeline_on_standard_endpoint(cls, pipeline: Resource) -> None:
         if not cls._pipeline_requires_webpage_video_endpoint(pipeline):
             return
         operations = sorted(
@@ -284,9 +440,7 @@ class ControlService:
 
     @staticmethod
     def _is_webpage_video_run(run: Resource) -> bool:
-        pipeline_version = run.get("composition_snapshot", {}).get(
-            "pipeline_version", {}
-        )
+        pipeline_version = run.get("composition_snapshot", {}).get("pipeline_version", {})
         return str(pipeline_version.get("id")) in _WEBPAGE_VIDEO_PIPELINE_VERSION_IDS
 
     @classmethod
@@ -317,9 +471,7 @@ class ControlService:
         )
 
     @classmethod
-    def _require_quality_operation_for_webpage_mutation(
-        cls, run: Resource, step: Resource
-    ) -> None:
+    def _require_quality_operation_for_webpage_mutation(cls, run: Resource, step: Resource) -> None:
         if not cls._is_webpage_video_run(run):
             return
         cls._reject_webpage_video_step_on_standard_endpoint(step)
@@ -348,9 +500,7 @@ class ControlService:
                 path="composition.asset_library_ids",
             )
         for library_id in composition.asset_library_ids:
-            library = await self.repository.get_asset_library(
-                context.workspace_id, library_id
-            )
+            library = await self.repository.get_asset_library(context.workspace_id, library_id)
             if library.get("status") != "active":
                 raise ConflictError(
                     "ASSET_LIBRARY_NOT_ACTIVE",
@@ -359,9 +509,85 @@ class ControlService:
                     asset_library_status=library.get("status"),
                 )
 
-    async def estimate_run(
-        self, context: WorkspaceContext, command: RunCreate
-    ) -> Resource:
+    async def _ensure_auto_acquisition_library(
+        self,
+        context: WorkspaceContext,
+        composition: RunCompositionInput,
+    ) -> RunCompositionInput:
+        """Attach a reusable private library when a Run starts without footage.
+
+        The repository enforces a workspace-scoped slug uniqueness constraint.  A
+        conflicting create is therefore a normal concurrent-create race: re-read
+        the winning row instead of failing the Run.
+        """
+
+        if composition.asset_library_ids:
+            return composition
+
+        def is_auto_library_slug(value: object) -> bool:
+            slug = str(value or "")
+            if slug == _AUTO_ACQUISITION_LIBRARY_SLUG:
+                return True
+            prefix = f"{_AUTO_ACQUISITION_LIBRARY_SLUG}-"
+            return slug.startswith(prefix) and slug.removeprefix(prefix).isdigit()
+
+        def matching_library(libraries: list[Resource]) -> Resource | None:
+            return next(
+                (
+                    item
+                    for item in libraries
+                    if is_auto_library_slug(item.get("slug")) and item.get("status") == "active"
+                ),
+                None,
+            )
+
+        library = matching_library(await self.repository.list_asset_libraries(context.workspace_id))
+        if library is None:
+            for ordinal in range(1, 21):
+                slug = (
+                    _AUTO_ACQUISITION_LIBRARY_SLUG
+                    if ordinal == 1
+                    else f"{_AUTO_ACQUISITION_LIBRARY_SLUG}-{ordinal}"
+                )
+                timestamp = _now()
+                resource: Resource = {
+                    "schema_version": CONTRACT_VERSION,
+                    "id": str(uuid4()),
+                    "workspace_id": str(context.workspace_id),
+                    "name": "自动补充素材",
+                    "slug": slug,
+                    "description": (
+                        "由无素材视频任务自动建立, 仅保存通过来源、版权与安全分析的补充素材。"
+                    ),
+                    "visibility": "private",
+                    "status": "active",
+                    "asset_count": 0,
+                    "ready_asset_count": 0,
+                    "created_by": str(context.user_id),
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+                try:
+                    library = await self.repository.create_asset_library(resource)
+                    break
+                except ConflictError as exc:
+                    if exc.code != "ASSET_LIBRARY_SLUG_EXISTS":
+                        raise
+                    library = matching_library(
+                        await self.repository.list_asset_libraries(context.workspace_id)
+                    )
+                    if library is not None:
+                        break
+            if library is None:
+                raise ConflictError(
+                    "AUTO_ACQUISITION_LIBRARY_UNAVAILABLE",
+                    "No reusable slug is available for the automatic asset library",
+                    attempted_slugs=20,
+                )
+
+        return composition.model_copy(update={"asset_library_ids": [UUID(str(library["id"]))]})
+
+    async def estimate_run(self, context: WorkspaceContext, command: RunCreate) -> Resource:
         composition = await self._resolve_run_composition(context, command)
         version = await self.repository.get_skill_version(
             context.workspace_id, composition.skill_version_id
@@ -374,7 +600,15 @@ class ControlService:
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
-        gaps = self._pipeline_capability_gaps(pipeline)
+        offline_exemptions = self._offline_research_exemptions(version, pipeline, command.input)
+        gaps = self._pipeline_capability_gaps(
+            version,
+            pipeline,
+            exempt_operations=offline_exemptions,
+            exempt_capabilities=(
+                _OFFLINE_RESEARCH_CAPABILITY_EXEMPTIONS if offline_exemptions else ()
+            ),
+        )
         if version["state"] != "published":
             gaps.append(
                 {
@@ -409,6 +643,7 @@ class ControlService:
         requested = override or VideoSettingsInput()
         subtitles = requested.subtitles
         acquisition = requested.asset_acquisition
+        no_asset_draft = requested.no_asset_draft
         aspect_ratio = requested.aspect_ratio or preferences["default_aspect_ratio"]
         width, height = _ASPECT_RESOLUTIONS[aspect_ratio]
 
@@ -419,8 +654,7 @@ class ControlService:
             "language": requested.language or preferences["default_language"],
             "aspect_ratio": aspect_ratio,
             "target_duration_seconds": (
-                requested.target_duration_seconds
-                or preferences["default_duration_seconds"]
+                requested.target_duration_seconds or preferences["default_duration_seconds"]
             ),
             "visibility": requested.visibility or preferences["default_visibility"],
             "auto_quality_check": (
@@ -469,6 +703,12 @@ class ControlService:
                     acquisition.rights_confirmed if acquisition is not None else False
                 ),
             },
+            "no_asset_draft": {
+                "enabled": (no_asset_draft.enabled if no_asset_draft is not None else False),
+                "mode": "procedural_cards",
+                "draft": True,
+                "replacement_required": True,
+            },
             "sources": {
                 "language": source(requested.language),
                 "aspect_ratio": source(requested.aspect_ratio),
@@ -481,6 +721,9 @@ class ControlService:
                 "subtitles": "run_override" if subtitles is not None else "system_default",
                 "asset_acquisition": (
                     "run_override" if acquisition is not None else "system_default"
+                ),
+                "no_asset_draft": (
+                    "run_override" if no_asset_draft is not None else "system_default"
                 ),
             },
         }
@@ -524,9 +767,7 @@ class ControlService:
             status=status,
         )
 
-    async def get_channel(
-        self, context: WorkspaceContext, channel_id: UUID
-    ) -> Resource:
+    async def get_channel(self, context: WorkspaceContext, channel_id: UUID) -> Resource:
         return await self.repository.get_channel(context.workspace_id, channel_id)
 
     async def create_channel(
@@ -572,9 +813,7 @@ class ControlService:
             updated_at=_now(),
         )
         self.validator.validate("channel", resource)
-        return await self.repository.replace_channel(
-            resource, expected_revision=expected_revision
-        )
+        return await self.repository.replace_channel(resource, expected_revision=expected_revision)
 
     async def archive_channel(
         self, context: WorkspaceContext, channel_id: UUID, expected_revision: int
@@ -665,9 +904,7 @@ class ControlService:
         self, context: WorkspaceContext, command: RunCreate
     ) -> RunCompositionInput:
         if command.channel_id is not None:
-            channel = await self.repository.get_channel(
-                context.workspace_id, command.channel_id
-            )
+            channel = await self.repository.get_channel(context.workspace_id, command.channel_id)
             if channel["status"] != "active":
                 raise ConflictError(
                     "CHANNEL_NOT_ACTIVE",
@@ -676,18 +913,14 @@ class ControlService:
                     channel_status=channel["status"],
                 )
             if command.composition is None:
-                return RunCompositionInput(
-                    **channel["default_composition"], capabilities=[]
-                )
+                return RunCompositionInput(**channel["default_composition"], capabilities=[])
         assert command.composition is not None
         return command.composition
 
     async def list_asset_libraries(self, context: WorkspaceContext) -> list[Resource]:
         return await self.repository.list_asset_libraries(context.workspace_id)
 
-    async def get_asset_library(
-        self, context: WorkspaceContext, library_id: UUID
-    ) -> Resource:
+    async def get_asset_library(self, context: WorkspaceContext, library_id: UUID) -> Resource:
         return await self.repository.get_asset_library(context.workspace_id, library_id)
 
     async def get_asset(self, context: WorkspaceContext, asset_id: UUID) -> Resource:
@@ -727,9 +960,7 @@ class ControlService:
         command: LibraryBuildJobCreate,
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
-        library = await self.repository.get_asset_library(
-            context.workspace_id, command.library_id
-        )
+        library = await self.repository.get_asset_library(context.workspace_id, command.library_id)
         if library.get("status") != "active":
             raise ConflictError(
                 "ASSET_LIBRARY_NOT_ACTIVE",
@@ -772,18 +1003,12 @@ class ControlService:
         }
         return await self.repository.create_library_build_job_idempotently(
             resource,
-            operation_key=(
-                f"{context.workspace_id}:create_library_build_job:{idempotency_key}"
-            ),
+            operation_key=(f"{context.workspace_id}:create_library_build_job:{idempotency_key}"),
             request_fingerprint=_fingerprint(command.model_dump(mode="json")),
         )
 
-    async def get_library_build_job(
-        self, context: WorkspaceContext, job_id: UUID
-    ) -> Resource:
-        return await self.repository.get_library_build_job(
-            context.workspace_id, job_id
-        )
+    async def get_library_build_job(self, context: WorkspaceContext, job_id: UUID) -> Resource:
+        return await self.repository.get_library_build_job(context.workspace_id, job_id)
 
     async def cancel_library_build_job(
         self,
@@ -874,6 +1099,232 @@ class ControlService:
             persist_upload,
         )
 
+    async def create_document_source(
+        self,
+        context: WorkspaceContext,
+        command: DocumentSourceCreate,
+        upload: PresignedRequest,
+        *,
+        bucket: str,
+        idempotency_key: str,
+    ) -> tuple[Resource, bool]:
+        timestamp = _now()
+        resource: Resource = {
+            "schema_version": CONTRACT_VERSION,
+            "id": str(uuid4()),
+            "workspace_id": str(context.workspace_id),
+            "filename": command.filename,
+            "media_type": command.content_type,
+            "byte_size": command.byte_size,
+            "content_hash": command.sha256,
+            "storage_provider": "s3",
+            "bucket": bucket,
+            "object_key": upload.object.key,
+            "rights_confirmed": True,
+            "status": "uploading",
+            "validation": {"state": "pending_worker_inspection"},
+            "revision": 1,
+            "created_by": str(context.user_id),
+            "created_at": timestamp,
+            "uploaded_at": None,
+            "upload_expires_at": upload.expires_at.isoformat().replace("+00:00", "Z"),
+            "retention_until": None,
+            "legal_hold": False,
+            "legal_hold_reason": None,
+            "legal_hold_set_by": None,
+            "legal_hold_set_at": None,
+            "deletion_requested_at": None,
+            "purged_at": None,
+            "updated_at": timestamp,
+            "upload": {
+                "method": upload.method,
+                "url": upload.url,
+                "headers": dict(upload.headers),
+                "expires_at": upload.expires_at.isoformat().replace("+00:00", "Z"),
+            },
+        }
+        stored, created = await self.repository.create_document_source_idempotently(
+            resource,
+            operation_key=f"document-source:{context.workspace_id}:{idempotency_key}",
+            request_fingerprint=_fingerprint(command.model_dump(mode="json")),
+        )
+        if created:
+            stored["upload"] = deepcopy(resource["upload"])
+        return stored, created
+
+    async def complete_document_source(
+        self,
+        context: WorkspaceContext,
+        source_id: UUID,
+        command: DocumentSourceComplete,
+        stored: StoredObject,
+    ) -> Resource:
+        source = await self.repository.get_document_source(context.workspace_id, source_id)
+        expected = (
+            source["object_key"],
+            source["content_hash"],
+            source["media_type"],
+            int(source["byte_size"]),
+        )
+        actual = (
+            command.object_key,
+            command.sha256,
+            command.content_type,
+            stored.size,
+        )
+        if expected != actual:
+            raise ConflictError(
+                "DOCUMENT_SOURCE_UPLOAD_MISMATCH",
+                "Completed upload does not match the initiated PDF descriptor",
+            )
+        return await self.repository.complete_document_source(
+            context.workspace_id, source_id, byte_size=stored.size
+        )
+
+    async def get_document_source(self, context: WorkspaceContext, source_id: UUID) -> Resource:
+        return await self.repository.get_document_source(context.workspace_id, source_id)
+
+    async def update_document_retention(
+        self,
+        context: WorkspaceContext,
+        source_id: UUID,
+        command: DocumentRetentionUpdate,
+        expected_revision: int,
+    ) -> Resource:
+        return await self.repository.update_document_retention(
+            context.workspace_id,
+            source_id,
+            retention_until=command.retention_until,
+            reason=command.reason.strip(),
+            actor_id=context.user_id,
+            expected_revision=expected_revision,
+        )
+
+    async def set_document_legal_hold(
+        self,
+        context: WorkspaceContext,
+        source_id: UUID,
+        command: DocumentLegalHoldUpdate,
+        expected_revision: int,
+    ) -> Resource:
+        return await self.repository.set_document_legal_hold(
+            context.workspace_id,
+            source_id,
+            active=command.active,
+            reason=command.reason.strip(),
+            actor_id=context.user_id,
+            expected_revision=expected_revision,
+        )
+
+    async def request_document_purge(
+        self,
+        context: WorkspaceContext,
+        source_id: UUID,
+        command: DocumentPurgeCreate,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> tuple[Resource, bool]:
+        timestamp = _now()
+        request: Resource = {
+            "schema_version": CONTRACT_VERSION,
+            "id": str(uuid4()),
+            "workspace_id": str(context.workspace_id),
+            "source_id": str(source_id),
+            "status": "queued",
+            "reason": command.reason.strip(),
+            "delete_derived": True,
+            "requested_by": str(context.user_id),
+            "attempt_count": 0,
+            "max_attempts": 8,
+            "next_attempt_at": timestamp,
+            "last_error": None,
+            "created_at": timestamp,
+            "started_at": None,
+            "completed_at": None,
+            "updated_at": timestamp,
+        }
+        return await self.repository.request_document_purge_idempotently(
+            request,
+            actor_id=context.user_id,
+            expected_revision=expected_revision,
+            operation_key=f"document-purge:{context.workspace_id}:{idempotency_key}",
+            request_fingerprint=_fingerprint(command.model_dump(mode="json")),
+        )
+
+    async def get_document_purge_request(
+        self, context: WorkspaceContext, request_id: UUID
+    ) -> Resource:
+        return await self.repository.get_document_purge_request(context.workspace_id, request_id)
+
+    async def create_document_video_run(
+        self,
+        context: WorkspaceContext,
+        command: DocumentVideoRunCreate,
+        idempotency_key: str,
+    ) -> tuple[Resource, bool]:
+        source = await self.repository.get_document_source(context.workspace_id, command.source_id)
+        if source["status"] != "uploaded":
+            raise ConflictError(
+                "DOCUMENT_SOURCE_NOT_UPLOADED",
+                "The immutable PDF upload must complete before a Run is created",
+            )
+        if source["media_type"] != "application/pdf" or not source["rights_confirmed"]:
+            raise ConflictError(
+                "DOCUMENT_SOURCE_NOT_ELIGIBLE",
+                "The source does not satisfy the governed PDF contract",
+            )
+        run_command = RunCreate(
+            input={
+                "document_source_id": source["id"],
+                "topic": command.topic.strip(),
+                "duration_seconds": command.duration_seconds,
+                "aspect_ratio": command.aspect_ratio,
+                "rights_confirmed": True,
+                "generated_background_enabled": command.generated_background_enabled,
+            },
+            composition=RunCompositionInput(
+                skill_version_id=_DOCUMENT_VIDEO_SKILL_VERSION_ID,
+                pipeline_version_id=_DOCUMENT_VIDEO_PIPELINE_VERSION_ID,
+                asset_library_ids=[],
+                capabilities=[],
+            ),
+            video_settings=VideoSettingsInput(
+                language="zh-CN",
+                aspect_ratio=command.aspect_ratio,
+                target_duration_seconds=command.duration_seconds,
+                visibility="private",
+                auto_quality_check=True,
+                layout="editorial",
+                media_fit="contain",
+                frame_rate=30,
+                subtitles={
+                    "enabled": True,
+                    "position": "bottom",
+                    "size": "medium",
+                    "max_lines": 2,
+                },
+            ),
+        )
+        return await self.create_run(
+            context,
+            run_command,
+            f"document-video:{idempotency_key}",
+            internal_composition={
+                "document_source": {
+                    "id": source["id"],
+                    "filename": source["filename"],
+                    "media_type": source["media_type"],
+                    "byte_size": source["byte_size"],
+                    "content_hash": source["content_hash"],
+                    "bucket": source["bucket"],
+                    "object_key": source["object_key"],
+                    "revision": source["revision"],
+                    "uploaded_at": source["uploaded_at"],
+                }
+            },
+        )
+
     async def complete_asset_upload(
         self,
         context: WorkspaceContext,
@@ -942,12 +1393,8 @@ class ControlService:
                 value = changes[field]
                 resource[field] = value.strip() if isinstance(value, str) else value
         if "rights_evidence" in changes:
-            resource.setdefault("metadata", {})["rights_evidence"] = changes[
-                "rights_evidence"
-            ]
-            resource["metadata"]["rights_confirmed"] = changes.get(
-                "rights_confirmed", False
-            )
+            resource.setdefault("metadata", {})["rights_evidence"] = changes["rights_evidence"]
+            resource["metadata"]["rights_confirmed"] = changes.get("rights_confirmed", False)
         if "tags" in changes:
             tags = list(dict.fromkeys(value.strip() for value in changes["tags"]))
             resource["tags"] = tags
@@ -993,9 +1440,7 @@ class ControlService:
     ) -> Resource:
         current = await self.repository.get_asset(context.workspace_id, asset_id)
         if current["status"] != "deleted":
-            raise ConflictError(
-                "ASSET_NOT_DELETED", "Only a soft-deleted asset can be restored"
-            )
+            raise ConflictError("ASSET_NOT_DELETED", "Only a soft-deleted asset can be restored")
         previous = str((current.get("metadata") or {}).get("status_before_delete", "disabled"))
         if previous == "deleted":
             previous = "disabled"
@@ -1011,16 +1456,12 @@ class ControlService:
     async def list_asset_related(
         self, context: WorkspaceContext, asset_id: UUID, relation: str
     ) -> list[Resource]:
-        return await self.repository.list_asset_related(
-            context.workspace_id, asset_id, relation
-        )
+        return await self.repository.list_asset_related(context.workspace_id, asset_id, relation)
 
     async def list_asset_import_jobs(
         self, context: WorkspaceContext, library_id: UUID
     ) -> list[Resource]:
-        return await self.repository.list_asset_import_jobs(
-            context.workspace_id, library_id
-        )
+        return await self.repository.list_asset_import_jobs(context.workspace_id, library_id)
 
     async def request_asset_reanalysis(
         self,
@@ -1041,9 +1482,7 @@ class ControlService:
             expected_revision=expected_revision,
             actor_id=context.user_id,
             reason=command.reason,
-            operation_key=(
-                f"{context.workspace_id}:asset_reanalysis:{idempotency_key}"
-            ),
+            operation_key=(f"{context.workspace_id}:asset_reanalysis:{idempotency_key}"),
             request_fingerprint=_fingerprint(payload),
         )
 
@@ -1066,9 +1505,7 @@ class ControlService:
                         actor_id=context.user_id,
                         reason=command.reason,
                     )
-                    successes.append(
-                        {"asset_id": asset["id"], "revision": asset["revision"]}
-                    )
+                    successes.append({"asset_id": asset["id"], "revision": asset["revision"]})
                 except ApiError as exc:
                     failures.append(self._asset_batch_failure(item.asset_id, exc))
             return self._batch_result(successes, failures)
@@ -1094,13 +1531,9 @@ class ControlService:
             removals = {value.strip().casefold() for value in command.remove}
             for item in command.items:
                 try:
-                    current = await self.repository.get_asset(
-                        context.workspace_id, item.asset_id
-                    )
+                    current = await self.repository.get_asset(context.workspace_id, item.asset_id)
                     if current["status"] == "deleted":
-                        raise ConflictError(
-                            "ASSET_DELETED", "Deleted assets cannot be tagged"
-                        )
+                        raise ConflictError("ASSET_DELETED", "Deleted assets cannot be tagged")
                     existing = [
                         value
                         for value in current.get("tags", [])
@@ -1117,9 +1550,7 @@ class ControlService:
                         expected_revision=item.expected_revision,
                         actor_id=context.user_id,
                     )
-                    successes.append(
-                        {"asset_id": saved["id"], "revision": saved["revision"]}
-                    )
+                    successes.append({"asset_id": saved["id"], "revision": saved["revision"]})
                 except ApiError as exc:
                     failures.append(self._asset_batch_failure(item.asset_id, exc))
             return self._batch_result(successes, failures)
@@ -1161,18 +1592,14 @@ class ControlService:
                             }
                         ),
                     )
-                    successes.append(
-                        {"asset_id": str(item.asset_id), "job_id": job["id"]}
-                    )
+                    successes.append({"asset_id": str(item.asset_id), "job_id": job["id"]})
                 except ApiError as exc:
                     failures.append(self._asset_batch_failure(item.asset_id, exc))
             return self._batch_result(successes, failures)
 
         return await self.repository.run_asset_batch_idempotently(
             context.workspace_id,
-            operation_key=(
-                f"asset-batch-reanalysis:{context.workspace_id}:{idempotency_key}"
-            ),
+            operation_key=(f"asset-batch-reanalysis:{context.workspace_id}:{idempotency_key}"),
             request_fingerprint=_fingerprint(command.model_dump(mode="json")),
             request_path="/v1/assets/batch-reanalyze",
             action=apply,
@@ -1260,9 +1687,7 @@ class ControlService:
             updated_at=_now(),
         )
         self.validator.validate("skill", resource)
-        return await self.repository.replace_skill(
-            resource, expected_revision=expected_revision
-        )
+        return await self.repository.replace_skill(resource, expected_revision=expected_revision)
 
     async def delete_skill(self, context: WorkspaceContext, skill_id: UUID) -> None:
         await self.repository.delete_skill(context.workspace_id, skill_id)
@@ -1274,9 +1699,7 @@ class ControlService:
             await self.repository.get_skill(context.workspace_id, skill_id)
         return await self.repository.list_skill_versions(context.workspace_id, skill_id)
 
-    async def get_skill_version(
-        self, context: WorkspaceContext, version_id: UUID
-    ) -> Resource:
+    async def get_skill_version(self, context: WorkspaceContext, version_id: UUID) -> Resource:
         return await self.repository.get_skill_version(context.workspace_id, version_id)
 
     async def create_skill_version(
@@ -1403,9 +1826,7 @@ class ControlService:
 
         async def action() -> ValidationReport:
             version = await self.repository.get_skill_version(context.workspace_id, version_id)
-            skill = await self.repository.get_skill(
-                context.workspace_id, UUID(version["skill_id"])
-            )
+            skill = await self.repository.get_skill(context.workspace_id, UUID(version["skill_id"]))
             if version["ownership_type"] == "system" or skill["ownership_type"] == "system":
                 raise ConflictError("SYSTEM_SKILL_IMMUTABLE", "System-owned versions are immutable")
             if version["state"] not in {"draft", "ready", "rejected"}:
@@ -1504,9 +1925,7 @@ class ControlService:
 
         async def action() -> Resource:
             version = await self.repository.get_skill_version(context.workspace_id, version_id)
-            skill = await self.repository.get_skill(
-                context.workspace_id, UUID(version["skill_id"])
-            )
+            skill = await self.repository.get_skill(context.workspace_id, UUID(version["skill_id"]))
             if version["ownership_type"] == "system" or skill["ownership_type"] == "system":
                 raise ConflictError("SYSTEM_SKILL_IMMUTABLE", "System-owned versions are immutable")
             if version["state"] != "ready":
@@ -1613,17 +2032,13 @@ class ControlService:
             ),
         )
 
-    async def list_skill_test_executions(
-        self, context: WorkspaceContext
-    ) -> list[Resource]:
+    async def list_skill_test_executions(self, context: WorkspaceContext) -> list[Resource]:
         return await self.repository.list_skill_test_executions(context.workspace_id)
 
     async def get_skill_test_execution(
         self, context: WorkspaceContext, execution_id: UUID
     ) -> Resource:
-        return await self.repository.get_skill_test_execution(
-            context.workspace_id, execution_id
-        )
+        return await self.repository.get_skill_test_execution(context.workspace_id, execution_id)
 
     async def create_skill_test_execution(
         self,
@@ -1675,8 +2090,7 @@ class ControlService:
         return [
             run
             for run in runs
-            if not self._is_webpage_video_run(run)
-            or "url_capture:read" in context.permissions
+            if not self._is_webpage_video_run(run) or "url_capture:read" in context.permissions
         ]
 
     async def get_run(self, context: WorkspaceContext, run_id: UUID) -> Resource:
@@ -1691,9 +2105,7 @@ class ControlService:
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
         run = await self.repository.get_run(context.workspace_id, run_id)
-        pipeline_version = run.get("composition_snapshot", {}).get(
-            "pipeline_version", {}
-        )
+        pipeline_version = run.get("composition_snapshot", {}).get("pipeline_version", {})
         if run.get("composition_snapshot", {}).get("visual_source_mode") == "generated_only":
             raise ConflictError(
                 "FULL_AI_CANCELLATION_UNSUPPORTED",
@@ -1708,9 +2120,7 @@ class ControlService:
                 "WEBPAGE_VIDEO_ENDPOINT_REQUIRED",
                 "Webpage-video Runs must be cancelled through their dedicated endpoint",
                 details={
-                    "required_endpoint": (
-                        "/v1/webpage-video/runs/{webpage_video_run_id}/cancel"
-                    )
+                    "required_endpoint": ("/v1/webpage-video/runs/{webpage_video_run_id}/cancel")
                 },
             )
         return await self.repository.cancel_run_idempotently(
@@ -1720,20 +2130,14 @@ class ControlService:
             request_fingerprint=_fingerprint({"run_id": str(run_id)}),
         )
 
-    async def list_run_steps(
-        self, context: WorkspaceContext, run_id: UUID
-    ) -> list[Resource]:
+    async def list_run_steps(self, context: WorkspaceContext, run_id: UUID) -> list[Resource]:
         run = await self.repository.get_run(context.workspace_id, run_id)
         self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return await self.repository.list_run_steps(context.workspace_id, run_id)
 
-    async def get_run_step(
-        self, context: WorkspaceContext, step_id: str
-    ) -> Resource:
+    async def get_run_step(self, context: WorkspaceContext, step_id: str) -> Resource:
         step = await self.repository.get_run_step(context.workspace_id, step_id)
-        run = await self.repository.get_run(
-            context.workspace_id, UUID(str(step["run_id"]))
-        )
+        run = await self.repository.get_run(context.workspace_id, UUID(str(step["run_id"])))
         self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return step
 
@@ -1744,9 +2148,7 @@ class ControlService:
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
         step = await self.repository.get_run_step(context.workspace_id, step_id)
-        run = await self.repository.get_run(
-            context.workspace_id, UUID(str(step["run_id"]))
-        )
+        run = await self.repository.get_run(context.workspace_id, UUID(str(step["run_id"])))
         self._require_webpage_video_scope_for_run(context, run, "url_capture:review")
         self._require_quality_operation_for_webpage_mutation(run, step)
         return await self.repository.retry_run_step_idempotently(
@@ -1765,11 +2167,26 @@ class ControlService:
         idempotency_key: str,
     ) -> tuple[Resource, bool]:
         step = await self.repository.get_run_step(context.workspace_id, step_id)
-        run = await self.repository.get_run(
-            context.workspace_id, UUID(str(step["run_id"]))
-        )
+        run = await self.repository.get_run(context.workspace_id, UUID(str(step["run_id"])))
         self._require_webpage_video_scope_for_run(context, run, "url_capture:review")
         self._require_quality_operation_for_webpage_mutation(run, step)
+        if command.decision == "approve" and step.get("node_key") == "quality":
+            run_steps = await self.repository.list_run_steps(
+                context.workspace_id, UUID(str(step["run_id"]))
+            )
+            if _contains_editorial_draft(run_steps):
+                raise ApiError(
+                    409,
+                    "EDITORIAL_DRAFT_REPLACEMENT_REQUIRED",
+                    (
+                        "Editorial placeholder visuals must be replaced in a derived Run "
+                        "before final approval"
+                    ),
+                    details={
+                        "run_id": str(step["run_id"]),
+                        "replacement_path": f"/create?replace={step['run_id']}",
+                    },
+                )
         return await self.repository.review_run_step_idempotently(
             context.workspace_id,
             step_id,
@@ -1787,20 +2204,14 @@ class ControlService:
             ),
         )
 
-    async def list_artifacts(
-        self, context: WorkspaceContext, run_id: UUID
-    ) -> list[Resource]:
+    async def list_artifacts(self, context: WorkspaceContext, run_id: UUID) -> list[Resource]:
         run = await self.repository.get_run(context.workspace_id, run_id)
         self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return await self.repository.list_artifacts(context.workspace_id, run_id)
 
-    async def get_artifact(
-        self, context: WorkspaceContext, artifact_id: UUID
-    ) -> Resource:
+    async def get_artifact(self, context: WorkspaceContext, artifact_id: UUID) -> Resource:
         artifact = await self.repository.get_artifact(context.workspace_id, artifact_id)
-        run = await self.repository.get_run(
-            context.workspace_id, UUID(str(artifact["run_id"]))
-        )
+        run = await self.repository.get_run(context.workspace_id, UUID(str(artifact["run_id"])))
         self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return artifact
 
@@ -1823,9 +2234,7 @@ class ControlService:
 
     async def get_event(self, context: WorkspaceContext, event_id: UUID) -> Resource:
         event = await self.repository.get_event(context.workspace_id, event_id)
-        run = await self.repository.get_run(
-            context.workspace_id, UUID(str(event["run_id"]))
-        )
+        run = await self.repository.get_run(context.workspace_id, UUID(str(event["run_id"])))
         self._require_webpage_video_scope_for_run(context, run, "url_capture:read")
         return event
 
@@ -1834,6 +2243,8 @@ class ControlService:
         context: WorkspaceContext,
         command: RunCreate,
         idempotency_key: str,
+        *,
+        internal_composition: Resource | None = None,
     ) -> tuple[Resource, bool]:
         composition = await self._resolve_run_composition(context, command)
         version = await self.repository.get_skill_version(
@@ -1853,7 +2264,17 @@ class ControlService:
                 "PIPELINE_VERSION_NOT_PUBLISHED",
                 "Runs require an active published Pipeline version",
             )
-        capability_gaps = self._pipeline_capability_gaps(pipeline)
+        offline_exemptions = self._require_offline_research_sources(
+            version, pipeline, command.input
+        )
+        capability_gaps = self._pipeline_capability_gaps(
+            version,
+            pipeline,
+            exempt_operations=offline_exemptions,
+            exempt_capabilities=(
+                _OFFLINE_RESEARCH_CAPABILITY_EXEMPTIONS if offline_exemptions else ()
+            ),
+        )
         if capability_gaps:
             raise ConflictError(
                 "RUN_CAPABILITY_UNAVAILABLE",
@@ -1863,14 +2284,37 @@ class ControlService:
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
+        if production_settings["asset_acquisition"]["enabled"]:
+            had_selected_library = bool(composition.asset_library_ids)
+            composition = await self._ensure_auto_acquisition_library(context, composition)
+            production_settings["asset_acquisition"].update(
+                {
+                    "library_id": str(composition.asset_library_ids[0]),
+                    "library_auto_provisioned": not had_selected_library,
+                }
+            )
         await self._validate_run_asset_libraries(
             context,
             composition,
             required=(
-                self._pipeline_requires_asset_library(pipeline)
+                (
+                    self._pipeline_requires_asset_library(pipeline)
+                    and not production_settings["no_asset_draft"]["enabled"]
+                )
                 or production_settings["asset_acquisition"]["enabled"]
             ),
         )
+        catalog_snapshot: Resource | None = None
+        if (
+            composition.asset_library_ids
+            and self._pipeline_requires_inventory(pipeline)
+            and not production_settings["asset_acquisition"]["enabled"]
+        ):
+            catalog_snapshot = await self.repository.create_or_reuse_catalog_snapshot(
+                context.workspace_id,
+                composition.asset_library_ids,
+                created_by=context.user_id,
+            )
         timestamp = _now()
         render_preset = (
             {
@@ -1909,6 +2353,12 @@ class ControlService:
                 },
                 "capabilities": composition.capabilities,
                 "production_settings": production_settings,
+                **(deepcopy(internal_composition) if internal_composition else {}),
+                **(
+                    {"catalog_snapshot_id": catalog_snapshot["id"]}
+                    if catalog_snapshot is not None
+                    else {}
+                ),
             },
             "created_by": str(context.user_id),
             "created_at": timestamp,
@@ -1923,17 +2373,11 @@ class ControlService:
             request_fingerprint=_fingerprint(command.model_dump(mode="json")),
         )
 
-    async def list_generation_batches(
-        self, context: WorkspaceContext
-    ) -> list[Resource]:
+    async def list_generation_batches(self, context: WorkspaceContext) -> list[Resource]:
         return await self.repository.list_generation_batches(context.workspace_id)
 
-    async def get_generation_batch(
-        self, context: WorkspaceContext, batch_id: UUID
-    ) -> Resource:
-        return await self.repository.get_generation_batch(
-            context.workspace_id, batch_id
-        )
+    async def get_generation_batch(self, context: WorkspaceContext, batch_id: UUID) -> Resource:
+        return await self.repository.get_generation_batch(context.workspace_id, batch_id)
 
     async def list_generation_batch_items(
         self,
@@ -1979,17 +2423,8 @@ class ControlService:
                 "PIPELINE_VERSION_NOT_PUBLISHED",
                 "Batch Runs require an active published Pipeline version",
             )
-        capability_gaps = self._pipeline_capability_gaps(pipeline)
-        if capability_gaps:
-            raise ConflictError(
-                "RUN_CAPABILITY_UNAVAILABLE",
-                "The selected Pipeline has no configured production provider",
-                capability_gaps=capability_gaps,
-            )
         requested_acquisition = (
-            command.video_settings.asset_acquisition
-            if command.video_settings is not None
-            else None
+            command.video_settings.asset_acquisition if command.video_settings is not None else None
         )
         if requested_acquisition is not None and requested_acquisition.enabled:
             raise ApiError(
@@ -1998,18 +2433,15 @@ class ControlService:
                 "Generation batches cannot acquire assets inside individual Runs",
                 details={"path": "video_settings.asset_acquisition.enabled"},
             )
-        if command.research_mode == "off" and self._pipeline_requires_research(
-            pipeline
+        research_exemptions: frozenset[str] = frozenset()
+        if command.research_mode == "off" and self._pipeline_requires_operation(
+            pipeline, "research.collect"
         ):
-            minimum_sources = int(
-                (version.get("research_policy") or {}).get("minimum_sources", 0)
-            )
+            minimum_sources = int((version.get("research_policy") or {}).get("minimum_sources", 0))
             insufficient_items: list[Resource] = []
             if minimum_sources > 0:
                 for ordinal, entry in enumerate(command.items):
-                    supplied = len(
-                        _deduplicated_https_sources(entry.inputs.get("source_urls"))
-                    )
+                    supplied = len(_deduplicated_https_sources(entry.inputs.get("source_urls")))
                     if supplied < minimum_sources:
                         insufficient_items.append(
                             {
@@ -2029,6 +2461,21 @@ class ControlService:
                         "items": insufficient_items,
                     },
                 )
+            research_exemptions = frozenset({"research.collect"})
+        capability_gaps = self._pipeline_capability_gaps(
+            version,
+            pipeline,
+            exempt_operations=research_exemptions,
+            exempt_capabilities=(
+                _OFFLINE_RESEARCH_CAPABILITY_EXEMPTIONS if research_exemptions else ()
+            ),
+        )
+        if capability_gaps:
+            raise ConflictError(
+                "RUN_CAPABILITY_UNAVAILABLE",
+                "The selected Pipeline has no configured production provider",
+                capability_gaps=capability_gaps,
+            )
         production_settings = await self._resolve_production_settings(
             context, command.video_settings
         )
@@ -2040,6 +2487,7 @@ class ControlService:
             composition,
             required=(
                 self._pipeline_requires_asset_library(pipeline)
+                and not production_settings["no_asset_draft"]["enabled"]
             ),
         )
         catalog_snapshot: Resource | None = None
@@ -2066,9 +2514,7 @@ class ControlService:
                 "id": version["id"],
                 "content_hash": version["content_hash"],
             },
-            "asset_library_ids": [
-                str(value) for value in composition.asset_library_ids
-            ],
+            "asset_library_ids": [str(value) for value in composition.asset_library_ids],
             "voice_profile_id": (
                 str(composition.voice_profile_id)
                 if composition.voice_profile_id is not None
@@ -2145,9 +2591,7 @@ class ControlService:
             batch,
             runs,
             items,
-            operation_key=(
-                f"{context.workspace_id}:create_generation_batch:{idempotency_key}"
-            ),
+            operation_key=(f"{context.workspace_id}:create_generation_batch:{idempotency_key}"),
             request_fingerprint=_fingerprint(command.model_dump(mode="json")),
         )
         if not created:
@@ -2160,9 +2604,7 @@ class ControlService:
                 limit=5000,
             )
             runs = [
-                await self.repository.get_run(
-                    context.workspace_id, UUID(item["run_id"])
-                )
+                await self.repository.get_run(context.workspace_id, UUID(item["run_id"]))
                 for item in replay_items
             ]
         return resource, runs, created
@@ -2193,9 +2635,7 @@ class ControlService:
                 )
 
         await asyncio.gather(*(cancel(item) for item in items))
-        return await self.repository.get_generation_batch(
-            context.workspace_id, batch_id
-        )
+        return await self.repository.get_generation_batch(context.workspace_id, batch_id)
 
     async def retry_failed_generation_batch(
         self,
@@ -2204,9 +2644,7 @@ class ControlService:
         command: GenerationBatchRetryFailed,
         idempotency_key: str,
     ) -> tuple[Resource, list[Resource], bool]:
-        source = await self.repository.get_generation_batch(
-            context.workspace_id, batch_id
-        )
+        source = await self.repository.get_generation_batch(context.workspace_id, batch_id)
         failed, _ = await self.repository.list_generation_batch_items(
             context.workspace_id,
             batch_id,
@@ -2220,9 +2658,7 @@ class ControlService:
                 "BATCH_HAS_NO_FAILED_ITEMS",
                 "The generation batch has no failed items to retry",
             )
-        first_run = await self.repository.get_run(
-            context.workspace_id, UUID(failed[0]["run_id"])
-        )
+        first_run = await self.repository.get_run(context.workspace_id, UUID(failed[0]["run_id"]))
         snapshot = source["composition_snapshot"]
         skill = snapshot["skill_version"]
         pipeline = snapshot["pipeline_version"]
@@ -2230,8 +2666,7 @@ class ControlService:
         production = snapshot.get("production_settings", {})
         subtitle_settings = production.get("subtitles", {})
         research_modes = {
-            str(item.get("input", {}).get("research_mode", "when_missing"))
-            for item in failed
+            str(item.get("input", {}).get("research_mode", "when_missing")) for item in failed
         }
         if not research_modes <= {"off", "when_missing", "required"}:
             raise ConflictError(
@@ -2263,17 +2698,11 @@ class ControlService:
             composition=RunCompositionInput(
                 skill_version_id=UUID(skill["id"]),
                 pipeline_version_id=UUID(pipeline["id"]),
-                asset_library_ids=[
-                    UUID(value) for value in snapshot.get("asset_library_ids", [])
-                ],
+                asset_library_ids=[UUID(value) for value in snapshot.get("asset_library_ids", [])],
                 voice_profile_id=(
-                    UUID(snapshot["voice_profile_id"])
-                    if snapshot.get("voice_profile_id")
-                    else None
+                    UUID(snapshot["voice_profile_id"]) if snapshot.get("voice_profile_id") else None
                 ),
-                render_preset_version_id=(
-                    UUID(render["id"]) if render is not None else None
-                ),
+                render_preset_version_id=(UUID(render["id"]) if render is not None else None),
                 capabilities=list(snapshot.get("capabilities", [])),
             ),
             video_settings=VideoSettingsInput(

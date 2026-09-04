@@ -3,7 +3,9 @@ import test from "node:test";
 
 const routes = [
   ["/create", "创作"],
+  ["/create/broadcast-revival", "贵州广电记忆活化"],
   ["/create/ai", "全 AI 影片"],
+  ["/create/document-video", "文件讲解视频"],
   ["/projects", "项目"],
   ["/projects/99999999-9999-4999-8999-999999999999", "项目执行状态"],
   ["/skills", "Skill"],
@@ -56,7 +58,19 @@ test("renders product-specific creation, Skill, channel, and state copy", async 
   const worker = await loadWorker();
   const createHtml = await (await render(worker, "/create")).text();
   assert.match(createHtml, /把一个想法，变成可发布的内容/);
-  assert.match(createHtml, /进入全 AI 影片/);
+  assert.match(createHtml, /全 AI 影片/);
+  assert.match(createHtml, /开始推荐演示/);
+  assert.match(createHtml, /广电记忆活化/);
+  assert.match(createHtml, /文件讲解视频/);
+
+  const documentVideoHtml = await (await render(worker, "/create/document-video")).text();
+  assert.match(documentVideoHtml, /把一份 PDF，变成有出处的讲解视频/);
+  assert.match(documentVideoHtml, /上传并创建生产任务/);
+  assert.match(documentVideoHtml, /真实 API/);
+
+  const revivalHtml = await (await render(worker, "/create/broadcast-revival")).text();
+  assert.match(revivalHtml, /让沉睡的贵州影像，再次被看见/);
+  assert.match(revivalHtml, /真实档案优先/);
 
   const aiCreateHtml = await (await render(worker, "/create/ai")).text();
   assert.match(aiCreateHtml, /从一句话，生成一支完整影片/);

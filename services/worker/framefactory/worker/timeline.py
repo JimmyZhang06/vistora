@@ -209,7 +209,12 @@ def plan_edit_timeline(
                 "story_path_score": round(path_scores[ordinal], 3),
                 "narrative_role": fragment.narrative_role,
                 "time_shift": fragment.time_shift,
-                "transition": _transition_label(previous, asset_index, fragment),
+                "transition": _authored_transition(
+                    entry.get("transition"),
+                    fallback=_transition_label(previous, asset_index, fragment),
+                    opening=previous is None,
+                    asset_changed=previous is not None and previous != asset_index,
+                ),
                 "motion": str(entry.get("motion") or "static")[:32],
                 "motion_focus": _motion_focus(entry.get("motion_focus")),
                 "cut_evidence": (
@@ -238,8 +243,9 @@ def _coalesce_continuous_image_motion(
         previous = merged[-1] if merged else None
         same_motion_hold = (
             previous is not None
-            and shot.get("motion") == "zoom_in"
+            and shot.get("motion") in {"zoom_in", "zoom_out", "pan"}
             and previous.get("motion") == shot.get("motion")
+            and shot.get("transition") != "fade_black"
             and previous.get("artifact_id") == shot.get("artifact_id")
             and previous.get("motion_focus") == shot.get("motion_focus")
             and previous.get("narration") == shot.get("narration")
@@ -587,6 +593,21 @@ def _transition_label(
     if current == previous:
         return "hold"
     return "continuity_cut"
+
+
+def _authored_transition(
+    value: object,
+    *,
+    fallback: str,
+    opening: bool,
+    asset_changed: bool,
+) -> str:
+    if opening:
+        return "opening"
+    if not asset_changed:
+        return fallback
+    transition = str(value or "").strip()
+    return transition if transition in {"cut", "fade_black"} else fallback
 
 
 def _source_window(

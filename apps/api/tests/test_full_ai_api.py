@@ -107,6 +107,62 @@ def _ready_settings() -> Settings:
     )
 
 
+def _wan_ready_settings() -> Settings:
+    return Settings(
+        worker_capabilities=FULL_AI_CAPABILITIES,
+        full_ai_provider_name="dashscope-wan",
+        full_ai_model_id="wan2.7-t2v-2026-06-12",
+        full_ai_cost_per_second_minor=60,
+        full_ai_credit_unit_minor=1,
+        full_ai_terms_reference="https://terms.example.test/operator-snapshot",
+        full_ai_terms_content_hash="c" * 64,
+        full_ai_terms_captured_at="2026-09-04T00:00:00Z",
+        full_ai_pricing_reference="https://pricing.example.test/operator-snapshot",
+        full_ai_pricing_content_hash="d" * 64,
+        full_ai_pricing_captured_at="2026-09-04T00:00:00Z",
+        full_ai_output_rights_confirmed=True,
+        full_ai_output_rights_license_basis="test-only operator attestation fixture",
+    )
+
+
+def test_wan_full_ai_quote_and_run_preserve_provider_model_and_cny() -> None:
+    with TestClient(
+        create_app(
+            settings=_wan_ready_settings(),
+            repository=_repository(),
+            job_queue=_Queue(),
+            object_storage=_Storage(),
+        )
+    ) as client:
+        options = client.get("/v1/full-ai/options")
+        assert options.status_code == 200
+        assert options.json()["status"] == "ready"
+        assert options.json()["provider"]["name"] == "dashscope-wan"
+
+        estimate = client.post("/v1/full-ai/estimate", json=SPEC)
+        assert estimate.status_code == 200
+        quote = estimate.json()["quote"]
+        assert quote["currency"] == "CNY"
+        assert quote["amount_minor"] == 3600
+
+        created = client.post(
+            "/v1/full-ai/runs",
+            headers={"Idempotency-Key": "wan-create-001"},
+            json={
+                **SPEC,
+                "estimate_fingerprint": estimate.json()["request_fingerprint"],
+                "max_cost_minor": quote["amount_minor"],
+                "currency": "CNY",
+            },
+        )
+        assert created.status_code == 201
+        assert created.json()["provider"] == {
+            "name": "dashscope-wan",
+            "model_id": "wan2.7-t2v-2026-06-12",
+        }
+        assert created.json()["quote"]["currency"] == "CNY"
+
+
 def test_default_full_ai_options_and_estimate_are_explicitly_blocked() -> None:
     with TestClient(create_app()) as client:
         options = client.get("/v1/full-ai/options")

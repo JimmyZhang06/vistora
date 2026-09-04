@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_ROOT = REPO_ROOT / "packages" / "contracts"
@@ -73,7 +73,7 @@ def migration_sql(migration_files: list[Path]) -> str:
 
 @pytest.fixture(scope="session")
 def normalized_sql(migration_sql: str) -> str:
-    without_comments = re.sub(r"--.*?$|/\*.*?\*/", " ", migration_sql, flags=re.M | re.S)
+    without_comments = re.sub(r"--.*?$|/\*.*?\*/", " ", migration_sql, flags=re.MULTILINE | re.DOTALL)
     return re.sub(r"\s+", " ", without_comments).lower()
 
 

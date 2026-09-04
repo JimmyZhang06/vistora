@@ -143,6 +143,22 @@ _BASELINE_COLUMNS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("asset_analysis_jobs", "id"),
         ("asset_usage_records", "id"),
     ),
+    "db/migrations/0026_document_video_control_plane.sql": (
+        ("document_sources", "id"),
+        ("document_sources", "workspace_id"),
+        ("document_sources", "object_key"),
+        ("document_sources", "validation"),
+        ("document_sources", "revision"),
+    ),
+    "db/migrations/0027_document_retention_and_purge.sql": (
+        ("document_sources", "upload_expires_at"),
+        ("document_sources", "retention_until"),
+        ("document_sources", "legal_hold"),
+        ("document_sources", "purged_at"),
+        ("document_purge_requests", "id"),
+        ("document_purge_requests", "lease_token"),
+        ("document_purge_requests", "last_error"),
+    ),
 }
 
 _LEDGER_SQL = """
@@ -234,9 +250,7 @@ async def migrate_connection(
     await connection.execute("SELECT pg_advisory_lock($1)", ADVISORY_LOCK_ID)
     try:
         ledger_existed = bool(
-            await connection.fetchval(
-                "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
-            )
+            await connection.fetchval("SELECT to_regclass('public.schema_migrations') IS NOT NULL")
         )
         await connection.execute(_LEDGER_SQL)
         ledger_columns = await connection.fetch(
@@ -259,8 +273,7 @@ async def migrate_connection(
         missing_files = sorted(set(ledger) - known_paths)
         if missing_files:
             raise MigrationError(
-                "applied migration files are missing from the release: "
-                + ", ".join(missing_files)
+                "applied migration files are missing from the release: " + ", ".join(missing_files)
             )
 
         # Validate the complete known history before making any change.
@@ -275,9 +288,7 @@ async def migrate_connection(
                 )
             recorded_checksum = str(recorded["checksum_sha256"]).strip()
             if recorded_checksum != migration.checksum_sha256:
-                compatible_transition = _COMPATIBLE_CHECKSUM_TRANSITIONS.get(
-                    migration.path
-                )
+                compatible_transition = _COMPATIBLE_CHECKSUM_TRANSITIONS.get(migration.path)
                 if compatible_transition != (
                     recorded_checksum,
                     migration.checksum_sha256,

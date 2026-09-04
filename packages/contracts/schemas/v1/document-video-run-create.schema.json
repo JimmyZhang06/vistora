@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/document-video-run-create.schema.json",
+  "title": "DocumentVideoRunCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_id", "topic"],
+  "properties": {
+    "source_id": {"type": "string", "format": "uuid"},
+    "topic": {"type": "string", "minLength": 1, "maxLength": 1600},
+    "duration_seconds": {"type": "integer", "minimum": 30, "maximum": 600, "default": 120},
+    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9"},
+    "generated_background_enabled": {"type": "boolean", "default": true}
+  }
+}

@@ -13,6 +13,8 @@ import hashlib
 import json
 import math
 import re
+import subprocess
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,9 +46,16 @@ from .runway import (
     RunwayTextVideoRequest,
 )
 from .verifier import GeneratedVideoVerificationError
+from .wan import (
+    WAN_API_VERSION,
+    WAN_MODEL,
+    WAN_PROVIDER_NAME,
+    WanClient,
+    WanTextVideoRequest,
+)
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-_PROMPT_TEMPLATE_VERSION = "runway-gen45-v1"
+_PROMPT_TEMPLATE_VERSION = "generated-video-v2"
 _CLIP_SECONDS = 5
 _MAX_OUTPUT_BYTES = 512 * 1024 * 1024
 _POLL_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -117,6 +126,7 @@ class RunwayMediaGenerationCapability:
         poll_interval_seconds: float = 5.0,
         poll_timeout_seconds: float = _POLL_TIMEOUT_SECONDS,
         maximum_output_bytes: int = _MAX_OUTPUT_BYTES,
+        ffmpeg_command: str = "ffmpeg",
     ) -> None:
         if not worker_id.strip():
             raise ValueError("generated-media worker identity must not be empty")
@@ -127,6 +137,7 @@ class RunwayMediaGenerationCapability:
         if maximum_output_bytes < 1:
             raise ValueError("Runway maximum output bytes must be positive")
         self.client = client
+        self.provider_name = WAN_PROVIDER_NAME if isinstance(client, WanClient) else "runway"
         self.storage = storage
         self.ledger = ledger
         self.verifier = verifier
@@ -134,6 +145,7 @@ class RunwayMediaGenerationCapability:
         self.poll_interval_seconds = poll_interval_seconds
         self.poll_timeout_seconds = poll_timeout_seconds
         self.maximum_output_bytes = maximum_output_bytes
+        self.ffmpeg_command = ffmpeg_command
 
     async def execute(self, context: StepContext) -> StepResult:
         await context.checkpoint()
@@ -277,13 +289,25 @@ class RunwayMediaGenerationCapability:
             )[:8],
             16,
         )
-        provider_request = RunwayTextVideoRequest(
-            prompt_text=prompt,
-            ratio=snapshot.ratio,
-            duration=_CLIP_SECONDS,
-            seed=seed,
-            model=snapshot.model_id,
-        )
+        if snapshot.provider_name == WAN_PROVIDER_NAME:
+            seed %= 2_147_483_648
+            provider_request = WanTextVideoRequest(
+                prompt_text=prompt,
+                ratio=snapshot.ratio,
+                duration=_CLIP_SECONDS,
+                seed=seed,
+                model=snapshot.model_id,
+            )
+            provider_api_version = WAN_API_VERSION
+        else:
+            provider_request = RunwayTextVideoRequest(
+                prompt_text=prompt,
+                ratio=snapshot.ratio,
+                duration=_CLIP_SECONDS,
+                seed=seed,
+                model=snapshot.model_id,
+            )
+            provider_api_version = RUNWAY_API_VERSION
         scene_key = f"beat-{beat.sequence:04d}-{_sha256(beat.id.encode())[:20]}"
         operation_key = f"media.generate:{scene_key}:variant:{variant_index}"
         request_hash = _sha256(
@@ -296,7 +320,7 @@ class RunwayMediaGenerationCapability:
                     "scene_key": scene_key,
                     "variant_index": variant_index,
                     "provider": snapshot.provider_name,
-                    "provider_api_version": RUNWAY_API_VERSION,
+                    "provider_api_version": provider_api_version,
                     "model": snapshot.model_id,
                     "request": provider_request.to_payload(),
                     "prompt_hash": prompt_hash,
@@ -357,8 +381,8 @@ class RunwayMediaGenerationCapability:
         final_credits = task.final_cost_credits
         if final_credits is None:  # guarded by Runway's terminal response parser
             raise PermanentStepError(
-                "Runway succeeded without a final cost",
-                code="RUNWAY_TASK_RESPONSE_INVALID",
+                "generation provider succeeded without a final cost",
+                code="FULL_AI_PROVIDER_TASK_RESPONSE_INVALID",
             )
         incurred_amount = final_credits * snapshot.credit_unit_minor
         if incurred_amount > operation.authorized_amount_minor:
@@ -377,7 +401,7 @@ class RunwayMediaGenerationCapability:
                 now=_now(),
             )
             raise PermanentStepError(
-                "Runway cost exceeded the frozen authorization; manual reconciliation is required",
+                "provider cost exceeded the frozen authorization; manual reconciliation is required",
                 code="FULL_AI_RECONCILIATION_REQUIRED",
             )
         await context.checkpoint()
@@ -391,7 +415,11 @@ class RunwayMediaGenerationCapability:
             raise RetryableStepError(
                 str(exc),
                 retry_after_seconds=exc.retry_after_seconds,
-                code="RUNWAY_OUTPUT_RETRYABLE",
+                code=(
+                    "WAN_OUTPUT_RETRYABLE"
+                    if snapshot.provider_name == WAN_PROVIDER_NAME
+                    else "RUNWAY_OUTPUT_RETRYABLE"
+                ),
             ) from exc
         except RunwayPermanentError as exc:
             await self._mark_paid_output_failed(
@@ -400,12 +428,53 @@ class RunwayMediaGenerationCapability:
                 request_hash=request_hash,
                 provider_request_id=task.task_id,
                 incurred_amount_minor=incurred_amount,
-                code="RUNWAY_OUTPUT_INVALID",
+                code=(
+                    "WAN_OUTPUT_INVALID"
+                    if snapshot.provider_name == WAN_PROVIDER_NAME
+                    else "RUNWAY_OUTPUT_INVALID"
+                ),
                 message=str(exc),
             )
             raise PermanentStepError(
-                str(exc), code="RUNWAY_OUTPUT_INVALID"
+                str(exc),
+                code=(
+                    "WAN_OUTPUT_INVALID"
+                    if snapshot.provider_name == WAN_PROVIDER_NAME
+                    else "RUNWAY_OUTPUT_INVALID"
+                ),
             ) from exc
+        if snapshot.provider_name == WAN_PROVIDER_NAME:
+            try:
+                video_bytes = await _offload(
+                    _strip_audio,
+                    video_bytes,
+                    self.ffmpeg_command,
+                )
+                # The provider URL expires after 24 hours. Persist the normalized,
+                # silent source immediately, before model verification.
+                self.storage.publish(
+                    context,
+                    ProviderArtifact(
+                        "provider_source",
+                        f"wan-source-{beat.sequence:04d}-v{variant_index + 1:02d}.mp4",
+                        media_type,
+                        video_bytes,
+                    ),
+                )
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                await self._mark_paid_output_failed(
+                    context,
+                    operation,
+                    request_hash=request_hash,
+                    provider_request_id=task.task_id,
+                    incurred_amount_minor=incurred_amount,
+                    code="WAN_AUDIO_STRIP_FAILED",
+                    message="Wan output audio could not be removed safely",
+                )
+                raise PermanentStepError(
+                    "Wan output audio could not be removed safely",
+                    code="WAN_AUDIO_STRIP_FAILED",
+                ) from exc
         await context.checkpoint()
         try:
             raw_verification = await self.verifier.verify(
@@ -515,13 +584,15 @@ class RunwayMediaGenerationCapability:
         self,
         context: StepContext,
         decision: PaidOperationDecision,
-        request: RunwayTextVideoRequest,
+        request: RunwayTextVideoRequest | WanTextVideoRequest,
         *,
         request_hash: str,
         credit_unit_minor: int,
     ) -> tuple[PaidOperationRecord, str | None]:
         operation = decision.record
         action = decision.action
+        provider_code = "WAN" if isinstance(request, WanTextVideoRequest) else "RUNWAY"
+        provider_label = "Wan" if provider_code == "WAN" else "Runway"
         if action is PaidOperationAction.BUSY:
             raise RetryableStepError(
                 "the paid operation is held by another live submit lease",
@@ -530,7 +601,7 @@ class RunwayMediaGenerationCapability:
             )
         if action is PaidOperationAction.MANUAL_RECONCILIATION_REQUIRED:
             raise PermanentStepError(
-                "a prior Runway submission has no recoverable task identity; manual reconciliation is required",
+                f"a prior {provider_label} submission has no recoverable task identity; manual reconciliation is required",
                 code="FULL_AI_RECONCILIATION_REQUIRED",
             )
         if (
@@ -591,7 +662,7 @@ class RunwayMediaGenerationCapability:
                 request_hash=request_hash,
                 lease_token=lease_token,
                 error={
-                    "code": "RUNWAY_DEFINITE_REJECTION",
+                    "code": f"{provider_code}_DEFINITE_REJECTION",
                     "definite_rejection": True,
                     "message": str(exc),
                 },
@@ -600,7 +671,7 @@ class RunwayMediaGenerationCapability:
             raise RetryableStepError(
                 str(exc),
                 retry_after_seconds=exc.retry_after_seconds,
-                code="RUNWAY_DEFINITE_REJECTION",
+                code=f"{provider_code}_DEFINITE_REJECTION",
             ) from exc
         except RunwaySubmitUnknown as exc:
             await _offload(
@@ -610,11 +681,11 @@ class RunwayMediaGenerationCapability:
                 request_hash=request_hash,
                 lease_token=lease_token,
                 provider_request_id=None,
-                error={"code": "RUNWAY_SUBMIT_UNKNOWN", "message": str(exc)},
+                error={"code": f"{provider_code}_SUBMIT_UNKNOWN", "message": str(exc)},
                 now=_now(),
             )
             raise PermanentStepError(
-                "Runway submission outcome is unknown; automatic resubmission is forbidden",
+                f"{provider_label} submission outcome is unknown; automatic resubmission is forbidden",
                 code="FULL_AI_RECONCILIATION_REQUIRED",
             ) from exc
         except RunwayPermanentError as exc:
@@ -626,11 +697,11 @@ class RunwayMediaGenerationCapability:
                 provider_request_id=None,
                 incurred_amount_minor=0,
                 cancelled=False,
-                error={"code": "RUNWAY_SUBMIT_REJECTED", "message": str(exc)},
+                error={"code": f"{provider_code}_SUBMIT_REJECTED", "message": str(exc)},
                 now=_now(),
             )
             raise PermanentStepError(
-                str(exc), code="RUNWAY_SUBMIT_REJECTED"
+                str(exc), code=f"{provider_code}_SUBMIT_REJECTED"
             ) from exc
         estimated_amount = receipt.estimated_cost_credits * credit_unit_minor
         if estimated_amount > operation.authorized_amount_minor + 1e-9:
@@ -650,7 +721,7 @@ class RunwayMediaGenerationCapability:
                 now=_now(),
             )
             raise PermanentStepError(
-                "Runway estimate exceeded the frozen authorization; the known task requires reconciliation",
+                f"{provider_label} estimate exceeded the frozen authorization; the known task requires reconciliation",
                 code="FULL_AI_RECONCILIATION_REQUIRED",
             )
         operation = await _offload_durable(
@@ -714,7 +785,11 @@ class RunwayMediaGenerationCapability:
                 raise RetryableStepError(
                     str(exc),
                     retry_after_seconds=exc.retry_after_seconds,
-                    code="RUNWAY_TASK_QUERY_RETRYABLE",
+                    code=(
+                        "WAN_TASK_QUERY_RETRYABLE"
+                        if self.provider_name == WAN_PROVIDER_NAME
+                        else "RUNWAY_TASK_QUERY_RETRYABLE"
+                    ),
                 ) from exc
             except RunwayPermanentError as exc:
                 await _offload(
@@ -724,11 +799,18 @@ class RunwayMediaGenerationCapability:
                     request_hash=request_hash,
                     lease_token=None,
                     provider_request_id=task_id,
-                    error={"code": "RUNWAY_TASK_QUERY_INVALID", "message": str(exc)},
+                    error={
+                        "code": (
+                            "WAN_TASK_QUERY_INVALID"
+                            if self.provider_name == WAN_PROVIDER_NAME
+                            else "RUNWAY_TASK_QUERY_INVALID"
+                        ),
+                        "message": str(exc),
+                    },
                     now=_now(),
                 )
                 raise PermanentStepError(
-                    "Runway task could not be reconciled safely",
+                    f"{self.provider_name} task could not be reconciled safely",
                     code="FULL_AI_RECONCILIATION_REQUIRED",
                 ) from exc
             if task.status is RunwayTaskStatus.SUCCEEDED:
@@ -752,7 +834,7 @@ class RunwayMediaGenerationCapability:
                         now=_now(),
                     )
                     raise PermanentStepError(
-                        "failed Runway task exceeded its frozen authorization",
+                        "failed provider task exceeded its frozen authorization",
                         code="FULL_AI_RECONCILIATION_REQUIRED",
                     )
                 await _offload_durable(
@@ -771,14 +853,22 @@ class RunwayMediaGenerationCapability:
                     now=_now(),
                 )
                 raise PermanentStepError(
-                    task.failure or f"Runway task {task.status.value.casefold()}",
-                    code="RUNWAY_TASK_FAILED",
+                    task.failure or f"provider task {task.status.value.casefold()}",
+                    code=(
+                        "WAN_TASK_FAILED"
+                        if self.provider_name == WAN_PROVIDER_NAME
+                        else "RUNWAY_TASK_FAILED"
+                    ),
                 )
             if time.monotonic() >= deadline:
                 raise RetryableStepError(
-                    "Runway task is still active after the local polling window",
+                    f"{self.provider_name} task is still active after the local polling window",
                     retry_after_seconds=self.poll_interval_seconds,
-                    code="RUNWAY_TASK_STILL_ACTIVE",
+                    code=(
+                        "WAN_TASK_STILL_ACTIVE"
+                        if self.provider_name == WAN_PROVIDER_NAME
+                        else "RUNWAY_TASK_STILL_ACTIVE"
+                    ),
                 )
             await asyncio.sleep(self.poll_interval_seconds)
 
@@ -994,25 +1084,30 @@ def _generation_snapshot(snapshot: Mapping[str, Any]) -> _Snapshot:
     model = str(raw.get("model_id") or "").strip()
     ratio = str(raw.get("ratio") or "").strip()
     continuity = str(raw.get("continuity_mode") or "").strip()
-    if provider != "runway" or model != "gen4.5":
+    supported = (
+        (provider == "runway" and model == "gen4.5")
+        or (provider == WAN_PROVIDER_NAME and model == WAN_MODEL)
+    )
+    if not supported:
         raise PermanentStepError(
-            "the generated-only Worker supports only Runway gen4.5",
+            "the generated-only Worker does not support the frozen provider/model",
             code="FULL_AI_PROVIDER_UNSUPPORTED",
         )
     if ratio not in {"1280:720", "720:1280"}:
-        raise _plan_drift("Runway ratio is outside the quoted P1 profile")
+        raise _plan_drift("provider ratio is outside the quoted generated-video profile")
     if continuity not in {"none", "prompt_pack"}:
         raise _plan_drift("continuity mode overstates the implemented P1 capability")
     terms = _snapshot_reference(raw.get("terms_snapshot"), "terms_snapshot")
     pricing = _snapshot_reference(raw.get("pricing_snapshot"), "pricing_snapshot")
-    if pricing.get("currency") != "USD":
-        raise _plan_drift("pricing currency must be USD")
+    expected_currency = "CNY" if provider == WAN_PROVIDER_NAME else "USD"
+    if pricing.get("currency") != expected_currency:
+        raise _plan_drift(f"pricing currency must be {expected_currency}")
     credit_unit = _integer(pricing.get("credit_unit_minor"), "credit_unit_minor")
     cost_per_second = _integer(
         pricing.get("cost_per_second_minor"), "cost_per_second_minor"
     )
     if credit_unit != 1 or cost_per_second < 1:
-        raise _plan_drift("pricing units are inconsistent with the frozen Runway quote")
+        raise _plan_drift("pricing units are inconsistent with the frozen provider quote")
     if raw.get("output_rights_confirmed") is not True:
         raise PermanentStepError(
             "provider output rights were not explicitly confirmed before Run creation",
@@ -1046,6 +1141,45 @@ def _generation_snapshot(snapshot: Mapping[str, Any]) -> _Snapshot:
         brief=str(snapshot.get("brief") or "").strip(),
         direction=str(snapshot.get("direction") or "").strip(),
     )
+
+
+def _strip_audio(video_bytes: bytes, ffmpeg_command: str) -> bytes:
+    if not video_bytes:
+        raise ValueError("generated video is empty")
+    with tempfile.TemporaryDirectory(prefix="vistora-wan-") as directory:
+        source = f"{directory}/source.mp4"
+        output = f"{directory}/silent.mp4"
+        with open(source, "wb") as handle:
+            handle.write(video_bytes)
+        completed = subprocess.run(
+            [
+                ffmpeg_command,
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                source,
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "copy",
+                "-an",
+                "-movflags",
+                "+faststart",
+                "-y",
+                output,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            raise subprocess.SubprocessError("ffmpeg could not remove generated audio")
+        with open(output, "rb") as handle:
+            normalized = handle.read()
+        if not normalized:
+            raise ValueError("silent generated video is empty")
+        return normalized
 
 
 def _validate_plan_and_timing(

@@ -90,6 +90,28 @@ def test_required_media_retrieve_rejects_run_without_asset_library() -> None:
     assert repository._runs == {}
 
 
+def test_required_media_retrieve_allows_explicit_no_asset_draft() -> None:
+    repository, version, pipeline = _repository(retrieve_required=True)
+    payload = _run_payload(version, pipeline, [])
+    payload["video_settings"] = {"no_asset_draft": {"enabled": True}}
+    with TestClient(create_app(repository=repository)) as client:
+        response = client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "retrieve-editorial-draft-0001"},
+        )
+
+    assert response.status_code == 201
+    settings = response.json()["composition_snapshot"]["production_settings"]
+    assert settings["no_asset_draft"] == {
+        "enabled": True,
+        "mode": "procedural_cards",
+        "draft": True,
+        "replacement_required": True,
+    }
+    assert settings["sources"]["no_asset_draft"] == "run_override"
+
+
 def test_required_media_retrieve_accepts_active_workspace_library() -> None:
     library = _library()
     repository, version, pipeline = _repository(
@@ -106,6 +128,118 @@ def test_required_media_retrieve_accepts_active_workspace_library() -> None:
     assert response.json()["composition_snapshot"]["asset_library_ids"] == [
         library["id"]
     ]
+
+
+def test_inventory_pipeline_freezes_catalog_snapshot_for_single_run() -> None:
+    library = _library()
+    repository, version, pipeline = _repository(
+        retrieve_required=True, libraries=[library]
+    )
+    pipeline["nodes"].append(
+        {
+            "key": "inventory",
+            "operation": "media.inventory",
+            "depends_on": [],
+            "required": True,
+            "maximum_attempts": 2,
+            "timeout_seconds": 900,
+            "review_gate": False,
+        }
+    )
+    repository._pipelines[pipeline["id"]] = deepcopy(pipeline)
+    with TestClient(create_app(repository=repository)) as client:
+        response = client.post(
+            "/v1/runs",
+            json=_run_payload(version, pipeline, [library["id"]]),
+            headers={"Idempotency-Key": "inventory-catalog-snapshot-0001"},
+        )
+
+    assert response.status_code == 201
+    snapshot_id = response.json()["composition_snapshot"]["catalog_snapshot_id"]
+    assert snapshot_id in repository._catalog_snapshots
+
+
+def test_inventory_run_without_materials_provisions_live_acquisition_library() -> None:
+    repository, version, pipeline = _repository(retrieve_required=True)
+    pipeline["nodes"].append(
+        {
+            "key": "inventory",
+            "operation": "media.inventory",
+            "depends_on": [],
+            "required": True,
+            "maximum_attempts": 2,
+            "timeout_seconds": 900,
+            "review_gate": False,
+        }
+    )
+    repository._pipelines[pipeline["id"]] = deepcopy(pipeline)
+    payload = _run_payload(version, pipeline, [])
+    payload["video_settings"] = {
+        "asset_acquisition": {
+            "enabled": True,
+            "sources": ["wikimedia"],
+            "max_assets": 3,
+            "copyright_status": "public_domain",
+            "rights_confirmed": False,
+        }
+    }
+
+    with TestClient(create_app(repository=repository)) as client:
+        first = client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "inventory-auto-library-0001"},
+        )
+        replay = client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "inventory-auto-library-0001"},
+        )
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    snapshot = first.json()["composition_snapshot"]
+    assert "catalog_snapshot_id" not in snapshot
+    assert len(snapshot["asset_library_ids"]) == 1
+    settings = snapshot["production_settings"]["asset_acquisition"]
+    assert settings["library_id"] == snapshot["asset_library_ids"][0]
+    assert settings["library_auto_provisioned"] is True
+    libraries = list(repository._asset_libraries.values())
+    assert len(libraries) == 1
+    assert libraries[0]["slug"] == "auto-acquired-footage"
+    assert libraries[0]["visibility"] == "private"
+
+
+def test_auto_acquisition_recovers_when_the_original_auto_library_is_archived() -> None:
+    archived = _library(status="archived")
+    archived["slug"] = "auto-acquired-footage"
+    repository, version, pipeline = _repository(
+        retrieve_required=True, libraries=[archived]
+    )
+    payload = _run_payload(version, pipeline, [])
+    payload["video_settings"] = {
+        "asset_acquisition": {
+            "enabled": True,
+            "sources": ["wikimedia"],
+            "max_assets": 3,
+            "copyright_status": "public_domain",
+            "rights_confirmed": False,
+        }
+    }
+
+    with TestClient(create_app(repository=repository)) as client:
+        response = client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "archived-auto-library-0001"},
+        )
+
+    assert response.status_code == 201
+    selected_id = response.json()["composition_snapshot"]["asset_library_ids"][0]
+    selected = repository._asset_libraries[selected_id]
+    assert selected["slug"] == "auto-acquired-footage-2"
+    assert selected["status"] == "active"
 
 
 def test_required_media_retrieve_rejects_foreign_workspace_library() -> None:

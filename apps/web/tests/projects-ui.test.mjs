@@ -11,7 +11,10 @@ test("projects page keeps loading, error, and loaded controls mutually exclusive
   assert.doesNotMatch(source, /className="loading-grid" aria-label="正在加载项目"/);
   assert.match(source, /title="暂时无法读取项目"/);
   assert.match(source, /onClick=\{retry\}/);
-  assert.match(source, /project\.projectKind === "webpage_video"/);
+  assert.match(source, /projectKindLabel\(project\)/);
   assert.match(source, /`\/webpage-video\/\$\{project\.controlRunId\}`/);
-  assert.match(source, /project\.projectKind === "full_ai" \? "AI 影片"/);
+  assert.match(source, /if \(project\.projectKind === "full_ai"\) return "全 AI 影片"/);
+  assert.match(source, /project\.steps\.length/);
+  assert.doesNotMatch(source, /skillVersionId\.slice/);
+  assert.match(source, /useSmartPolling/);
 });

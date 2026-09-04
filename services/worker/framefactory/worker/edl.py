@@ -361,11 +361,35 @@ def _validate_candidate_manifest_lineage(
 ) -> None:
     operation = manifest.get("operation")
     if operation == "media.retrieve":
-        manifest_profile_valid = (
+        local_catalog = (
             manifest.get("provider") == "database-asset-library"
             and manifest.get("catalog_scope") == "local"
             and manifest.get("local_catalog_only") is True
         )
+        fallback = manifest.get("editorial_fallback")
+        procedural_draft = (
+            manifest.get("provider") == "procedural-editorial-cards"
+            and manifest.get("catalog_scope") == "run"
+            and manifest.get("local_catalog_only") is False
+            and isinstance(fallback, Mapping)
+            and fallback.get("enabled") is True
+            and fallback.get("mode") == "procedural_cards"
+            and fallback.get("draft") is True
+            and fallback.get("replacement_required") is True
+        )
+        hybrid_draft = (
+            manifest.get("provider") == "hybrid-local-and-editorial"
+            and manifest.get("catalog_scope") == "run"
+            and manifest.get("local_catalog_only") is False
+            and isinstance(manifest.get("retrieval_policy"), Mapping)
+            and isinstance(manifest.get("acquisition"), Mapping)
+            and isinstance(fallback, Mapping)
+            and fallback.get("enabled") is True
+            and fallback.get("mode") == "procedural_cards"
+            and fallback.get("draft") is True
+            and fallback.get("replacement_required") is True
+        )
+        manifest_profile_valid = local_catalog or procedural_draft or hybrid_draft
     elif operation == "media.generate":
         generation = manifest.get("generation")
         manifest_profile_valid = (

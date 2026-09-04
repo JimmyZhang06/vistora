@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from framefactory.worker.generation.ledger import (
@@ -18,6 +19,7 @@ SCHEDULER_RUN_ID = "22222222-2222-4222-8222-222222222222"
 FULL_AI_RUN_ID = "33333333-3333-4333-8333-333333333333"
 OPERATION_ID = "44444444-4444-4444-8444-444444444444"
 REQUEST_HASH = "a" * 64
+LEASE_TOKEN = str(uuid4())
 
 
 class _Cursor:
@@ -240,7 +242,7 @@ def test_active_submit_lease_waits_but_expired_lease_becomes_unknown() -> None:
     active = _operation(
         status="submitting",
         lease_owner="worker-a",
-        lease_token="55555555-5555-4555-8555-555555555555",
+        lease_token=LEASE_TOKEN,
         lease_expires_at=NOW + timedelta(seconds=30),
     )
     active_connection = _Connection(
@@ -304,7 +306,7 @@ def test_submit_unknown_is_never_reopened_and_known_task_can_only_reconcile() ->
 
 
 def test_submit_transition_and_definite_rejection_release_are_lease_cas() -> None:
-    lease_token = "55555555-5555-4555-8555-555555555555"
+    lease_token = LEASE_TOKEN
     submitting = _operation(
         status="submitting",
         lease_owner="worker-a",
@@ -366,7 +368,7 @@ def test_begin_submit_locks_parent_first_and_stops_after_any_unknown_charge() ->
             operation_id=OPERATION_ID,
             request_hash=REQUEST_HASH,
             lease_owner="worker-a",
-            lease_token="55555555-5555-4555-8555-555555555555",
+            lease_token=LEASE_TOKEN,
             lease_seconds=120,
             now=NOW,
         )
@@ -378,7 +380,7 @@ def test_begin_submit_locks_parent_first_and_stops_after_any_unknown_charge() ->
 
 
 def test_submitted_unknown_and_success_transitions_preserve_task_and_cost() -> None:
-    lease_token = "55555555-5555-4555-8555-555555555555"
+    lease_token = LEASE_TOKEN
     submitting = _operation(
         status="submitting",
         lease_owner="worker-a",

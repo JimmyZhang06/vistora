@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0.0",
+  "title": "Vistora 如何接入 Agnes Video 2.5 Flash",
+  "scenes": [
+    {
+      "id": "scene-001",
+      "page": 1,
+      "narration": "Vistora 是否应该接入 Agnes Video 2.5 Flash？答案是可以，但不应该简单替换现有的视频生成能力。",
+      "crop": [0.04, 0.04, 0.92, 0.91],
+      "layout": "hero",
+      "background_policy": "agnes_preferred"
+    },
+    {
+      "id": "scene-002",
+      "page": 2,
+      "narration": "报告给出的综合可行性为八点五分。真正有价值的方向，是在普通素材、网页素材、品牌资产和生成式视频之间，按镜头择优。",
+      "crop": [0.05, 0.04, 0.9, 0.72],
+      "layout": "evidence_card",
+      "background_policy": "procedural"
+    },
+    {
+      "id": "scene-003",
+      "page": 5,
+      "narration": "现有标准管线依赖素材检索，Full AI 管线则逐镜头调用 Runway。Agnes 不能只作为一个替换接口接进来。",
+      "crop": [0.05, 0.03, 0.9, 0.75],
+      "layout": "evidence_card",
+      "background_policy": "procedural"
+    },
+    {
+      "id": "scene-004",
+      "page": 7,
+      "narration": "推荐新增 Hybrid Production。每个 Beat 先获取真实素材，再由增强规划器判断是否值得生成，最终把不同来源的候选统一交给时间线。",
+      "crop": [0.05, 0.04, 0.9, 0.66],
+      "layout": "evidence_card",
+      "background_policy": "agnes_preferred"
+    },
+    {
+      "id": "scene-005",
+      "page": 8,
+      "narration": "Agnes 适合开场、抽象概念、静态产品图动态化和转场；真实事件、精确界面、复杂标识以及工业结构，都不应该交给生成模型冒充事实。",
+      "crop": [0.05, 0.03, 0.9, 0.82],
+      "layout": "split_explain",
+      "background_policy": "procedural"
+    },
+    {
+      "id": "scene-006",
+      "page": 13,
+      "narration": "容量决定了它只能稀疏使用。两段五秒镜头意味着每条视频消耗十秒生成额度，失败、重试和质检淘汰还会继续增加成本。",
+      "crop": [0.04, 0.03, 0.92, 0.84],
+      "layout": "data_focus",
+      "background_policy": "procedural"
+    },
+    {
+      "id": "scene-007",
+      "page": 14,
+      "narration": "生产环境必须保留任务幂等、配额预留、结果下载、内容哈希、品牌授权、人物权利和事实性画面禁用规则。",
+      "crop": [0.05, 0.03, 0.9, 0.86],
+      "layout": "data_focus",
+      "background_policy": "procedural"
+    },
+    {
+      "id": "scene-008",
+      "page": 18,
+      "narration": "因此建议分两次决策：先用真实内容做 Benchmark，达到可用率和稳定性门槛之后，再建设 Hybrid MVP。生成只发生在真正有价值的地方。",
+      "crop": [0.05, 0.04, 0.9, 0.77],
+      "layout": "evidence_card",
+      "background_policy": "procedural"
+    }
+  ]
+}

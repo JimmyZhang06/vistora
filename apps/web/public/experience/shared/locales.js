@@ -1,13 +1,13 @@
 export const locales = {
   "zh-CN": {
     meta: {
-      homeTitle: "FrameFactory — 从主题到成片",
+      homeTitle: "Vistora — 从主题到成片",
       homeDescription: "面向知识创作者的 AI 视频生产工作台。",
-      studioTitle: "FrameFactory Studio — 创作",
-      taskTitle: "历史人物解读 — FrameFactory Studio",
+      studioTitle: "Vistora Studio — 创作",
+      taskTitle: "历史人物解读 — Vistora Studio",
     },
     common: {
-      brand: "FrameFactory",
+      brand: "Vistora",
       menu: "菜单",
       close: "关闭",
       language: "语言",
@@ -36,7 +36,7 @@ export const locales = {
       eyebrow: "AI 内容生产工作台",
       heroLine1: "一个主题，",
       heroLine2: "一条完整视频。",
-      heroBody: "FrameFactory 理解你的创作意图，完成研究、脚本、配音、素材匹配与画面编排。",
+      heroBody: "Vistora 理解你的创作意图，完成研究、脚本、配音、素材匹配与画面编排。",
       scroll: "向下探索",
       statement: "把一次灵感，变成稳定的内容生产线。",
       statementBody: "从主题研究到成片交付，每一步都有明确输入、可检查产物和质量门槛。你只需保留观点与判断。",
@@ -95,7 +95,7 @@ export const locales = {
     create: {
       eyebrow: "AI 视频创作",
       title: "今天想创作什么？",
-      body: "输入人物、作品或科技主题，FrameFactory 会在对话中完成整条生产流程。",
+      body: "输入人物、作品或科技主题，Vistora 会在对话中完成整条生产流程。",
       composerPlaceholder: "输入创作主题，例如：王安石",
       viewpointPlaceholder: "也可以直接写下你的观点",
       selectedSkill: "创作模板",
@@ -115,7 +115,7 @@ export const locales = {
       agentResult: "成片已经完成。右侧可以预览视频、查看本次调用的资产，也可以只重做某个段落。",
       agentFollowup: "收到。我会把这条要求应用到当前任务，并只更新受影响的内容与资产。",
       rewriteDone: "已重写选中的段落，其他文案和制作状态保持不变。",
-      thinking: "FrameFactory 正在工作",
+      thinking: "Vistora 正在工作",
       approveScript: "确认脚本",
       approvePlan: "确认制作方案",
       inspector: "制作详情",
@@ -257,7 +257,7 @@ export const locales = {
       input: {
         eyebrow: "01 / 输入人物",
         title: "你想重新理解谁？",
-        body: "输入一个历史人物。FrameFactory 会自动研究，并选择最有传播力的解读角度。",
+        body: "输入一个历史人物。Vistora 会自动研究，并选择最有传播力的解读角度。",
         personLabel: "创作主题",
         personPlaceholder: "例如：王安石",
         viewpointLabel: "我已有观点（可选）",
@@ -443,13 +443,13 @@ export const locales = {
   },
   en: {
     meta: {
-      homeTitle: "FrameFactory — From Topic to Final Cut",
+      homeTitle: "Vistora — From Topic to Final Cut",
       homeDescription: "An AI video production workspace for knowledge creators.",
-      studioTitle: "FrameFactory Studio — Create",
-      taskTitle: "Historical Figure Analysis — FrameFactory Studio",
+      studioTitle: "Vistora Studio — Create",
+      taskTitle: "Historical Figure Analysis — Vistora Studio",
     },
     common: {
-      brand: "FrameFactory",
+      brand: "Vistora",
       menu: "Menu",
       close: "Close",
       language: "Language",
@@ -478,7 +478,7 @@ export const locales = {
       eyebrow: "AI Content Production Workspace",
       heroLine1: "One topic.",
       heroLine2: "One finished video.",
-      heroBody: "FrameFactory reads your intent, then handles research, scripting, voice, footage matching and assembly.",
+      heroBody: "Vistora reads your intent, then handles research, scripting, voice, footage matching and assembly.",
       scroll: "Scroll to explore",
       statement: "Turn one idea into a reliable content production line.",
       statementBody: "From research to delivery, every stage has clear inputs, inspectable outputs and quality gates. You keep the point of view and final judgement.",
@@ -537,7 +537,7 @@ export const locales = {
     create: {
       eyebrow: "AI Video Creation",
       title: "What should we make today?",
-      body: "Enter a historical figure or an existing point of view. FrameFactory will run the whole production through one conversation.",
+      body: "Enter a historical figure or an existing point of view. Vistora will run the whole production through one conversation.",
       composerPlaceholder: "Enter a historical figure, for example: Wang Anshi",
       viewpointPlaceholder: "Or start with the argument you already have",
       selectedSkill: "Template",
@@ -557,7 +557,7 @@ export const locales = {
       agentResult: "The final cut is ready. Preview it in the inspector, review every asset used, or remake a single segment.",
       agentFollowup: "Understood. I’ll apply that instruction to this task and update only the affected content and assets.",
       rewriteDone: "The selected paragraph has been rewritten. Everything else in the task remains unchanged.",
-      thinking: "FrameFactory is working",
+      thinking: "Vistora is working",
       approveScript: "Approve script",
       approvePlan: "Approve production plan",
       inspector: "Production detail",
@@ -699,7 +699,7 @@ export const locales = {
       input: {
         eyebrow: "01 / Choose a figure",
         title: "Who should we understand again?",
-        body: "Enter one historical figure. FrameFactory will research the record and choose the angle with the strongest narrative tension.",
+        body: "Enter one historical figure. Vistora will research the record and choose the angle with the strongest narrative tension.",
         personLabel: "Creation topic",
         personPlaceholder: "For example: Wang Anshi",
         viewpointLabel: "I already have a point of view (optional)",

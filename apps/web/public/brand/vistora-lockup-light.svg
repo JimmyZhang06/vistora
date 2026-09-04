@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 64" role="img" aria-labelledby="title">
+  <title id="title">Vistora</title>
+  <g transform="translate(4 8)" fill="#ff6b35">
+    <path fill-rule="evenodd" d="M5.39 4.5h8.83c1.15 0 2.18.7 2.61 1.77L24 24.2l7.17-17.93a2.81 2.81 0 0 1 2.61-1.77h8.83c1.99 0 3.35 2.01 2.61 3.86L29.2 43.06a5.7 5.7 0 0 1-10.4 0L2.78 8.36A2.81 2.81 0 0 1 5.39 4.5Zm14.44 12.83 11.13 6.43-8.67 5.01-2.46-6.14v-5.3Z"/>
+  </g>
+  <text x="66" y="45" fill="#111111" font-family="Geist, Inter, Arial, sans-serif" font-size="42" font-weight="700" letter-spacing="-2.1">Vistora</text>
+</svg>

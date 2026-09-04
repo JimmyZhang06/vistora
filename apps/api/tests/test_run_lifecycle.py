@@ -133,6 +133,337 @@ def test_run_estimate_reports_worker_capability_gaps_and_blocks_creation() -> No
     assert created.json()["code"] == "RUN_CAPABILITY_UNAVAILABLE"
 
 
+def test_offline_research_sources_exempt_only_research_collect() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.collect"
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "off",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.org/source-b",
+                ],
+            }
+        )
+        estimate = capability_client.post("/v1/runs/estimate", json=payload)
+        created = capability_client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "offline-research-run-0001"},
+        )
+
+    assert estimate.status_code == 200
+    assert estimate.json()["capability_gaps"] == []
+    assert created.status_code == 201
+    assert created.json()["input"]["research_mode"] == "off"
+    assert created.json()["input"]["source_urls"] == payload["input"]["source_urls"]
+
+
+def test_offline_research_requires_enough_distinct_https_sources() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.collect"
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "off",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.com/source-a#duplicate",
+                    "http://example.org/not-https",
+                ],
+            }
+        )
+        estimate = capability_client.post("/v1/runs/estimate", json=payload)
+        created = capability_client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "offline-research-run-insufficient-0001"},
+        )
+
+    assert {gap["capability"] for gap in estimate.json()["capability_gaps"]} == {
+        "research.collect",
+        "research.web_acquisition",
+    }
+    assert created.status_code == 422
+    assert created.json()["code"] == "RUN_RESEARCH_SOURCES_INSUFFICIENT"
+    assert created.json()["details"] == {
+        "path": "input.source_urls",
+        "minimum_sources": 2,
+        "provided": 1,
+    }
+    assert repository._runs == {}
+
+
+def test_offline_research_does_not_exempt_other_missing_capabilities() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] not in {"research.collect", "writing.compose"}
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "off",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.org/source-b",
+                ],
+            }
+        )
+        estimate = capability_client.post("/v1/runs/estimate", json=payload)
+        created = capability_client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "offline-research-other-gap-0001"},
+        )
+
+    assert {gap["capability"] for gap in estimate.json()["capability_gaps"]} == {
+        "writing.compose"
+    }
+    assert created.status_code == 409
+    assert created.json()["code"] == "RUN_CAPABILITY_UNAVAILABLE"
+    assert {
+        gap["capability"] for gap in created.json()["details"]["capability_gaps"]
+    } == {"writing.compose"}
+    assert repository._runs == {}
+
+
+def test_research_exemption_is_exact_and_requires_off_mode() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    pipeline["nodes"][0]["operation"] = "research.verify"
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.verify"
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "off",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.org/source-b",
+                ],
+            }
+        )
+        exact_gap = capability_client.post("/v1/runs/estimate", json=payload)
+
+    assert {gap["capability"] for gap in exact_gap.json()["capability_gaps"]} == {
+        "research.verify",
+        "research.web_acquisition",
+    }
+
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    operations = {
+        str(node["operation"])
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.collect"
+    }
+    settings = Settings(worker_capabilities=tuple(sorted(operations)))
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "when_missing",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.org/source-b",
+                ],
+            }
+        )
+        mode_gap = capability_client.post("/v1/runs/estimate", json=payload)
+
+    assert {gap["capability"] for gap in mode_gap.json()["capability_gaps"]} == {
+        "research.collect",
+        "research.web_acquisition",
+    }
+
+
+def test_required_abstract_capability_requires_a_pipeline_provider_operation() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    pipeline["capability_requirements"] = []
+    pipeline["nodes"] = [
+        {
+            **node,
+            "depends_on": [
+                dependency
+                for dependency in node["depends_on"]
+                if dependency != "research"
+            ],
+        }
+        for node in pipeline["nodes"]
+        if node["operation"] != "research.collect"
+    ]
+    operations = tuple(sorted(str(node["operation"]) for node in pipeline["nodes"]))
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        repository._versions[version["id"]]["capability_requirements"] = [
+            {
+                "name": "research.source_grounding",
+                "level": "required",
+                "minimum_version": "1.0.0",
+            }
+        ]
+        payload = _run_payload(version)
+        response = capability_client.post("/v1/runs/estimate", json=payload)
+        created = capability_client.post(
+            "/v1/runs",
+            json=payload,
+            headers={"Idempotency-Key": "abstract-capability-provider-0001"},
+        )
+
+    assert {gap["capability"] for gap in response.json()["capability_gaps"]} == {
+        "research.source_grounding"
+    }
+    assert created.status_code == 409
+    assert created.json()["code"] == "RUN_CAPABILITY_UNAVAILABLE"
+    assert {
+        gap["capability"] for gap in created.json()["details"]["capability_gaps"]
+    } == {"research.source_grounding"}
+
+
+def test_optional_abstract_capability_does_not_block_run_preflight() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    pipeline["capability_requirements"] = []
+    operations = tuple(sorted(str(node["operation"]) for node in pipeline["nodes"]))
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        repository._versions[version["id"]]["capability_requirements"] = [
+            {
+                "name": "model.video_generation",
+                "level": "optional",
+                "minimum_version": "1.0.0",
+            }
+        ]
+        response = capability_client.post("/v1/runs/estimate", json=_run_payload(version))
+
+    assert response.json()["capability_gaps"] == []
+
+
+def test_pipeline_capability_requirement_is_enforced() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    pipeline["capability_requirements"] = ["provider.specialized_service"]
+    operations = tuple(sorted(str(node["operation"]) for node in pipeline["nodes"]))
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        repository._versions[version["id"]]["capability_requirements"] = []
+        response = capability_client.post("/v1/runs/estimate", json=_run_payload(version))
+
+    assert response.json()["capability_gaps"] == [
+        {
+            "capability": "provider.specialized_service",
+            "resource": "pipeline",
+            "message": (
+                "所选 Pipeline 没有可满足 provider.specialized_service 的必需执行 operation。"
+            ),
+        }
+    ]
+
+
+def test_capability_minimum_version_is_enforced() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    pipeline["capability_requirements"] = []
+    operations = tuple(sorted(str(node["operation"]) for node in pipeline["nodes"]))
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        repository._versions[version["id"]]["capability_requirements"] = [
+            {
+                "name": "model.text_generation",
+                "level": "required",
+                "minimum_version": "2.0.0",
+            }
+        ]
+        response = capability_client.post("/v1/runs/estimate", json=_run_payload(version))
+
+    assert {gap["capability"] for gap in response.json()["capability_gaps"]} == {
+        "model.text_generation"
+    }
+    assert "2.0.0" in response.json()["capability_gaps"][0]["message"]
+
+
+def test_offline_mode_waives_only_web_acquisition_requirement() -> None:
+    repository = _repository_with_pipeline()
+    pipeline = next(iter(repository._pipelines.values()))
+    operations = tuple(
+        sorted(
+            str(node["operation"])
+            for node in pipeline["nodes"]
+            if node["operation"] != "research.collect"
+        )
+    )
+    settings = Settings(worker_capabilities=operations)
+    with TestClient(create_app(settings=settings, repository=repository)) as capability_client:
+        version = _published_version(capability_client)
+        repository._versions[version["id"]]["capability_requirements"] = [
+            {
+                "name": "research.web_acquisition",
+                "level": "required",
+                "minimum_version": "1.0.0",
+            },
+            {
+                "name": "research.source_grounding",
+                "level": "required",
+                "minimum_version": "1.0.0",
+            },
+            {
+                "name": "model.video_generation",
+                "level": "required",
+                "minimum_version": "1.0.0",
+            },
+        ]
+        payload = _run_payload(version)
+        payload["input"].update(
+            {
+                "research_mode": "off",
+                "source_urls": [
+                    "https://example.com/source-a",
+                    "https://example.org/source-b",
+                ],
+            }
+        )
+        response = capability_client.post("/v1/runs/estimate", json=payload)
+
+    assert {gap["capability"] for gap in response.json()["capability_gaps"]} == {
+        "model.video_generation"
+    }
+
+
 class _CapturingQueue:
     def __init__(self) -> None:
         self.enqueued: list[dict[str, Any]] = []

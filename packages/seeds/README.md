@@ -1,13 +1,13 @@
 # Vistora 官方 Seed
 
-> 文档状态：当前声明式目录说明
+> 文档状态：当前声明式目录说明（manifest 1.12.0，2026-09-05）
 > 导入边界：经 manifest 和公共契约校验；不执行任意代码
 
 Seed 是经过审查的声明式启动数据，不是 Worker 插件，也不会获得执行代码权限。
 
-`official-skills/v1/` 保存官方 Skill 起点，以及 `standard-production`、`full-ai-production` 和 `webpage-video-production` 的版本化 Pipeline。官方与用户资源使用相同契约、Repository、API 和执行路径；`ownership_type=system` 与 `publisher_type=system` 只是数据属性，运行时代码不得按固定业务 ID 分支。
+`official-skills/v1/` 保存官方 Skill 起点，以及 `standard-production`、`full-ai-production`、`webpage-video-production` 和 `document-hybrid-production` 的版本化 Pipeline。当前 manifest 包含标准 Pipeline v1–v4、Full-AI v1–v2、网页 v1–v2、文档 v1–v2，并增加 `guizhou-broadcast-memory-revival` 与 `document-video-director` 官方 Skill。官方与用户资源使用相同契约、Repository、API 和执行路径；`ownership_type=system` 与 `publisher_type=system` 只是数据属性，运行时代码不得按固定业务 ID 分支。
 
-标准 Pipeline 组织研究、写作、配音、素材选择、渲染、质量检查和人工审核。Seed 只声明能力要求；实际能力是否可用由 Worker 部署配置决定。缺少 Provider 时步骤 fail closed，不会因为资源是“官方”而绕过。
+标准 Pipeline v4 先冻结并盘点本地素材，再研究、写作，并只对缺失 Beat 补采；文档 Pipeline v2 先验证不可变 PDF，再提取页面证据，经过 Storyboard 与最终 QC 两个审核门后交付。网页和 Full-AI 仍使用各自专用控制面。Seed 只声明能力要求；实际能力是否可用由 Worker 部署配置决定。缺少 Provider、对象存储、媒体工具或审核时步骤 fail closed，不会因为资源是“官方”而绕过。
 
 ## 边界
 

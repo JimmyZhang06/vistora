@@ -74,6 +74,7 @@ test("application components do not instantiate the mock fixture", async () => {
     "components/channels-view.tsx",
     "components/channel-detail.tsx",
     "components/channel-form.tsx",
+    "components/broadcast-revival-studio.tsx",
     "components/create-composer.tsx",
     "components/projects-view.tsx",
     "components/run-detail.tsx",
@@ -307,6 +308,7 @@ test("library build jobs preserve progress and batch payload separates research 
       autoQualityCheck: true, layout: "full_frame", mediaFit: "cover", frameRate: 30,
       subtitles: { enabled: true, position: "bottom", size: "medium", maxLines: 2 },
       assetAcquisition: { enabled: true, sources: ["youtube"], maxAssets: 6, copyrightStatus: "licensed", rightsConfirmed: true },
+      noAssetDraft: { enabled: false },
     },
   }, "batch-fixed-key");
 
@@ -417,6 +419,8 @@ test("HTTP adapter maps real resources and sends mutation control headers", asyn
   const run = await adapter.createRun({
     workspaceId: skill.workspace_id,
     topic: "HTTP run topic",
+    researchMode: "off",
+    sourceUrls: ["https://example.com/source-a", "https://example.org/source-b"],
     composition: { skillVersionId: version.id, assetLibraryIds: [], pipelineVersionId: "88888888-8888-4888-8888-888888888888" },
     videoSettings: {
       language: "zh-CN", aspectRatio: "1:1", targetDurationSeconds: 75,
@@ -424,11 +428,14 @@ test("HTTP adapter maps real resources and sends mutation control headers", asyn
       mediaFit: "contain", frameRate: 25,
       subtitles: { enabled: true, position: "lower_third", size: "large", maxLines: 2 },
       assetAcquisition: { enabled: true, sources: ["bilibili"], maxAssets: 2, copyrightStatus: "licensed", rightsConfirmed: true },
+      noAssetDraft: { enabled: true },
     },
   }, "run-key-0001");
   assert.equal(run.ok && run.data.topic, "HTTP run topic");
   const runRequest = requests.find((item) => item.url.endsWith("/v1/runs") && item.method === "POST");
   assert.equal(runRequest.headers.get("Idempotency-Key"), "run-key-0001");
+  assert.equal(runRequest.body.input.research_mode, "off");
+  assert.deepEqual(runRequest.body.input.source_urls, ["https://example.com/source-a", "https://example.org/source-b"]);
   assert.equal(runRequest.body.composition.skill_version_id, version.id);
   assert.equal("content_hash" in runRequest.body.composition, false);
   assert.equal(runRequest.body.video_settings.aspect_ratio, "1:1");
@@ -436,6 +443,7 @@ test("HTTP adapter maps real resources and sends mutation control headers", asyn
   assert.equal(runRequest.body.video_settings.subtitles.position, "lower_third");
   assert.equal(runRequest.body.video_settings.asset_acquisition.enabled, true);
   assert.deepEqual(runRequest.body.video_settings.asset_acquisition.sources, ["bilibili"]);
+  assert.equal(runRequest.body.video_settings.no_asset_draft.enabled, true);
 });
 
 test("account transport preserves ETags and never reads plaintext from API key listings", async () => {
@@ -950,11 +958,12 @@ test("standard composer excludes archived system Skills used only by the full-AI
   const fetcher = async (url) => {
     const pathname = new URL(String(url)).pathname;
     if (pathname === "/v1/skills") return page([
-      { id: activeSkillId, name: "标准创作", status: "active", publisher_type: "system", publisher_name: "Vistora" },
-      { id: archivedSkillId, name: "Full AI director", status: "archived", publisher_type: "system", publisher_name: "Vistora" },
+      { id: activeSkillId, name: "标准创作", status: "active", current_version_id: "active-version", publisher_type: "system", publisher_name: "Vistora" },
+      { id: archivedSkillId, name: "Full AI director", status: "archived", current_version_id: "archived-version", publisher_type: "system", publisher_name: "Vistora" },
     ]);
     if (pathname === "/v1/skill-versions") return page([
       { id: "active-version", skill_id: activeSkillId, version: "1.0.0", state: "published", default_pipeline_version_id: activePipelineId },
+      { id: "older-active-version", skill_id: activeSkillId, version: "0.9.0", state: "published", default_pipeline_version_id: archivedPipelineId },
       { id: "archived-version", skill_id: archivedSkillId, version: "1.0.0", state: "published", default_pipeline_version_id: archivedPipelineId },
     ]);
     if (pathname === "/v1/asset-libraries" || pathname === "/v1/channels") return page([]);
@@ -964,5 +973,6 @@ test("standard composer excludes archived system Skills used only by the full-AI
   const result = await adapter.getComposerOptions("workspace-1");
   assert.equal(result.ok, true);
   assert.deepEqual(result.ok && result.data.skills.map((item) => item.skillName), ["标准创作"]);
+  assert.equal(result.ok && result.data.skills[0].defaultPipelineVersionId, activePipelineId);
   assert.deepEqual(result.ok && result.data.pipelines.map((item) => item.id), [activePipelineId]);
 });

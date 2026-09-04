@@ -12,6 +12,7 @@ from framefactory.runtime import ReviewDecision, Scheduler, WorkerRuntime
 
 from .adapters import PostgresRunStore, RedisQueue
 from .adapters.asset_analysis import (
+    ClamdScanner,
     LocalAssetStageProcessor,
     OpenAICompatibleAudioTranscriber,
     OpenAICompatibleVisionAnalyzer,
@@ -29,6 +30,7 @@ from .capabilities import (
 )
 from .clock import SystemClock
 from .config import WorkerSettings
+from .document_purge import DocumentPurgeService, PostgresDocumentPurgeRepository
 from .generation.ledger import PostgresPaidOperationLedger
 from .library_build_service import LibraryBuildService, PostgresLibraryBuildRepository
 from .web_capture.playwright_adapter import playwright_runtime_healthcheck
@@ -49,6 +51,7 @@ class WorkerService:
         paid_operation_ledger: PostgresPaidOperationLedger | None = None,
         asset_analysis: AssetAnalysisService | None = None,
         library_build: LibraryBuildService | None = None,
+        document_purge: DocumentPurgeService | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -59,6 +62,7 @@ class WorkerService:
         self.paid_operation_ledger = paid_operation_ledger
         self.asset_analysis = asset_analysis
         self.library_build = library_build
+        self.document_purge = document_purge
         self._stop = asyncio.Event()
 
     def healthcheck(self) -> None:
@@ -68,6 +72,8 @@ class WorkerService:
             self.artifact_storage.healthcheck()
         if self.paid_operation_ledger is not None:
             self.paid_operation_ledger.healthcheck()
+        if self.document_purge is not None:
+            self.document_purge.healthcheck()
         if self.settings.browser_capture_only:
             playwright_runtime_healthcheck(
                 timeout_seconds=min(15.0, self.settings.web_capture.job_timeout_seconds)
@@ -107,6 +113,8 @@ class WorkerService:
             self.asset_analysis.close()
         if self.paid_operation_ledger is not None:
             self.paid_operation_ledger.close()
+        if self.document_purge is not None:
+            self.document_purge.close()
         self.queue.close()
         self.store.close()
 
@@ -118,6 +126,11 @@ class WorkerService:
                 queue_name=self.settings.queue_name,
                 worker_id=self.settings.worker_id,
             )
+
+        if self.document_purge is not None and await asyncio.to_thread(
+            self.document_purge.process_once
+        ):
+            return True
 
         # Asset analysis performs blocking database, object-storage and
         # FFmpeg/ASR work.  Running it on the shared asyncio loop would also
@@ -277,6 +290,7 @@ def build_service(settings: WorkerSettings) -> WorkerService:
         store.close()
         raise
     paid_operation_ledger: PostgresPaidOperationLedger | None = None
+    document_purge: DocumentPurgeService | None = None
     try:
         clock = SystemClock()
         scheduler = Scheduler(store=store, queue=queue, clock=clock)
@@ -285,7 +299,18 @@ def build_service(settings: WorkerSettings) -> WorkerService:
             if settings.object_storage is not None
             else None
         )
-        if settings.runway is not None:
+        if not settings.browser_capture_only and artifact_storage is not None:
+            document_purge = DocumentPurgeService(
+                repository=PostgresDocumentPurgeRepository.connect(
+                    settings.database_url,
+                    timeout_seconds=settings.connect_timeout_seconds,
+                ),
+                s3_client=artifact_storage.client,
+                bucket=settings.object_storage.bucket,
+                worker_id=settings.worker_id,
+                lease_seconds=settings.lease_seconds,
+            )
+        if settings.runway is not None or settings.wan is not None:
             paid_operation_ledger = PostgresPaidOperationLedger.connect(
                 settings.database_url,
                 timeout_seconds=settings.connect_timeout_seconds,
@@ -314,7 +339,16 @@ def build_service(settings: WorkerSettings) -> WorkerService:
                 scheduler=scheduler,
                 processor=LocalAssetStageProcessor(
                     S3MediaObjectStore(artifact_storage.client),
-                    SystemMalwareScanner(),
+                    (
+                        ClamdScanner(
+                            settings.clamd.host,
+                            settings.clamd.port,
+                            timeout_seconds=settings.clamd.timeout_seconds,
+                            maximum_stream_bytes=settings.clamd.maximum_stream_bytes,
+                        )
+                        if settings.clamd is not None
+                        else SystemMalwareScanner()
+                    ),
                     OpenAICompatibleVisionAnalyzer(
                         base_url=analysis_settings.base_url,
                         api_key=analysis_settings.api_key,
@@ -376,8 +410,11 @@ def build_service(settings: WorkerSettings) -> WorkerService:
             paid_operation_ledger=paid_operation_ledger,
             asset_analysis=asset_analysis,
             library_build=library_build,
+            document_purge=document_purge,
         )
     except Exception:
+        if document_purge is not None:
+            document_purge.close()
         if paid_operation_ledger is not None:
             paid_operation_ledger.close()
         queue.close()

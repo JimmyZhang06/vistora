@@ -1,6 +1,6 @@
 # Vistora 数据契约
 
-> 文档状态：当前公共契约说明
+> 文档状态：当前公共契约说明（2026-09-05）
 > 兼容策略：版本化、fail closed、已发布不可变载荷不原地修改
 
 契约版本 `1.0.0` 使用 `schemas/v1/` 下的 JSON Schema 2020-12 和 `openapi/v1.yaml` 下的 OpenAPI 3.1。Schema 的规范 `$id` 仍位于 `https://schemas.framefactory.dev/v1/`，这是兼容标识，变更它会破坏已发布消费者。
@@ -17,7 +17,9 @@ Worker 在投递前保存内容寻址的 `input_snapshot`；重试和崩溃恢�
 
 `SkillVersion` 是声明式数据，不允许命令、模块、脚本、回调或本地路径。外部研究证据必须是 HTTPS URL，素材通过 UUID 和持久使用快照引用。
 
-当前跨阶段载荷包括 narration timing、CandidateManifest、GeneratedMaterialManifest、MaterialSelection、EDL、LibraryBuildJob 与 GenerationBatch command。新增载荷必须进入 Schema 集合、OpenAPI/运行模型映射和合同测试，不能只在某一端增加自由字典。
+当前跨阶段载荷包括 narration timing、CandidateManifest、GeneratedMaterialManifest、MaterialSelection、EDL、LibraryBuildJob 与 GenerationBatch command。文档流程另有 `document-source-create` 和 `document-video-run-create` Command Schema；来源资源、retention、Legal Hold、Purge 状态以及文档 Run/Artifact 复用 OpenAPI 中的版本化资源契约。新增载荷必须进入 Schema 集合、OpenAPI/运行模型映射和合同测试，不能只在某一端增加自由字典。
+
+Canonical OpenAPI 已覆盖 `/v1/document-sources` 的创建、读取、完成上传、保留期、Legal Hold、Purge 请求/进度，以及 `/v1/document-video/runs`。它也覆盖网页试点反馈与汇总。任何包含签名上传 URL 或 Artifact 下载 URL 的响应都只把 URL 视为短期交付信息；不可变契约保存哈希和服务端对象引用，不把会过期的 URL 写入长期证据报告。
 
 ## 内容哈希
 

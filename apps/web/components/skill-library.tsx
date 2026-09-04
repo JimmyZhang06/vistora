@@ -34,9 +34,11 @@ export function SkillLibrary() {
   const [filter, setFilter] = useState<LibraryFilter>("mine");
   const [workspaceId, setWorkspaceId] = useState("");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
 
   useEffect(() => {
@@ -55,9 +57,14 @@ export function SkillLibrary() {
   }, [adapter]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!workspaceId) return;
-    adapter.listSkills({ scope: "all", workspaceId, search: query }).then((result) => {
+    adapter.listSkills({ scope: "all", workspaceId, search: debouncedQuery }).then((result) => {
       if (cancelled) return;
       setLoading(false);
       if (result.ok) setSkills(result.data);
@@ -67,7 +74,7 @@ export function SkillLibrary() {
       }
     });
     return () => { cancelled = true; };
-  }, [adapter, query, workspaceId]);
+  }, [adapter, debouncedQuery, reloadToken, workspaceId]);
 
   const visibleSkills = useMemo(() => skills.filter((skill) => {
     if (filter === "mine") return skill.publisher.type !== "system";
@@ -102,7 +109,7 @@ export function SkillLibrary() {
         </div>
         <div className="toolbar">
           <label className="sr-only" htmlFor="skill-search">搜索 Skill</label>
-          <input id="skill-search" className="input" type="search" value={query} onChange={(event) => { setLoading(true); setError(""); setQuery(event.target.value); }} placeholder="搜索名称、发布者或说明" />
+          <input id="skill-search" className="input" type="search" value={query} onChange={(event) => { setQuery(event.target.value); setLoading(true); setError(""); }} placeholder="搜索名称、发布者或说明" />
           <span className="muted" aria-live="polite">{visibleSkills.length} 个 Skill</span>
         </div>
       </div>
@@ -119,7 +126,7 @@ export function SkillLibrary() {
 
         {!loading && error ? (
           <StatePanel code="ERR" title="Skill 列表暂时不可用" description={`${error}。筛选和搜索词会保留。`} error>
-            <button className="button-secondary" type="button" onClick={() => window.location.reload()}>重新载入</button>
+            <button className="button-secondary" type="button" onClick={() => { setLoading(true); setError(""); setReloadToken((value) => value + 1); }}>重新载入</button>
           </StatePanel>
         ) : null}
 

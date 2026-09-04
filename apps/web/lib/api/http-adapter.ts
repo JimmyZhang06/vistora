@@ -26,6 +26,8 @@ import type {
   AssetSegment,
   AssetTag,
   AssetUploadRequest,
+  DocumentVideoCreateRequest,
+  DocumentVideoCreateResult,
   RemoteAssetImportRequest,
   Channel,
   ChannelDraft,
@@ -56,6 +58,9 @@ import type {
   WebpageVideoCapture,
   WebpageVideoMedia,
   WebpageVideoOptions,
+  WebpageVideoPilotFeedback,
+  WebpageVideoPilotFeedbackSaveRequest,
+  WebpageVideoPilotSummary,
   WebpageVideoReviewRequest,
   WebpageVideoScopeReviewRequest,
   WebpageVideoSitePage,
@@ -917,9 +922,12 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         height: typeof file.height === "number" ? file.height : undefined,
         durationMs: typeof file.duration_ms === "number" ? file.duration_ms : undefined,
       } : undefined,
-      source: text(source.id) ? {
-        id: text(source.id), type: text(source.source_type, text(source.type)), locator: text(source.locator) || undefined,
-        provider: text(source.provider) || undefined, attribution: text(source.attribution) || undefined,
+      source: text(source.id) || text(source.locator) || text(source.canonical_url) || text(source.rights_evidence_locator) || text(source.source_url) ? {
+        id: text(source.id) || undefined,
+        type: text(source.source_type, text(source.type, "website")),
+        locator: text(source.locator, text(source.canonical_url, text(source.rights_evidence_locator, text(source.source_url)))) || undefined,
+        provider: text(source.provider, text(source.platform)) || undefined,
+        attribution: text(source.attribution, text(source.author)) || undefined,
         license: text(source.license) || undefined, capturedAt: text(source.captured_at) || undefined,
       } : undefined,
       analysis: this.mapAssetAnalysis(raw.latest_analysis ?? raw.analysis),
@@ -1168,7 +1176,9 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const skills = new Map(skillsResult.data.map((item) => [text(item.id), item]));
     const versions = versionsResult.data.filter((item) => {
       const parent = skills.get(text(item.skill_id));
-      return text(item.state) === "published" && text(parent?.status) === "active";
+      return text(item.state) === "published"
+        && text(parent?.status) === "active"
+        && text(parent?.current_version_id) === text(item.id);
     });
     const pipelineIds = [...new Set(versions.map((item) => text(item.default_pipeline_version_id)).filter(Boolean))];
     return { ok: true, data: {
@@ -1186,9 +1196,108 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         copyrightCompleteAssetCount: optionalNumber(item.copyright_complete_asset_count),
       })),
       voiceProfiles: [], renderPresets: [],
-      skills: versions.map((item) => { const skill = skills.get(text(item.skill_id)) ?? {}; const system = text(skill.publisher_type) === "system"; return { skillId: text(item.skill_id), skillName: text(skill.name), versionId: text(item.id), version: text(item.version), publisher: { id: system ? "system" : text(skill.workspace_id), workspaceId: text(skill.workspace_id), type: system ? "system" : "workspace", displayName: text(skill.publisher_name), verified: system } }; }),
+      skills: versions.map((item) => { const skill = skills.get(text(item.skill_id)) ?? {}; const system = text(skill.publisher_type) === "system"; return { skillId: text(item.skill_id), skillName: text(skill.name), versionId: text(item.id), version: text(item.version), defaultPipelineVersionId: text(item.default_pipeline_version_id) || undefined, publisher: { id: system ? "system" : text(skill.workspace_id), workspaceId: text(skill.workspace_id), type: system ? "system" : "workspace", displayName: text(skill.publisher_name), verified: system } }; }),
       pipelines: pipelineIds.map((id) => ({ id, workspaceId: "", pipelineId: id, name: "Skill 默认 Pipeline", version: "1.0.0", capabilities: [] })),
     } };
+  }
+
+  async createDocumentVideoRun(
+    request: DocumentVideoCreateRequest,
+    key: string,
+  ): Promise<ApiResult<DocumentVideoCreateResult>> {
+    if (
+      !request.file.name.toLowerCase().endsWith(".pdf")
+      || (request.file.type && request.file.type !== "application/pdf")
+      || request.file.size <= 0
+      || request.file.size > 200 * 1024 * 1024
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "DOCUMENT_SOURCE_INVALID",
+          message: "仅接受不超过 200 MiB 的 PDF 文件。",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      const digest = await sha256Hex(request.file);
+      const initiated = await this.request<JsonRecord>("/v1/document-sources", {
+        method: "POST",
+        headers: { "Idempotency-Key": `${key}:source` },
+        body: JSON.stringify({
+          filename: request.file.name,
+          content_type: "application/pdf",
+          byte_size: request.file.size,
+          sha256: digest,
+          rights_confirmed: true,
+        }),
+      });
+      if (!initiated.ok) return initiated;
+      const upload = record(initiated.data.upload);
+      const objectKey = text(initiated.data.object_key);
+      if (!text(upload.url) || !objectKey) {
+        return {
+          ok: false,
+          error: {
+            code: "DOCUMENT_UPLOAD_SESSION_UNAVAILABLE",
+            message: "上传会话不可用或已过期，请重新选择文件并提交。",
+            retryable: false,
+          },
+        };
+      }
+      const uploaded = await this.fetcher(text(upload.url), {
+        method: text(upload.method, "PUT"),
+        headers: record(upload.headers) as Record<string, string>,
+        body: request.file,
+      });
+      if (!uploaded.ok) {
+        return {
+          ok: false,
+          error: {
+            code: "DOCUMENT_UPLOAD_FAILED",
+            message: `PDF 上传失败（${uploaded.status}）。`,
+            retryable: uploaded.status >= 500,
+          },
+        };
+      }
+      const sourceId = text(initiated.data.id);
+      const completed = await this.request<JsonRecord>(
+        `/v1/document-sources/${encodeURIComponent(sourceId)}/complete`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            object_key: objectKey,
+            sha256: digest,
+            content_type: "application/pdf",
+          }),
+        },
+      );
+      if (!completed.ok) return completed;
+      const run = await this.request<JsonRecord>("/v1/document-video/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": `${key}:run` },
+        body: JSON.stringify({
+          source_id: sourceId,
+          topic: request.topic,
+          duration_seconds: request.durationSeconds,
+          aspect_ratio: request.aspectRatio,
+          generated_background_enabled: request.generatedBackgroundEnabled,
+        }),
+      });
+      return run.ok
+        ? { ok: true, data: { sourceId, runId: text(run.data.id) } }
+        : run;
+    } catch (cause) {
+      return {
+        ok: false,
+        error: {
+          code: "DOCUMENT_VIDEO_SUBMISSION_FAILED",
+          message: cause instanceof Error ? cause.message : "文件讲解任务提交失败。",
+          retryable: true,
+        },
+      };
+    }
   }
 
   private mapFullAiBlockers(value: unknown): FullAiBlocker[] {
@@ -1275,7 +1384,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const rawQuote = record(result.data.quote);
     const quote = typeof rawQuote.amount_minor === "number" && text(rawQuote.currency)
       ? {
-          currency: text(rawQuote.currency),
+          currency: text(rawQuote.currency) as "CNY" | "USD",
           amountMinor: number(rawQuote.amount_minor),
           expiresAt: text(rawQuote.expires_at),
         }
@@ -1314,7 +1423,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       },
       spec: this.mapFullAiSpec(record(raw.spec)),
       quote: {
-        currency: text(quote.currency),
+        currency: text(quote.currency) as "CNY" | "USD",
         amountMinor: number(quote.amount_minor),
         expiresAt: text(quote.expires_at),
       },
@@ -1484,6 +1593,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       || text(artifact.url_expires_at)
       || text(screenshot.expires_at)
       || text(artifact.expires_at);
+    const review = nonEmptyRecord(source.review) ?? nonEmptyRecord(screenshot.review);
     return {
       previewUrl: previewUrl || undefined,
       sha256,
@@ -1497,6 +1607,13 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       height,
       capturedAt: capturedAt || undefined,
       expiresAt: expiresAt || undefined,
+      review: review ? {
+        decision: text(review.decision) as "approve" | "request_changes" | "reject",
+        comment: text(review.comment) || undefined,
+        issueCodes: strings(review.issue_codes),
+        reviewedRevision: number(review.reviewed_revision),
+        decidedAt: text(review.decided_at) || undefined,
+      } : undefined,
     };
   }
 
@@ -1520,6 +1637,75 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       captionsUrl: (text(source.captions_url) || text(source.subtitle_url) || undefined),
       mediaType: mediaType || undefined,
       filename: filename || undefined,
+      sha256: text(source.sha256) || text(source.content_hash) || undefined,
+      byteSize: optionalNumber(source.byte_size),
+    };
+  }
+
+  private mapWebpageVideoPilotFeedback(raw: JsonRecord): WebpageVideoPilotFeedback {
+    return {
+      id: text(raw.id),
+      webpageVideoRunId: text(raw.webpage_video_run_id),
+      customerSegment: text(raw.customer_segment),
+      baselineMinutes: number(raw.baseline_minutes),
+      assistedMinutes: number(raw.assisted_minutes),
+      savedMinutes: number(raw.saved_minutes),
+      timeReductionPercent: number(raw.time_reduction_percent),
+      revisionCount: number(raw.revision_count),
+      outcome: text(raw.outcome, "evaluating") as WebpageVideoPilotFeedback["outcome"],
+      satisfactionScore: optionalNumber(raw.satisfaction_score),
+      willingnessToPayHkd: optionalNumber(raw.willingness_to_pay_hkd),
+      notes: text(raw.notes) || undefined,
+      revision: number(raw.revision),
+      createdAt: text(raw.created_at),
+      updatedAt: text(raw.updated_at),
+    };
+  }
+
+  private mapWebpageVideoPilotSummary(raw: JsonRecord): WebpageVideoPilotSummary {
+    return {
+      schemaVersion: text(raw.schema_version, "1.0.0"),
+      generatedAt: text(raw.generated_at),
+      totalRecords: number(raw.total_records),
+      includedRecords: number(raw.included_records),
+      truncated: Boolean(raw.truncated),
+      recommendedMinimumPilots: number(raw.recommended_minimum_pilots, 3),
+      pilotTargetMet: Boolean(raw.pilot_target_met),
+      adoptedCount: number(raw.adopted_count),
+      evaluatingCount: number(raw.evaluating_count),
+      rejectedCount: number(raw.rejected_count),
+      baselineMinutesTotal: number(raw.baseline_minutes_total),
+      assistedMinutesTotal: number(raw.assisted_minutes_total),
+      savedMinutesTotal: number(raw.saved_minutes_total),
+      timeReductionPercent: optionalNumber(raw.time_reduction_percent),
+      averageSatisfactionScore: optionalNumber(raw.average_satisfaction_score),
+      satisfactionResponseCount: number(raw.satisfaction_response_count),
+      averageWillingnessToPayHkd: optionalNumber(raw.average_willingness_to_pay_hkd),
+      willingnessToPayResponseCount: number(raw.willingness_to_pay_response_count),
+      segments: records(raw.segments).map((segment) => {
+        return {
+          customerSegment: text(segment.customer_segment),
+          pilotCount: number(segment.pilot_count),
+          adoptedCount: number(segment.adopted_count),
+          savedMinutes: number(segment.saved_minutes),
+          averageTimeReductionPercent: number(segment.average_time_reduction_percent),
+        };
+      }),
+      items: records(raw.items).map((pilot) => {
+        return {
+          webpageVideoRunId: text(pilot.webpage_video_run_id),
+          customerSegment: text(pilot.customer_segment),
+          baselineMinutes: number(pilot.baseline_minutes),
+          assistedMinutes: number(pilot.assisted_minutes),
+          savedMinutes: number(pilot.saved_minutes),
+          timeReductionPercent: number(pilot.time_reduction_percent),
+          revisionCount: number(pilot.revision_count),
+          outcome: text(pilot.outcome, "evaluating") as WebpageVideoPilotFeedback["outcome"],
+          satisfactionScore: optionalNumber(pilot.satisfaction_score),
+          willingnessToPayHkd: optionalNumber(pilot.willingness_to_pay_hkd),
+          updatedAt: text(pilot.updated_at),
+        };
+      }),
     };
   }
 
@@ -1545,6 +1731,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const failureMessage = failure ? text(failure.message) || text(failure.detail) : "";
     const voiceProfileId = text(video.voice_profile_id) || text(video.voice_id);
     const rawStatus = text(source.status) || text(source.state) || "queued";
+    const pilotFeedback = nonEmptyRecord(source.pilot_feedback);
     return {
       schemaVersion: text(source.schema_version, "1.0.0"),
       id: text(source.id) || text(source.webpage_video_run_id),
@@ -1572,6 +1759,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         || ["discovering", "discovering_pages", "awaiting_scope_review", "capturing_pages", "analyzing_regions", "planning_storyboard", "awaiting_storyboard_review"].includes(rawStatus)
       ),
       finalVideo: this.mapWebpageVideoMedia(source),
+      pilotFeedback: pilotFeedback ? this.mapWebpageVideoPilotFeedback(pilotFeedback) : undefined,
       failure: failureMessage ? {
         code: text(failure?.code) || undefined,
         message: failureMessage,
@@ -1592,6 +1780,11 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       body: JSON.stringify(this.webpageVideoCreatePayload(request)),
     });
     return result.ok ? { ok: true, data: this.mapWebpageVideoRun(result.data) } : result;
+  }
+
+  async getWebpageVideoPilotSummary(): Promise<ApiResult<WebpageVideoPilotSummary>> {
+    const result = await this.request<JsonRecord>("/v1/webpage-video/pilot-summary");
+    return result.ok ? { ok: true, data: this.mapWebpageVideoPilotSummary(result.data) } : result;
   }
 
   async getWebpageVideoRun(runId: string): Promise<ApiResult<WebpageVideoRun>> {
@@ -1649,6 +1842,12 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       reason: text(raw.reason) || text(raw.selection_reason) || text(raw.narration_cue) || undefined,
       previewUrl: text(raw.preview_url) || text(raw.signed_url) || text(artifact.preview_url) || text(artifact.download_url) || undefined,
       durationSeconds: optionalNumber(raw.duration_seconds),
+      motion: (["static", "zoom_in", "zoom_out", "pan"].includes(text(raw.motion))
+        ? text(raw.motion)
+        : "zoom_in") as WebpageVideoStoryboardShot["motion"],
+      transition: (["cut", "fade_black"].includes(text(raw.transition))
+        ? text(raw.transition)
+        : index === 0 ? "cut" : "fade_black") as WebpageVideoStoryboardShot["transition"],
       enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
       order: number(raw.order, number(raw.ordinal, index + 1) - 1),
     };
@@ -1736,9 +1935,38 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         ...(review.comment ? { comment: review.comment } : {}),
         expected_revision: review.expectedRevision,
         expected_sha256: review.expectedSha256,
-        shots: review.shots.map((shot) => ({ id: shot.id, enabled: shot.enabled, order: shot.order })),
+        shots: review.shots.map((shot) => ({
+          id: shot.id,
+          enabled: shot.enabled,
+          order: shot.order,
+          ...(shot.motion ? { motion: shot.motion } : {}),
+          ...(shot.transition ? { transition: shot.transition } : {}),
+        })),
       }),
     });
+  }
+
+  async saveWebpageVideoPilotFeedback(
+    runId: string,
+    feedback: WebpageVideoPilotFeedbackSaveRequest,
+    key: string,
+  ): Promise<ApiResult<WebpageVideoPilotFeedback>> {
+    const result = await this.request<JsonRecord>(`/v1/webpage-video/runs/${encodeURIComponent(runId)}/pilot-feedback`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({
+        customer_segment: feedback.customerSegment,
+        baseline_minutes: feedback.baselineMinutes,
+        assisted_minutes: feedback.assistedMinutes,
+        revision_count: feedback.revisionCount,
+        outcome: feedback.outcome,
+        satisfaction_score: feedback.satisfactionScore ?? null,
+        willingness_to_pay_hkd: feedback.willingnessToPayHkd ?? null,
+        notes: feedback.notes || null,
+        expected_revision: feedback.expectedRevision,
+      }),
+    });
+    return result.ok ? { ok: true, data: this.mapWebpageVideoPilotFeedback(result.data) } : result;
   }
 
   async cancelWebpageVideoRun(runId: string, key: string): Promise<ApiResult<void>> {
@@ -1752,7 +1980,12 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     return {
       workspace_id: draft.workspaceId,
       channel_id: draft.channelId ?? null,
-      input: { topic: draft.topic },
+      input: {
+        topic: draft.topic,
+        ...(draft.researchMode ? { research_mode: draft.researchMode } : {}),
+        ...(draft.inventoryConcepts?.length ? { inventory_concepts: [...new Set(draft.inventoryConcepts)] } : {}),
+        ...(draft.sourceUrls?.length ? { source_urls: [...new Set(draft.sourceUrls)] } : {}),
+      },
       composition: {
         skill_version_id: draft.composition.skillVersionId,
         pipeline_version_id: draft.composition.pipelineVersionId,
@@ -1783,6 +2016,9 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
           copyright_status: draft.videoSettings.assetAcquisition.copyrightStatus,
           rights_confirmed: draft.videoSettings.assetAcquisition.rightsConfirmed,
         },
+        no_asset_draft: {
+          enabled: draft.videoSettings.noAssetDraft.enabled,
+        },
       } : undefined,
     };
   }
@@ -1812,6 +2048,15 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const key = text(raw.node_key, text(raw.step_key, text(raw.key)));
     const type = text(raw.operation, text(raw.step_type, text(raw.type, key)));
     const labels: Record<string, string> = {
+      "document.inspect": "PDF 安全检查",
+      "document.extract": "页面证据提取",
+      "writing.compose.document": "证据脚本生成",
+      "document.storyboard.plan": "分镜与来源映射",
+      "document.materialize": "页面截图固化",
+      "media.augment": "非事实背景准备",
+      "document.timeline.align": "字幕与时间线对齐",
+      "render.composite": "文档画面合成",
+      "quality.evaluate.document": "文档成片质量检查",
       research: "研究与事实核验",
       writing: "脚本写作",
       write: "脚本写作",
@@ -1892,13 +2137,16 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const production = record(snapshot.production_settings);
     const subtitle = record(production.subtitles);
     const acquisition = record(production.asset_acquisition);
+    const noAssetDraft = record(production.no_asset_draft);
     const persistedEstimate = record(raw.estimate);
     const persistedCost = record(persistedEstimate.cost ?? raw.cost);
     const hasCost = typeof persistedCost.amount === "number";
     const hasEmbeddedSteps = Array.isArray(raw.steps);
     const webpageVideoRunId = text(input.webpage_video_run_id);
     const fullAiRunId = text(input.full_ai_run_id);
-    const projectKind: Run["projectKind"] = webpageVideoRunId
+    const projectKind: Run["projectKind"] = text(input.document_source_id)
+      ? "document_video"
+      : webpageVideoRunId
       ? "webpage_video"
       : fullAiRunId || text(snapshot.visual_source_mode) === "generated_only"
         ? "full_ai"
@@ -1927,6 +2175,9 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
         maxAssets: number(acquisition.max_assets, 3),
         copyrightStatus: text(acquisition.copyright_status, "licensed") as VideoSettings["assetAcquisition"]["copyrightStatus"],
         rightsConfirmed: Boolean(acquisition.rights_confirmed),
+      },
+      noAssetDraft: {
+        enabled: Boolean(noAssetDraft.enabled),
       },
     } satisfies VideoSettings : undefined;
     return {
@@ -2141,6 +2392,9 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
             max_assets: 1,
             copyright_status: "public_domain",
             rights_confirmed: false,
+          },
+          no_asset_draft: {
+            enabled: request.videoSettings.noAssetDraft.enabled,
           },
         } : undefined,
       }),

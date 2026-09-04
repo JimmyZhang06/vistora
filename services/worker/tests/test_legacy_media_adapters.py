@@ -721,6 +721,7 @@ class LegacyMediaAdapterTests(unittest.TestCase):
                     "selected_for_narration": "一段需要持续展示并缓慢放大的网页重点区域。",
                     "motion": "zoom_in",
                     "motion_focus": {"x": 0.3, "y": 0.6},
+                    "transition": "fade_black",
                 }
             ],
             10.0,
@@ -730,6 +731,32 @@ class LegacyMediaAdapterTests(unittest.TestCase):
         self.assertEqual(10.0, timeline[0]["duration_seconds"])
         self.assertEqual("zoom_in", timeline[0]["motion"])
         self.assertEqual({"x": 0.3, "y": 0.6}, timeline[0]["motion_focus"])
+        self.assertEqual("opening", timeline[0]["transition"])
+
+    def test_timeline_applies_authored_transition_only_when_asset_changes(self) -> None:
+        timeline = plan_edit_timeline(
+            {"narration": "先看产品全景。接着聚焦核心功能。"},
+            [
+                {
+                    "artifact_id": "overview",
+                    "selected_for_scene": "shot-01",
+                    "selected_for_narration": "先看产品全景。",
+                    "description": "产品全景",
+                    "transition": "cut",
+                },
+                {
+                    "artifact_id": "feature",
+                    "selected_for_scene": "shot-02",
+                    "selected_for_narration": "接着聚焦核心功能。",
+                    "description": "核心功能",
+                    "transition": "fade_black",
+                },
+            ],
+            8.0,
+        )
+
+        self.assertEqual(["overview", "feature"], [item["artifact_id"] for item in timeline])
+        self.assertEqual(["opening", "fade_black"], [item["transition"] for item in timeline])
 
     def test_catalog_selection_publishes_assets_and_truthful_rights_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -955,6 +982,69 @@ class LegacyMediaAdapterTests(unittest.TestCase):
             )
             self.assertEqual(0, rendered.returncode, rendered.stderr.decode(errors="replace"))
             self.assertGreater(output.stat().st_size, 2_000)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg required")
+    def test_image_segment_renders_zoom_out_pan_and_fade_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            generated = subprocess.run(
+                (
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=320x180",
+                    "-frames:v",
+                    "1",
+                    "-y",
+                    str(source),
+                ),
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(0, generated.returncode, generated.stderr.decode(errors="replace"))
+            for motion in ("zoom_out", "pan"):
+                output = root / f"{motion}.mp4"
+                command = _segment_command(
+                    "ffmpeg",
+                    source,
+                    output,
+                    1.2,
+                    width=320,
+                    height=180,
+                    frame_rate=24,
+                    media_fit="blurred_contain",
+                    image_motion=motion,
+                    motion_focus={"x": 0.2, "y": 0.7},
+                    fade_in=True,
+                    fade_out=True,
+                )
+                video_filter = command[command.index("-vf") + 1]
+                self.assertIn("zoompan=", video_filter)
+                self.assertIn("cos(PI*", video_filter)
+                self.assertIn("fade=t=in", video_filter)
+                self.assertIn("fade=t=out", video_filter)
+                if motion == "zoom_out":
+                    self.assertIn("1.10-0.10", video_filter)
+                else:
+                    self.assertIn("z='1.08'", video_filter)
+                rendered = subprocess.run(
+                    command,
+                    cwd=root,
+                    capture_output=True,
+                    check=False,
+                    timeout=60,
+                )
+                self.assertEqual(
+                    0,
+                    rendered.returncode,
+                    rendered.stderr.decode(errors="replace"),
+                )
+                self.assertGreater(output.stat().st_size, 2_000)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_renderer_executes_variable_timeline_and_publishes_edit_plan(self) -> None:

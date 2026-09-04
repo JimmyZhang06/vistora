@@ -5,6 +5,7 @@ import Image from "next/image";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFrameFactoryAdapter, type Asset, type AssetPoster, type AssetPreview, type AssetSegment } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
 
 function formatBytes(bytes = 0) {
@@ -52,6 +53,7 @@ function isEvidenceBackedSafe(segment: AssetSegment) {
 }
 
 export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId: string }) {
+  const { confirm, confirmationDialog } = useConfirmDialog();
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const [asset, setAsset] = useState<Asset | null>(null);
   const [preview, setPreview] = useState<AssetPreview | null>(null);
@@ -154,7 +156,8 @@ export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId
   }
 
   async function review(decision: "approve" | "reject") {
-    if (!asset || offline || (decision === "reject" && !window.confirm("确认拒绝并隔离此素材？"))) return;
+    if (!asset || offline) return;
+    if (decision === "reject" && !await confirm({ title: "拒绝并隔离素材", description: "该素材会离开可用集合，但审核记录会被保留。", confirmLabel: "确认拒绝", tone: "danger" })) return;
     setBusy(true); setNotice("正在提交审核决定…");
     const reviewRequest = { decision, comment: reviewComment };
     const operation = mutationKey("review-asset", reviewRequest);
@@ -176,7 +179,7 @@ export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId
   }
 
   async function disable() {
-    if (!asset || offline || !window.confirm("确认禁用此素材？素材会软删除，可稍后恢复。")) return;
+    if (!asset || offline || !await confirm({ title: "禁用素材", description: "素材会被软删除并从可用集合移除，历史引用仍保留且稍后可以恢复。", confirmLabel: "确认禁用", tone: "danger" })) return;
     setBusy(true); setNotice("正在禁用…");
     const operation = mutationKey("delete-asset");
     const result = await adapter.deleteAsset(assetId, asset.revision, operation.key);
@@ -187,7 +190,7 @@ export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId
   }
 
   async function restore() {
-    if (!asset || offline || !window.confirm("确认恢复此素材？恢复后仍需重新满足所有门禁。")) return;
+    if (!asset || offline || !await confirm({ title: "恢复素材", description: "恢复后仍需重新通过扫描、分析、版权和人工审核门禁。", confirmLabel: "确认恢复" })) return;
     setBusy(true); setNotice("正在恢复…");
     const operation = mutationKey("restore-asset");
     const result = await adapter.restoreAsset(assetId, asset.revision, operation.key);
@@ -283,5 +286,6 @@ export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId
         </section>
       </aside>
     </div>
+    {confirmationDialog}
   </div>;
 }

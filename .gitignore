@@ -28,7 +28,13 @@ src/agent/blockchain/config.json
 /src/_corpus/
 /src/ip-skills/**/_research/
 
+# Private application material and generated submission packages
+/docs/application/
+/docs/HKSTP_IDEATION_APPLICATION_MASTER_BRIEF.md
+
 # Test, build, and delivery artifacts
+/.chart-data-*/
+/.codex-tmp/
 /test-results/
 /playwright-report/
 /coverage/

@@ -730,3 +730,5 @@ yarl==1.24.5 \
     --hash=sha256:ff330d3c30db4eb6b01d79e29d2d0b407a7ecad39cfd9ec993ece57396a2ec0d \
     --hash=sha256:ff405d91509d88e8d44129cd87b18d70acd1f0c1aeabd7bc3c46792b1fe2acba \
     --hash=sha256:ffcd54362564dc1a30fb74d8b8a6e5a6b11ebd5e27266adc3b7427a21a6c9104
+pypdf==6.16.1 \
+    --hash=sha256:63fec31c4092ae50b6729beedcb469055b60d20c834bde1c402df241f371f644

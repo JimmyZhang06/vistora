@@ -165,6 +165,27 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/pilot-summary:
+    get:
+      tags: [Webpage Video]
+      operationId: getWebpageVideoPilotSummary
+      summary: Aggregate privacy-minimized pilot evidence for application review
+      x-required-permission: url_capture:read
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        '200':
+          description: Workspace-scoped pilot evidence summary
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpagePilotSummary' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/webpage-video/runs/{webpage_video_run_id}:
     parameters:
       - $ref: '#/components/parameters/WorkspaceHeader'
@@ -316,6 +337,42 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebpageVideoRun' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/webpage-video/runs/{webpage_video_run_id}/pilot-feedback:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - $ref: '#/components/parameters/WebpageVideoRunId'
+    post:
+      tags: [Webpage Video]
+      operationId: saveWebpageVideoPilotFeedback
+      summary: Create or revise privacy-minimized pilot outcome evidence
+      x-required-permission: url_capture:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebpagePilotFeedbackSave' }
+      responses:
+        '200':
+          description: Existing pilot feedback revised
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpagePilotFeedback' }
+        '201':
+          description: Pilot feedback created
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebpagePilotFeedback' }
+        '409': { $ref: '#/components/responses/Error' }
+        '412': { $ref: '#/components/responses/Error' }
         default: { $ref: '#/components/responses/Error' }
   /v1/account/capabilities:
     get:
@@ -959,6 +1016,169 @@ paths:
       summary: Initiate a checksum-bound direct media upload
       responses:
         '201': { description: Presigned upload prepared }
+  /v1/document-sources:
+    post:
+      tags: [Document video]
+      operationId: createDocumentSource
+      summary: Initiate an idempotent checksum-bound PDF upload
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentSourceCreate' }
+      responses:
+        '201':
+          description: Presigned immutable upload prepared
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DocumentSource' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-sources/{source_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: source_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Document video]
+      operationId: getDocumentSource
+      responses:
+        '200':
+          description: Workspace-scoped immutable document source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DocumentSource' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-sources/{source_id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: source_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Document video]
+      operationId: completeDocumentSource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentSourceComplete' }
+      responses:
+        '200':
+          description: Upload hash and size verified
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DocumentSource' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-sources/{source_id}/retention:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: source_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Document video]
+      operationId: updateDocumentRetention
+      summary: Revision-fence the minimum retention timestamp before deletion begins
+      x-required-scopes: [assets:write]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentRetentionUpdate' }
+      responses:
+        '200': { description: Retention policy updated }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-sources/{source_id}/legal-hold:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: source_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Document video]
+      operationId: setDocumentLegalHold
+      summary: Apply or release a revision-fenced legal hold and block queued purges
+      x-required-scopes: [assets:review]
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentLegalHoldUpdate' }
+      responses:
+        '200': { description: Legal hold state updated }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-sources/{source_id}/purge-requests:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: source_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Document video]
+      operationId: requestDocumentPurge
+      summary: Freeze a completed source and enqueue durable source-and-derived erasure
+      x-required-scopes: [assets:write]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentPurgeCreate' }
+      responses:
+        '202':
+          description: Durable purge request accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DocumentPurgeRequest' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-purge-requests/{request_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceHeader'
+      - name: request_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Document video]
+      operationId: getDocumentPurgeRequest
+      summary: Read source-and-derived purge progress without exposing object locators
+      x-required-scopes: [assets:read]
+      responses:
+        '200':
+          description: Purge request status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DocumentPurgeRequest' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/document-video/runs:
+    post:
+      tags: [Document video]
+      operationId: createDocumentVideoRun
+      summary: Bind an uploaded PDF version and enqueue the production document DAG
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentVideoRunCreate' }
+      responses:
+        '201': { $ref: '#/components/responses/Run' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/asset-uploads/{asset_id}/complete:
     post:
       tags: [Assets]
@@ -1869,6 +2089,108 @@ components:
       required: true
       schema: { type: string, format: uuid }
   schemas:
+    DocumentSourceCreate:
+      type: object
+      additionalProperties: false
+      required: [filename, content_type, byte_size, sha256, rights_confirmed]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255, pattern: '^[^/\\]+\.[Pp][Dd][Ff]$' }
+        content_type: { type: string, const: application/pdf }
+        byte_size: { type: integer, minimum: 1, maximum: 209715200 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        rights_confirmed: { type: boolean, const: true }
+    DocumentSourceComplete:
+      type: object
+      additionalProperties: false
+      required: [object_key, sha256, content_type]
+      properties:
+        object_key: { type: string, minLength: 1, maxLength: 1024 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        content_type: { type: string, const: application/pdf }
+    DocumentSource:
+      type: object
+      required: [schema_version, id, workspace_id, filename, media_type, byte_size, content_hash, rights_confirmed, status, validation, revision, upload_expires_at, legal_hold, created_at, updated_at]
+      properties:
+        schema_version: { type: string, const: 1.0.0 }
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        filename: { type: string }
+        media_type: { type: string, const: application/pdf }
+        byte_size: { type: integer, minimum: 1, maximum: 209715200 }
+        content_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        rights_confirmed: { type: boolean, const: true }
+        status: { type: string, enum: [uploading, uploaded, rejected, deletion_pending, purging, purged] }
+        validation: { type: object }
+        revision: { type: integer, minimum: 1 }
+        created_by: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        uploaded_at: { type: [string, 'null'], format: date-time }
+        upload_expires_at: { type: string, format: date-time, readOnly: true }
+        retention_until: { type: [string, 'null'], format: date-time }
+        legal_hold: { type: boolean }
+        legal_hold_reason: { type: [string, 'null'], maxLength: 1000 }
+        legal_hold_set_by: { type: [string, 'null'], format: uuid }
+        legal_hold_set_at: { type: [string, 'null'], format: date-time }
+        deletion_requested_at: { type: [string, 'null'], format: date-time }
+        purged_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+        object_key: { type: string, writeOnly: true }
+        upload: { type: object, writeOnly: true }
+    DocumentRetentionUpdate:
+      type: object
+      additionalProperties: false
+      required: [retention_until, reason]
+      properties:
+        retention_until: { type: [string, 'null'], format: date-time }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    DocumentLegalHoldUpdate:
+      type: object
+      additionalProperties: false
+      required: [active, reason]
+      properties:
+        active: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    DocumentPurgeCreate:
+      type: object
+      additionalProperties: false
+      required: [reason, delete_derived, confirmation]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+        delete_derived: { type: boolean, const: true }
+        confirmation: { type: string, const: DELETE }
+    DocumentPurgeRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, workspace_id, source_id, status, reason, delete_derived, attempt_count, max_attempts, next_attempt_at, created_at, updated_at]
+      properties:
+        schema_version: { type: string, const: 1.0.0 }
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, purging, retrying, blocked, failed, succeeded] }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+        delete_derived: { type: boolean, const: true }
+        requested_by: { type: [string, 'null'], format: uuid }
+        attempt_count: { type: integer, minimum: 0 }
+        max_attempts: { type: integer, minimum: 1 }
+        next_attempt_at: { type: string, format: date-time }
+        last_error: { type: [object, 'null'] }
+        source_object_deleted_at: { type: [string, 'null'], format: date-time }
+        derived_objects_deleted_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    DocumentVideoRunCreate:
+      type: object
+      additionalProperties: false
+      required: [source_id, topic]
+      properties:
+        source_id: { type: string, format: uuid }
+        topic: { type: string, minLength: 1, maxLength: 1600 }
+        duration_seconds: { type: integer, minimum: 30, maximum: 600, default: 120 }
+        aspect_ratio: { type: string, enum: ['16:9', '9:16', '1:1'], default: '16:9' }
+        generated_background_enabled: { type: boolean, default: true }
     FullAiVideoSpec:
       type: object
       additionalProperties: false
@@ -1895,7 +2217,7 @@ components:
         ai_disclosure: { type: boolean }
         estimate_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
         max_cost_minor: { type: integer, minimum: 0, maximum: 100000000 }
-        currency: { const: USD }
+        currency: { type: string, enum: [CNY, USD] }
     FullAiBlocker:
       type: object
       additionalProperties: false
@@ -1981,7 +2303,7 @@ components:
               additionalProperties: false
               required: [currency, amount_minor, expires_at]
               properties:
-                currency: { const: USD }
+                currency: { type: string, enum: [CNY, USD] }
                 amount_minor: { type: integer, minimum: 0 }
                 expires_at: { type: string, format: date-time }
         blockers:
@@ -2017,7 +2339,7 @@ components:
           additionalProperties: false
           required: [currency, amount_minor, expires_at]
           properties:
-            currency: { const: USD }
+            currency: { type: string, enum: [CNY, USD] }
             amount_minor: { type: integer, minimum: 0 }
             expires_at: { type: string, format: date-time }
         billing:
@@ -2199,20 +2521,111 @@ components:
       additionalProperties: false
       required: [stage, code, message, retryable]
       properties:
-        stage: { type: string, enum: [pipeline, validate, screenshot, write, materialize, tts, render, quality] }
+        stage: { type: string, enum: [pipeline, validate, screenshot, discover, capture_pages, analyze_regions, storyboard, write, materialize, tts, render, quality] }
         code: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$' }
         message: { type: string }
         retryable: { type: boolean }
+    WebpagePilotFeedbackSave:
+      type: object
+      additionalProperties: false
+      required: [customer_segment, baseline_minutes, assisted_minutes, revision_count, outcome, expected_revision]
+      properties:
+        customer_segment: { type: string, minLength: 1, maxLength: 120 }
+        baseline_minutes: { type: integer, minimum: 1, maximum: 10080 }
+        assisted_minutes: { type: integer, minimum: 1, maximum: 10080 }
+        revision_count: { type: integer, minimum: 0, maximum: 100 }
+        outcome: { type: string, enum: [evaluating, adopted, rejected] }
+        satisfaction_score: { type: [integer, 'null'], minimum: 1, maximum: 5 }
+        willingness_to_pay_hkd: { type: [integer, 'null'], minimum: 0, maximum: 1000000 }
+        notes: { type: [string, 'null'], maxLength: 2000 }
+        expected_revision: { type: integer, minimum: 0 }
+    WebpagePilotFeedback:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, webpage_video_run_id, customer_segment, baseline_minutes, assisted_minutes, saved_minutes, time_reduction_percent, revision_count, outcome, satisfaction_score, willingness_to_pay_hkd, notes, revision, created_by, created_at, updated_at]
+      properties:
+        schema_version: { const: 1.0.0 }
+        id: { type: string, format: uuid }
+        webpage_video_run_id: { type: string, format: uuid }
+        customer_segment: { type: string }
+        baseline_minutes: { type: integer, minimum: 1 }
+        assisted_minutes: { type: integer, minimum: 1 }
+        saved_minutes: { type: integer }
+        time_reduction_percent: { type: number }
+        revision_count: { type: integer, minimum: 0 }
+        outcome: { type: string, enum: [evaluating, adopted, rejected] }
+        satisfaction_score: { type: [integer, 'null'], minimum: 1, maximum: 5 }
+        willingness_to_pay_hkd: { type: [integer, 'null'], minimum: 0 }
+        notes: { type: [string, 'null'] }
+        revision: { type: integer, minimum: 1 }
+        created_by: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WebpagePilotSummaryItem:
+      type: object
+      additionalProperties: false
+      required: [webpage_video_run_id, customer_segment, baseline_minutes, assisted_minutes, saved_minutes, time_reduction_percent, revision_count, outcome, satisfaction_score, willingness_to_pay_hkd, updated_at]
+      properties:
+        webpage_video_run_id: { type: string, format: uuid }
+        customer_segment: { type: string }
+        baseline_minutes: { type: integer, minimum: 1 }
+        assisted_minutes: { type: integer, minimum: 1 }
+        saved_minutes: { type: integer }
+        time_reduction_percent: { type: number }
+        revision_count: { type: integer, minimum: 0 }
+        outcome: { type: string, enum: [evaluating, adopted, rejected] }
+        satisfaction_score: { type: [integer, 'null'], minimum: 1, maximum: 5 }
+        willingness_to_pay_hkd: { type: [integer, 'null'], minimum: 0 }
+        updated_at: { type: string, format: date-time }
+    WebpagePilotSegmentSummary:
+      type: object
+      additionalProperties: false
+      required: [customer_segment, pilot_count, adopted_count, saved_minutes, average_time_reduction_percent]
+      properties:
+        customer_segment: { type: string }
+        pilot_count: { type: integer, minimum: 1 }
+        adopted_count: { type: integer, minimum: 0 }
+        saved_minutes: { type: integer }
+        average_time_reduction_percent: { type: number }
+    WebpagePilotSummary:
+      type: object
+      additionalProperties: false
+      required: [schema_version, generated_at, total_records, included_records, truncated, recommended_minimum_pilots, pilot_target_met, adopted_count, evaluating_count, rejected_count, baseline_minutes_total, assisted_minutes_total, saved_minutes_total, time_reduction_percent, average_satisfaction_score, satisfaction_response_count, average_willingness_to_pay_hkd, willingness_to_pay_response_count, segments, items]
+      properties:
+        schema_version: { const: 1.0.0 }
+        generated_at: { type: string, format: date-time }
+        total_records: { type: integer, minimum: 0 }
+        included_records: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        recommended_minimum_pilots: { type: integer, const: 3 }
+        pilot_target_met: { type: boolean }
+        adopted_count: { type: integer, minimum: 0 }
+        evaluating_count: { type: integer, minimum: 0 }
+        rejected_count: { type: integer, minimum: 0 }
+        baseline_minutes_total: { type: integer, minimum: 0 }
+        assisted_minutes_total: { type: integer, minimum: 0 }
+        saved_minutes_total: { type: integer }
+        time_reduction_percent: { type: [number, 'null'] }
+        average_satisfaction_score: { type: [number, 'null'], minimum: 1, maximum: 5 }
+        satisfaction_response_count: { type: integer, minimum: 0 }
+        average_willingness_to_pay_hkd: { type: [number, 'null'], minimum: 0 }
+        willingness_to_pay_response_count: { type: integer, minimum: 0 }
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/WebpagePilotSegmentSummary' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WebpagePilotSummaryItem' }
     WebpageVideoRun:
       type: object
       additionalProperties: false
-      required: [schema_version, id, project_run_id, workspace_id, status, revision, requested_url, target_url, final_url, spec, capture, final_video, failure, created_at, updated_at]
+      required: [schema_version, id, project_run_id, workspace_id, status, revision, requested_url, target_url, final_url, spec, capture, final_video, pilot_feedback, failure, created_at, updated_at]
       properties:
         schema_version: { const: 1.0.0 }
         id: { type: string, format: uuid }
         project_run_id: { type: string, format: uuid, readOnly: true }
         workspace_id: { type: string, format: uuid }
-        status: { type: string, enum: [queued, validating, capturing, awaiting_capture_review, composing, rendering, quality_check, quality_review_required, cancelling, succeeded, failed, cancelled] }
+        status: { type: string, enum: [queued, validating, capturing, discovering, awaiting_scope_review, capturing_pages, analyzing_regions, awaiting_storyboard_review, awaiting_capture_review, composing, rendering, quality_check, quality_review_required, cancelling, succeeded, failed, cancelled] }
         revision: { type: integer, minimum: 0 }
         requested_url: { type: string, format: uri }
         target_url: { type: string, format: uri }
@@ -2223,6 +2636,10 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/WebpageArtifact'
+        pilot_feedback:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WebpagePilotFeedback'
         failure:
           oneOf:
             - type: 'null'
@@ -2293,6 +2710,12 @@ components:
                   id: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
                   enabled: { type: boolean }
                   order: { type: integer, minimum: 1, maximum: 64 }
+                  motion:
+                    type: string
+                    enum: [static, zoom_in, zoom_out, pan]
+                  transition:
+                    type: string
+                    enum: [cut, fade_black]
     AssetStatus:
       type: string
       enum: [processing, quarantined, ready, disabled, deleted]

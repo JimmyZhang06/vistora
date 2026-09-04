@@ -27,6 +27,7 @@ from framefactory.worker.adapters.edl_media import (
 )
 from framefactory.worker.adapters.legacy_media import (
     EdgeSpeechCapability,
+    FFmpegQualityCapability,
     FFmpegRenderCapability,
     _narration_timing_payload,
 )
@@ -43,6 +44,7 @@ from framefactory.worker.config import (
 from framefactory.worker.edl import EdlValidationError, validate_edl
 from framefactory.worker.providers import ProviderArtifact
 from framefactory.worker.retrieval import DatabaseRetrievalCapability, normalize_beats
+from framefactory.worker.retrieval.editorial_fallback import build_editorial_fallback
 from framefactory.worker.retrieval.evidence import (
     hard_constraint_evidence_valid,
     rights_evidence_valid,
@@ -1077,6 +1079,64 @@ class NarrationTimingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TimelineContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_editorial_fallback_uses_the_normal_timeline_contract(self) -> None:
+        storage, _base, script, audio, timing, _manifest, _assets, _payload = (
+            _pipeline_inputs()
+        )
+        script_payload = storage.read_json(script)
+        retrieval_context = _context(
+            script,
+            input_snapshot={
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "production_settings": {
+                            "no_asset_draft": {"enabled": True}
+                        }
+                    }
+                }
+            },
+            step_id="retrieve",
+        )
+        fallback = build_editorial_fallback(
+            retrieval_context,
+            storage,
+            script_artifact=script,
+            beats=normalize_beats(script_payload),
+            reason="no_selected_asset_library",
+        )
+        manifest = next(
+            artifact
+            for artifact in fallback.artifacts
+            if artifact.kind == "candidate_manifest"
+        )
+        assets = tuple(
+            artifact for artifact in fallback.artifacts if artifact.kind == "asset"
+        )
+        timeline_context = _context(
+            script,
+            audio,
+            timing,
+            manifest,
+            *assets,
+            input_snapshot={
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "production_settings": {"frame_rate": 25}
+                    }
+                }
+            },
+            step_id="timeline",
+        )
+
+        result = await TimelineCapability(storage).execute(timeline_context)
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual(2, result.output_summary["selected_assets"])
+        self.assertEqual(
+            ["material_selection", "timeline"],
+            [artifact.kind for artifact in result.artifacts],
+        )
+
     def test_strict_partition_is_stable_for_fractional_shot_lengths(self) -> None:
         shots = _plan_timing_unit(
             {
@@ -1704,7 +1764,8 @@ class GeneratedTimelineAuditTests(unittest.IsolatedAsyncioTestCase):
                 await self._assert_audit_rejected(manifest_mutator=mutate)
 
     async def test_accepted_and_downstream_sets_are_bidirectional(self) -> None:
-        audit_mutation = lambda value: value["jobs"].pop(0)
+        def audit_mutation(value: dict[str, Any]) -> None:
+            value["jobs"].pop(0)
         manifest_mutations: dict[str, Callable[[dict[str, Any]], None]] = {
             "missing candidate": lambda value: value["beats"][0][
                 "candidates"
@@ -2155,6 +2216,131 @@ class EdlValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(storage.read_bytes(rendered.artifacts[0])), 10_000)
         self.assertTrue(rendered.summary_dict()["edl_validated"])
         self.assertEqual(0, rendered.summary_dict()["video_padding_seconds"])
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required"
+    )
+    async def test_ffmpeg_renders_editorial_fallback_as_a_labeled_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "narration.wav"
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                (
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=16000",
+                    "-t",
+                    "2",
+                    "-c:a",
+                    "pcm_s16le",
+                    "-y",
+                    str(audio_path),
+                ),
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr.decode(errors="replace"))
+            storage = MemoryStorage()
+            seed = _context()
+            script_payload = {
+                "title": "Editorial fallback",
+                "narration": "One exact beat.",
+                "beats": [
+                    {
+                        "id": "beat-one",
+                        "sequence": 1,
+                        "narration": "One exact beat.",
+                        "visual_description": "replace with matching footage",
+                        "must_match": [],
+                        "must_not_match": [],
+                    }
+                ],
+            }
+            script = _publish_json(storage, seed, "script", script_payload)
+            audio = storage.publish(
+                seed,
+                ProviderArtifact("audio", "narration.wav", "audio/wav", audio_path.read_bytes()),
+            )
+            timing = _publish_json(
+                storage,
+                seed,
+                "narration_timing",
+                {
+                    "operation": "audio.synthesize",
+                    "duration_seconds": 2.0,
+                    "audio_content_hash": audio.content_hash,
+                    "script_content_hash": script.content_hash,
+                    "source": "native_test_boundary",
+                    "beats": [
+                        {
+                            "id": "beat-one",
+                            "sequence": 1,
+                            "text": "One exact beat.",
+                            "start_seconds": 0.0,
+                            "end_seconds": 2.0,
+                            "estimated": False,
+                        }
+                    ],
+                },
+            )
+            fallback = build_editorial_fallback(
+                _context(script, step_id="retrieve"),
+                storage,
+                script_artifact=script,
+                beats=normalize_beats(script_payload),
+                reason="no_selected_asset_library",
+            )
+            manifest = next(
+                artifact for artifact in fallback.artifacts if artifact.kind == "candidate_manifest"
+            )
+            assets = tuple(artifact for artifact in fallback.artifacts if artifact.kind == "asset")
+            snapshot = {
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "production_settings": {
+                            "resolution": {"width": 320, "height": 180},
+                            "frame_rate": 25,
+                            "subtitles": {"enabled": True},
+                            "no_asset_draft": {"enabled": True},
+                        }
+                    }
+                }
+            }
+            aligned = await TimelineCapability(storage).execute(
+                _context(script, audio, timing, manifest, *assets, input_snapshot=snapshot)
+            )
+            rendered = await FFmpegEdlRenderCapability(
+                LegacyMediaSettings(width=320, height=180, frame_rate=25), storage
+            ).execute(
+                _context(
+                    audio,
+                    timing,
+                    manifest,
+                    *aligned.artifacts,
+                    *assets,
+                    input_snapshot=snapshot,
+                )
+            )
+            quality = await FFmpegQualityCapability(
+                LegacyMediaSettings(width=320, height=180, frame_rate=25), storage
+            ).execute(
+                _context(rendered.artifacts[0], input_snapshot=snapshot, step_id="quality")
+            )
+
+        self.assertGreater(len(storage.read_bytes(rendered.artifacts[0])), 10_000)
+        self.assertEqual("editorial-draft.mp4", rendered.artifacts[0].filename)
+        self.assertEqual("editorial_fallback", rendered.summary_dict()["visual_source_mode"])
+        self.assertTrue(rendered.summary_dict()["replacement_required"])
+        self.assertTrue(quality.requires_review)
+        self.assertIn(
+            "editorial_draft_requires_material_replacement",
+            quality.summary_dict()["risks"],
+        )
 
 
 class CapabilityBindingTests(unittest.TestCase):

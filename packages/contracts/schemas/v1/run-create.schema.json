@@ -61,6 +61,13 @@
         "rights_confirmed": { "type": "boolean" }
       }
     },
+    "NoAssetDraftSettings": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
     "VideoSettings": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -74,7 +81,8 @@
         "media_fit": { "type": ["string", "null"], "enum": ["cover", "contain", null] },
         "frame_rate": { "type": ["integer", "null"], "enum": [24, 25, 30, 50, 60, null] },
         "subtitles": { "$ref": "#/$defs/SubtitleSettings" },
-        "asset_acquisition": { "$ref": "#/$defs/AssetAcquisitionSettings" }
+        "asset_acquisition": { "$ref": "#/$defs/AssetAcquisitionSettings" },
+        "no_asset_draft": { "$ref": "#/$defs/NoAssetDraftSettings" }
       }
     }
   },

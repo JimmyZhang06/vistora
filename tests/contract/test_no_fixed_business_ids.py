@@ -6,7 +6,6 @@ from pathlib import Path
 
 from conftest import CONTRACTS_ROOT, MIGRATIONS_ROOT, SEEDS_ROOT
 
-
 # Kept encoded so the guard does not match its own source if the scan scope grows.
 FORBIDDEN_IDS = tuple(
     bytes.fromhex(value).decode("ascii")

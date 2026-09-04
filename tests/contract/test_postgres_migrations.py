@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 REQUIRED_TABLES = {
     "users",
     "workspaces",
@@ -55,7 +54,7 @@ def _table_body(sql: str, table: str) -> str:
     match = re.search(
         rf"create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?\"?{re.escape(table)}\"?\s*\((.*?)\)\s*;",
         sql,
-        flags=re.I | re.S,
+        flags=re.IGNORECASE | re.DOTALL,
     )
     assert match, f"cannot parse CREATE TABLE {table}"
     return re.sub(r"\s+", " ", match.group(1)).lower()
@@ -65,9 +64,12 @@ def _has_index_covering(sql: str, table: str, required_columns: set[str]) -> boo
     expressions = re.findall(
         rf"create\s+(?:unique\s+)?index\s+[^;]+?\s+on\s+(?:public\.)?\"?{re.escape(table)}\"?\s*(?:using\s+\w+\s*)?\((.*?)\)",
         sql,
-        flags=re.I | re.S,
+        flags=re.IGNORECASE | re.DOTALL,
     )
-    return any(required_columns <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", expr.lower())) for expr in expressions)
+    return any(
+        required_columns <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", expr.lower()))
+        for expr in expressions
+    )
 
 
 def _has_rls_policy(sql: str, table: str) -> bool:
@@ -84,7 +86,7 @@ def _has_rls_policy(sql: str, table: str) -> bool:
     for table_list, loop_body in re.findall(
         r"foreach\s+\w+\s+in\s+array\s+array\[(.*?)\]\s+loop(.*?)end\s+loop",
         sql,
-        flags=re.S,
+        flags=re.DOTALL,
     ):
         if (
             f"'{table}'" in table_list
@@ -95,8 +97,12 @@ def _has_rls_policy(sql: str, table: str) -> bool:
     return False
 
 
-def test_initial_migration_creates_complete_domain_skeleton(created_tables: set[str]) -> None:
-    assert REQUIRED_TABLES <= created_tables, f"missing PostgreSQL tables: {sorted(REQUIRED_TABLES - created_tables)}"
+def test_initial_migration_creates_complete_domain_skeleton(
+    created_tables: set[str],
+) -> None:
+    assert REQUIRED_TABLES <= created_tables, (
+        f"missing PostgreSQL tables: {sorted(REQUIRED_TABLES - created_tables)}"
+    )
 
 
 def test_domain_tables_have_primary_keys_and_foreign_keys(
@@ -119,40 +125,57 @@ def test_domain_tables_have_primary_keys_and_foreign_keys(
     }
     for table, targets in required_references.items():
         body = _table_body(normalized_sql, table)
-        found = set(re.findall(r"references\s+(?:public\.)?\"?([a-z_][a-z0-9_]*)", body))
-        assert targets <= found, f"{table} missing foreign keys to {sorted(targets - found)}"
+        found = set(
+            re.findall(r"references\s+(?:public\.)?\"?([a-z_][a-z0-9_]*)", body)
+        )
+        assert targets <= found, (
+            f"{table} missing foreign keys to {sorted(targets - found)}"
+        )
 
 
-def test_tenant_roots_have_non_null_workspace_ownership_and_rls(normalized_sql: str) -> None:
+def test_tenant_roots_have_non_null_workspace_ownership_and_rls(
+    normalized_sql: str,
+) -> None:
     workspace_body = _table_body(normalized_sql, "workspaces")
-    assert re.search(r"kind\s*=\s*'system'\s+and\s+owner_user_id\s+is\s+null", workspace_body)
-    assert re.search(r"kind\s*<>\s*'system'\s+and\s+owner_user_id\s+is\s+not\s+null", workspace_body)
+    assert re.search(
+        r"kind\s*=\s*'system'\s+and\s+owner_user_id\s+is\s+null", workspace_body
+    )
+    assert re.search(
+        r"kind\s*<>\s*'system'\s+and\s+owner_user_id\s+is\s+not\s+null", workspace_body
+    )
 
     for table in TENANT_ROOT_TABLES:
         body = _table_body(normalized_sql, table)
-        assert re.search(r"workspace_id\s+[^,;]*not\s+null", body), f"{table}.workspace_id must be NOT NULL"
-        assert re.search(r"workspace_id\s+[^,;]*references\s+(?:public\.)?workspaces", body), (
-            f"{table}.workspace_id must reference workspaces"
+        assert re.search(r"workspace_id\s+[^,;]*not\s+null", body), (
+            f"{table}.workspace_id must be NOT NULL"
         )
-        assert re.search(rf"alter\s+table\s+(?:public\.)?{table}\s+enable\s+row\s+level\s+security", normalized_sql), (
-            f"{table} must enable RLS"
-        )
-        assert re.search(rf"create\s+policy\s+[^;]+\s+on\s+(?:public\.)?{table}\b", normalized_sql), (
-            f"{table} needs an explicit workspace authorization policy"
-        )
+        assert re.search(
+            r"workspace_id\s+[^,;]*references\s+(?:public\.)?workspaces", body
+        ), f"{table}.workspace_id must reference workspaces"
+        assert re.search(
+            rf"alter\s+table\s+(?:public\.)?{table}\s+enable\s+row\s+level\s+security",
+            normalized_sql,
+        ), f"{table} must enable RLS"
+        assert re.search(
+            rf"create\s+policy\s+[^;]+\s+on\s+(?:public\.)?{table}\b", normalized_sql
+        ), f"{table} needs an explicit workspace authorization policy"
 
 
-def test_single_workspace_release_keeps_reserved_rls_disabled(normalized_sql: str) -> None:
+def test_single_workspace_release_keeps_reserved_rls_disabled(
+    normalized_sql: str,
+) -> None:
     disable_blocks = [
         (table_list, loop_body)
         for table_list, loop_body in re.findall(
             r"foreach\s+\w+\s+in\s+array\s+array\[(.*?)\]\s+loop(.*?)end\s+loop",
             normalized_sql,
-            flags=re.S,
+            flags=re.DOTALL,
         )
         if "disable row level security" in loop_body
     ]
-    assert disable_blocks, "single-workspace bootstrap must disable reserved RLS policies"
+    assert disable_blocks, (
+        "single-workspace bootstrap must disable reserved RLS policies"
+    )
     disabled_tables = {
         table
         for table_list, _ in disable_blocks
@@ -161,7 +184,9 @@ def test_single_workspace_release_keeps_reserved_rls_disabled(normalized_sql: st
     assert REQUIRED_TABLES <= disabled_tables
 
 
-def test_uniqueness_scopes_versions_membership_and_idempotency(normalized_sql: str) -> None:
+def test_uniqueness_scopes_versions_membership_and_idempotency(
+    normalized_sql: str,
+) -> None:
     expectations = {
         "workspace_members": {"workspace_id", "user_id"},
         "skills": {"workspace_id", "slug"},
@@ -176,9 +201,9 @@ def test_uniqueness_scopes_versions_membership_and_idempotency(normalized_sql: s
             set(re.findall(r"\b[a-z_][a-z0-9_]*\b", group))
             for group in re.findall(r"(?:unique|primary\s+key)\s*\(([^)]+)\)", body)
         ]
-        assert columns in table_unique or _has_index_covering(normalized_sql, table, columns), (
-            f"{table} needs a unique constraint/index on {sorted(columns)}"
-        )
+        assert columns in table_unique or _has_index_covering(
+            normalized_sql, table, columns
+        ), f"{table} needs a unique constraint/index on {sorted(columns)}"
 
 
 def test_version_rows_are_immutable_and_content_addressed(normalized_sql: str) -> None:
@@ -190,10 +215,14 @@ def test_version_rows_are_immutable_and_content_addressed(normalized_sql: str) -
 
     body = _table_body(normalized_sql, "skill_versions")
     assert re.search(r"content_hash\s+[^,;]*not\s+null", body)
-    assert "check" in body and "content_hash" in body, "skill_versions.content_hash needs a digest-format CHECK"
+    assert "check" in body and "content_hash" in body, (
+        "skill_versions.content_hash needs a digest-format CHECK"
+    )
 
 
-def test_skill_version_columns_match_the_declarative_json_contract(normalized_sql: str) -> None:
+def test_skill_version_columns_match_the_declarative_json_contract(
+    normalized_sql: str,
+) -> None:
     skill_body = _table_body(normalized_sql, "skills")
     skill_columns = set(re.findall(r"\b[a-z_][a-z0-9_]*\b", skill_body))
     assert {"ownership_type", "publisher_type", "publisher_name"} <= skill_columns
@@ -213,7 +242,9 @@ def test_skill_version_columns_match_the_declarative_json_contract(normalized_sq
         "output_contract",
         "content_hash",
     }
-    assert expected <= columns, f"skill_versions diverges from JSON Schema: {sorted(expected - columns)}"
+    assert expected <= columns, (
+        f"skill_versions diverges from JSON Schema: {sorted(expected - columns)}"
+    )
     assert re.search(
         r"version\s+text\s+not\s+null\s+check\s*\(\s*version\s*~",
         body,
@@ -223,13 +254,22 @@ def test_skill_version_columns_match_the_declarative_json_contract(normalized_sq
 def test_channel_backend_migration_separates_connections_and_ordered_defaults(
     normalized_sql: str,
 ) -> None:
-    assert "create type channel_status as enum ('active', 'paused', 'archived')" in normalized_sql
+    assert (
+        "create type channel_status as enum ('active', 'paused', 'archived')"
+        in normalized_sql
+    )
     assert "create table platform_connections" in normalized_sql
-    assert "secret_ref text not null" in _table_body(normalized_sql, "platform_connections")
+    assert "secret_ref text not null" in _table_body(
+        normalized_sql, "platform_connections"
+    )
     assert "create table channel_default_asset_libraries" in normalized_sql
-    assert re.search(r"alter\s+table\s+channels[^;]+add\s+column\s+revision", normalized_sql)
+    assert re.search(
+        r"alter\s+table\s+channels[^;]+add\s+column\s+revision", normalized_sql
+    )
     assert "platform_connection_id" in normalized_sql
-    assert "foreign key (workspace_id, platform_connection_id, platform)" in normalized_sql
+    assert (
+        "foreign key (workspace_id, platform_connection_id, platform)" in normalized_sql
+    )
     assert "platform_connection_id is null or platform is not null" in normalized_sql
     assert _has_index_covering(
         normalized_sql, "channels", {"workspace_id", "platform", "handle"}
@@ -250,9 +290,17 @@ def test_channel_backend_migration_separates_connections_and_ordered_defaults(
         "drop constraint if exists "
         "channel_defaults_workspace_id_pipeline_version_id_fkey" in normalized_sql
     )
-    assert "foreign key (skill_version_id) references skill_versions(id)" in normalized_sql
-    assert "foreign key (pipeline_version_id) references pipeline_versions(id)" in normalized_sql
-    assert "create or replace function app.validate_channel_default_versions()" in normalized_sql
+    assert (
+        "foreign key (skill_version_id) references skill_versions(id)" in normalized_sql
+    )
+    assert (
+        "foreign key (pipeline_version_id) references pipeline_versions(id)"
+        in normalized_sql
+    )
+    assert (
+        "create or replace function app.validate_channel_default_versions()"
+        in normalized_sql
+    )
     assert "create trigger channel_defaults_validate_versions" in normalized_sql
     assert "v.state = 'published'" in normalized_sql
     assert "p.status = 'active'" in normalized_sql
@@ -271,8 +319,7 @@ def test_official_skill_forks_can_keep_a_public_system_pipeline(
 ) -> None:
     assert (
         "drop constraint if exists "
-        "skill_versions_workspace_id_default_pipeline_version_id_fkey"
-        in normalized_sql
+        "skill_versions_workspace_id_default_pipeline_version_id_fkey" in normalized_sql
     )
     assert (
         "foreign key (default_pipeline_version_id) "
@@ -323,10 +370,15 @@ def test_full_ai_paid_operations_are_durable_and_never_resubmit_unknown_charges(
         "reconciliation_attempts",
     } <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", operation_body))
     assert "unique (workspace_id, full_ai_run_id, operation_key)" in operation_body
-    assert "unique (workspace_id, full_ai_run_id, scene_key, variant_index)" in operation_body
+    assert (
+        "unique (workspace_id, full_ai_run_id, scene_key, variant_index)"
+        in operation_body
+    )
     assert _has_rls_policy(normalized_sql, "full_ai_runs")
     assert _has_rls_policy(normalized_sql, "full_ai_paid_operations")
-    assert "submit_unknown must be reconciled and cannot be resubmitted" in normalized_sql
+    assert (
+        "submit_unknown must be reconciled and cannot be resubmitted" in normalized_sql
+    )
     assert "full_ai_paid_operations_validate_transition" in normalized_sql
     assert "full_ai_paid_operations_validate_budget" in normalized_sql
     assert "full_ai_paid_operations_aggregate_billing" in normalized_sql
@@ -334,7 +386,10 @@ def test_full_ai_paid_operations_are_durable_and_never_resubmit_unknown_charges(
     assert "full-ai candidate count exceeds the frozen plan" in normalized_sql
     assert "full-ai paid operation exceeds the run budget" in normalized_sql
     assert "definite_rejection" in normalized_sql
-    assert "submitting can be released only after a definite provider rejection" in normalized_sql
+    assert (
+        "submitting can be released only after a definite provider rejection"
+        in normalized_sql
+    )
     assert "full-ai cost and reconciliation counters are monotonic" in normalized_sql
     assert "status = 'reconciliation_required'" in normalized_sql
     assert "full_ai_paid_operations_result_shape" in normalized_sql
@@ -347,16 +402,54 @@ def test_full_ai_paid_operations_are_durable_and_never_resubmit_unknown_charges(
 
 
 def test_recovery_queues_have_claim_and_retry_indexes(normalized_sql: str) -> None:
-    assert _has_index_covering(normalized_sql, "run_steps", {"status", "available_at"}), (
-        "run_steps needs a status/available_at recovery index"
-    )
+    assert _has_index_covering(
+        normalized_sql, "run_steps", {"status", "available_at"}
+    ), "run_steps needs a status/available_at recovery index"
     run_step_body = _table_body(normalized_sql, "run_steps")
     assert {"attempt_count", "max_attempts", "lease_expires_at"} <= set(
         re.findall(r"\b[a-z_][a-z0-9_]*\b", run_step_body)
     ), "run_steps must persist retry counts and an expiring worker lease"
-    assert _has_index_covering(normalized_sql, "outbox_events", {"status", "available_at"}), (
-        "outbox_events needs a dispatch/recovery index"
+    assert _has_index_covering(
+        normalized_sql, "outbox_events", {"status", "available_at"}
+    ), "outbox_events needs a dispatch/recovery index"
+
+
+def test_document_purge_is_retention_gated_leased_and_tenant_scoped(
+    normalized_sql: str,
+) -> None:
+    for column in (
+        "upload_expires_at",
+        "retention_until",
+        "legal_hold",
+        "deletion_requested_at",
+        "purged_at",
+    ):
+        assert re.search(
+            rf"alter\s+table\s+document_sources.*?add\s+column\s+{column}\b",
+            normalized_sql,
+            flags=re.DOTALL,
+        )
+    assert "upload_expires_at set not null" in normalized_sql
+    purge_body = _table_body(normalized_sql, "document_purge_requests")
+    purge_columns = set(re.findall(r"\b[a-z_][a-z0-9_]*\b", purge_body))
+    assert {
+        "workspace_id",
+        "source_id",
+        "idempotency_key",
+        "request_fingerprint",
+        "attempt_count",
+        "max_attempts",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_token",
+        "lease_expires_at",
+    } <= purge_columns
+    assert "unique (workspace_id, idempotency_key)" in purge_body
+    assert "check (delete_derived)" in purge_body
+    assert _has_index_covering(
+        normalized_sql, "document_purge_requests", {"next_attempt_at", "created_at"}
     )
+    assert _has_rls_policy(normalized_sql, "document_purge_requests")
 
 
 def test_artifact_tenant_key_accepts_only_standard_or_browser_capture_namespace(
@@ -374,11 +467,15 @@ def test_artifact_tenant_key_accepts_only_standard_or_browser_capture_namespace(
     assert r"object_key !~ '(^|/)\.\.(/|$)'" in normalized_sql
 
 
-def test_audit_and_outbox_are_workspace_scoped_and_append_only(normalized_sql: str) -> None:
+def test_audit_and_outbox_are_workspace_scoped_and_append_only(
+    normalized_sql: str,
+) -> None:
     for table in ("audit_logs", "outbox_events"):
         body = _table_body(normalized_sql, table)
         assert re.search(r"workspace_id\s+[^,;]*not\s+null", body)
-        assert _has_rls_policy(normalized_sql, table), f"{table} needs RLS and a tenant policy"
-    assert re.search(r"create\s+trigger\s+[^;]+on\s+(?:public\.)?audit_logs\b", normalized_sql), (
-        "audit_logs needs an append-only protection trigger"
-    )
+        assert _has_rls_policy(normalized_sql, table), (
+            f"{table} needs RLS and a tenant policy"
+        )
+    assert re.search(
+        r"create\s+trigger\s+[^;]+on\s+(?:public\.)?audit_logs\b", normalized_sql
+    ), "audit_logs needs an append-only protection trigger"

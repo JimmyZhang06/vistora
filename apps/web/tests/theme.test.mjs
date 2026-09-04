@@ -50,7 +50,24 @@ test("shared controls and intentional dark surfaces preserve readable theme boun
   assert.match(styles, /\.ui-select-popover\s*\{[\s\S]*?var\(--panel\)/);
   assert.match(styles, /\.composition-library-trigger\s*\{[\s\S]*?background:\s*var\(--raised\)/);
   assert.match(styles, /\.method-card:disabled\s*\{[\s\S]*?opacity:\s*1/);
-  for (const source of [composer, batches, channelForm, skillStudio]) {
+  for (const source of [channelForm, skillStudio]) {
     assert.match(source, /theme-inverse/);
   }
+  for (const source of [composer, batches]) {
+    assert.doesNotMatch(source, /theme-inverse/);
+  }
+});
+
+test("primary creation surfaces keep desktop titles on one line and omit decorative hero mockups", async () => {
+  const [styles, aiStudio, webpageStudio] = await Promise.all([
+    readSource("../app/globals.css"),
+    readSource("../components/full-ai-video-studio.tsx"),
+    readSource("../components/webpage-video-studio.tsx"),
+  ]);
+
+  assert.match(styles, /\.create-intro h1\s*\{[\s\S]*?white-space:\s*nowrap/);
+  assert.match(styles, /\.ai-studio-hero-copy h1\s*\{[\s\S]*?white-space:\s*nowrap/);
+  assert.match(styles, /\.web-video-hero h1\s*\{[\s\S]*?white-space:\s*nowrap/);
+  assert.doesNotMatch(aiStudio, /className="ai-storyboard"/);
+  assert.doesNotMatch(webpageStudio, /className="web-video-browser"/);
 });

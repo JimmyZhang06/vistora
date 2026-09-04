@@ -4,7 +4,6 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-
 TOOL = Path(__file__).resolve().parents[1] / "asset_jobs.py"
 SPEC = importlib.util.spec_from_file_location("asset_jobs", TOOL)
 assert SPEC is not None and SPEC.loader is not None

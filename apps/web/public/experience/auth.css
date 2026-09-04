@@ -24,16 +24,26 @@
 }
 
 .auth-brand {
+  display: flex;
+  align-items: center;
+  gap: min(11px, 3vw);
   width: min(172px, 46vw);
+  height: min(43px, 11.5vw);
 }
 
 .auth-brand img {
-  width: 100%;
-  height: auto;
-  filter: invert(1);
+  width: auto;
+  height: 100%;
 }
 
-:root[data-theme="light"] .auth-brand img { filter: none; }
+.auth-brand span {
+  color: var(--color-foreground);
+  font-family: Arial, sans-serif;
+  font-size: min(1.9rem, 8vw);
+  font-weight: 700;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
 
 .auth-intro__copy {
   padding-block: clamp(64px, 14vh, 160px) clamp(40px, 8vh, 96px);

@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,6 +117,7 @@ class ApiClient:
         *,
         payload: dict[str, Any] | None = None,
         idempotency: str | None = None,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
         if not path.startswith("/"):
             raise GateFailure(f"API path must start with '/': {path}")
@@ -126,6 +128,8 @@ class ApiClient:
             data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if idempotency:
             headers["Idempotency-Key"] = idempotency
+        if extra_headers:
+            headers.update(extra_headers)
         request = urllib.request.Request(
             f"{self.base_url}{path}", data=data, headers=headers, method=method
         )
@@ -155,8 +159,15 @@ class ApiClient:
         *,
         payload: dict[str, Any] | None = None,
         idempotency: str | None = None,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
-        response = self.request(method, path, payload=payload, idempotency=idempotency)
+        response = self.request(
+            method,
+            path,
+            payload=payload,
+            idempotency=idempotency,
+            extra_headers=extra_headers,
+        )
         if response.status not in statuses:
             summary = response.body[:500].decode("utf-8", errors="replace")
             if response.status in {404, 405, 501}:

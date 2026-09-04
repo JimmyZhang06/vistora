@@ -17,10 +17,11 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -35,7 +36,6 @@ from release_gate_common import (
     require_env,
     wait_for_run_status,
 )
-
 
 EPHEMERAL_SCOPE_RE = re.compile(r"^ff-assets-[a-z0-9-]{8,64}$")
 

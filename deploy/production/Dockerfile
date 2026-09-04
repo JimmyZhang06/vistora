@@ -72,7 +72,7 @@ CMD ["python", "-m", "framefactory_api.migrate", "--project-root", "/opt/framefa
 
 FROM runtime AS worker
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fontconfig fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fontconfig fonts-noto-cjk poppler-utils \
     && fc-match "Noto Sans CJK SC" | grep -qi "NotoSansCJK" \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=worker-wheels /wheels /wheels

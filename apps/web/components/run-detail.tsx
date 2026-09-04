@@ -44,11 +44,24 @@ function formatDate(value?: string) {
 }
 
 const operationOrder: Record<string, number> = {
+  "document.inspect": 5,
+  "document.extract": 10,
+  "writing.compose.document": 20,
+  "document.storyboard.plan": 25,
+  "document.materialize": 30,
+  "media.augment": 31,
+  "document.timeline.align": 35,
+  "render.composite": 40,
+  "quality.evaluate.document": 50,
   "research.collect": 10,
   "writing.compose": 20,
   "audio.synthesize": 30,
   "media.select": 31,
+  "media.inventory": 25,
+  "media.retrieve": 31,
+  "timeline.align": 35,
   "render.compose": 40,
+  "render.edl": 40,
   "quality.evaluate": 50,
 };
 
@@ -62,9 +75,9 @@ const issueOptions = [
   { code: "factuality.unsupported", label: "事实或来源不充分", operations: ["research.collect", "writing.compose", "quality.evaluate"] },
   { code: "content.structure", label: "结构或表达需要调整", operations: ["writing.compose", "quality.evaluate"] },
   { code: "audio.pronunciation", label: "发音、停顿或语速问题", operations: ["audio.synthesize", "render.compose", "quality.evaluate"] },
-  { code: "visual.mismatch", label: "画面与解说不匹配", operations: ["media.select", "render.compose", "quality.evaluate"] },
-  { code: "rights.unverified", label: "素材授权无法确认", operations: ["media.select", "render.compose", "quality.evaluate"] },
-  { code: "render.defect", label: "字幕、画幅或渲染异常", operations: ["render.compose", "quality.evaluate"] },
+  { code: "visual.mismatch", label: "画面与解说不匹配", operations: ["media.select", "media.retrieve", "timeline.align", "render.compose", "render.edl", "quality.evaluate"] },
+  { code: "rights.unverified", label: "素材授权无法确认", operations: ["media.select", "media.retrieve", "render.compose", "render.edl", "quality.evaluate"] },
+  { code: "render.defect", label: "字幕、画幅或渲染异常", operations: ["render.compose", "render.edl", "quality.evaluate"] },
   { code: "other", label: "其他问题", operations: [] },
 ] as const;
 
@@ -119,6 +132,11 @@ const evidenceLabels: Record<string, string> = {
   action_required: "建议操作",
   blocking_reason: "阻塞原因",
   missing_beat_ids: "缺失镜头",
+  grounding_issues: "事实与镜头证据问题",
+  visual_source_mode: "画面来源模式",
+  replacement_required: "发布前需替换画面",
+  video_plan_artifact_id: "视频计划产物",
+  fallback_reason: "草案降级原因",
 };
 
 function evidenceLabel(name: string): string {
@@ -132,6 +150,14 @@ function evidenceValue(name: string, value: JsonValue): string {
   if (name === "frame_rate") return `${rendered} fps`;
   if (name === "duration_seconds") return `${rendered} 秒`;
   return rendered;
+}
+
+function hasEditorialDraft(run: Run | null): boolean {
+  return Boolean(run?.steps.some((step) =>
+    step.outputSummary?.draft === true
+    && step.outputSummary?.replacement_required === true
+    && ["editorial_fallback", "hybrid_editorial_fallback"].includes(String(step.outputSummary?.visual_source_mode ?? "")),
+  ));
 }
 
 const technicalSummaryFields = new Set([
@@ -214,6 +240,23 @@ function stepStatusMessage(step: RunStep): string {
     return Number(summary.acquired_assets ?? 0) > 0
       ? "候选素材分析已结束，但仍未覆盖全部场景，需要检查素材、版权状态或标签后重试"
       : `缺少 ${Array.isArray(summary.missing_scenes) ? summary.missing_scenes.length : "部分"} 个场景素材，请补充后重试`;
+  }
+  const groundingIssues = Array.isArray(summary?.grounding_issues)
+    ? summary.grounding_issues.filter((issue): issue is string => typeof issue === "string")
+    : [];
+  if (groundingIssues.length > 0) {
+    const locationIssues = groundingIssues.filter((issue) => issue.startsWith("beat_location_evidence_missing:"));
+    const quoteIssues = groundingIssues.filter((issue) => issue === "unsupported_direct_quote");
+    const nonFootageIssues = groundingIssues.filter((issue) => issue.startsWith("non_footage_"));
+    const reasons = [
+      locationIssues.length ? `${locationIssues.length} 个镜头缺少地点证据约束` : "",
+      quoteIssues.length ? "存在来源中找不到的直接引语" : "",
+      nonFootageIssues.length ? `${nonFootageIssues.length} 个镜头把流程说明当成了可剪辑画面` : "",
+    ].filter(Boolean);
+    const durationProblem = summary.duration_fit === false
+      ? "；旁白篇幅也未达到目标时长"
+      : "";
+    return `脚本事实门禁未通过：${reasons.length ? reasons.join("；") : `发现 ${groundingIssues.length} 项证据问题`}${durationProblem}。已停止后续配音与素材匹配，请在审核页退回改写。`;
   }
   if (summary?.duration_fit === false) {
     if (step.type === "writing.compose") {
@@ -355,7 +398,8 @@ export function RunDetail({ runId }: { runId: string }) {
   }
 
   function openReview(step: RunStep) {
-    const needsAssets = step.outputSummary?.blocking_reason === "asset_coverage";
+    const needsAssets = step.outputSummary?.blocking_reason === "asset_coverage"
+      || (hasEditorialDraft(run) && step.key === "quality");
     setReviewing(step);
     setDecision(needsAssets ? "revise" : "approve");
     setComment(needsAssets ? "已补充或重新标注素材，请重新执行场景匹配。" : "");
@@ -418,6 +462,7 @@ export function RunDetail({ runId }: { runId: string }) {
   const finalVideo = run.artifacts.find((artifact) => artifact.kind === "video" && artifact.mediaType === "video/mp4");
   const audio = run.artifacts.find((artifact) => artifact.kind === "audio");
   const selectedAssets = run.artifacts.filter((artifact) => artifact.kind === "asset").length;
+  const editorialDraft = hasEditorialDraft(run);
   const orderedSteps = orderSteps(run.steps);
   const reviewingArtifacts = reviewing?.artifacts ?? [];
   const inputEntries = Object.entries(reviewing?.inputSnapshot ?? {})
@@ -493,20 +538,23 @@ export function RunDetail({ runId }: { runId: string }) {
               playsInline
               preload="metadata"
               src={finalVideo.contentUrl}
-              aria-label="最终成片预览"
+              aria-label={editorialDraft ? "无素材编辑草案预览" : "最终成片预览"}
             />
           </div>
           <div className="run-output-copy">
             <p className="eyebrow">DELIVERABLE</p>
-            <h2 id="run-output-title">最终成片</h2>
-            <p>由真实素材、旁白和渲染流程生成。下载地址为短期签名链接，原始对象保持私有。</p>
+            <h2 id="run-output-title">{editorialDraft ? "无素材编辑草案" : "最终成片"}</h2>
+            <p>{editorialDraft ? "当前画面为程序化编辑卡片，旁白、字幕和镜头时序均已生成。请依据视频计划替换画面并完成复核后再发布。" : "由真实素材、旁白和渲染流程生成。下载地址为短期签名链接，原始对象保持私有。"}</p>
             <dl>
               <div><dt>格式</dt><dd>{finalVideo.mediaType}</dd></div>
               <div><dt>文件大小</dt><dd>{(finalVideo.byteSize / 1024 / 1024).toFixed(1)} MB</dd></div>
-              <div><dt>素材</dt><dd>{selectedAssets} 个已选片段</dd></div>
+              <div><dt>素材</dt><dd>{editorialDraft ? `${selectedAssets} 个临时编辑卡片` : `${selectedAssets} 个已选片段`}</dd></div>
               <div><dt>配音</dt><dd>{audio ? "已合成并混入" : "未发现音频制品"}</dd></div>
             </dl>
-            <a className="button-secondary" href={finalVideo.contentUrl} download={finalVideo.filename}>下载 MP4</a>
+            <div className="button-row">
+              <a className="button-secondary" href={finalVideo.contentUrl} download={finalVideo.filename}>下载 MP4</a>
+              {editorialDraft ? <Link className="button" href={`/create?replace=${encodeURIComponent(run.id)}`}>选择素材并重剪</Link> : null}
+            </div>
           </div>
         </section>
       ) : run.status === "succeeded" ? (
@@ -609,11 +657,12 @@ export function RunDetail({ runId }: { runId: string }) {
           {reviewing.review?.decision ? <section className="review-history"><div className="review-section-heading"><span>05</span><h3>审核记录</h3></div><p><strong>{reviewDecisionLabels[reviewing.review.decision]}</strong> · {formatDate(reviewing.review.decidedAt)}</p>{reviewing.review.issueCodes?.length ? <p>问题分类：{reviewing.review.issueCodes.join("、")}</p> : null}{reviewing.review.comment ? <blockquote>{reviewing.review.comment}</blockquote> : null}<small>审核版本 {reviewing.review.reviewedRevision ?? "—"} · 审核人 {reviewing.review.actorId ?? "系统记录"}</small></section> : null}
 
           {assetCoverageBlocked ? <div className={`alert${acquiredAssets > 0 ? "" : " alert--error"}`}><strong>{acquiredAssets > 0 ? "素材已自动获取，等待分析" : "需要补充可匹配素材"}</strong><p>{acquiredAssets > 0 ? `已自动入库 ${acquiredAssets} 个候选素材。完成安全分析和标签后可退回本步重新匹配。` : "当前步骤没有产生素材清单，不能直接批准进入渲染。请先导入或重新标注相关画面，再选择“退回本步修改”。"}</p><Link className="button-secondary button-small" href="/assets">查看素材库</Link></div> : null}
+          {editorialDraft && reviewing.key === "quality" ? <div className="alert alert--error"><strong>编辑草案不可批准发布</strong><p>占位画面只用于验证旁白、字幕和时序。请从原草案派生一个使用真实素材的新 Run，原审计记录会保持不变。</p><Link className="button-secondary button-small" href={`/create?replace=${encodeURIComponent(run.id)}`}>选择素材并重剪</Link></div> : null}
 
           {reviewableNow ? <div className="review-decision-panel">
             <fieldset className="review-options">
               <legend>审核决定</legend>
-              <label htmlFor="review-decision-approve"><input id="review-decision-approve" type="radio" name="review-decision" value="approve" checked={decision === "approve"} disabled={assetCoverageBlocked} onChange={() => { setDecision("approve"); setIssueCodes([]); }} />批准并继续<small>{assetCoverageBlocked ? "缺少素材清单，当前不可批准" : "接受当前版本与产物"}</small></label>
+              <label htmlFor="review-decision-approve"><input id="review-decision-approve" type="radio" name="review-decision" value="approve" checked={decision === "approve"} disabled={assetCoverageBlocked || (editorialDraft && reviewing.key === "quality")} onChange={() => { setDecision("approve"); setIssueCodes([]); }} />批准并继续<small>{editorialDraft && reviewing.key === "quality" ? "必须先用真实素材派生重剪" : assetCoverageBlocked ? "缺少素材清单，当前不可批准" : "接受当前版本与产物"}</small></label>
               <label htmlFor="review-decision-revise"><input id="review-decision-revise" type="radio" name="review-decision" value="revise" checked={decision === "revise"} onChange={() => setDecision("revise")} />退回本步修改<small>保留旧产物并创建新尝试</small></label>
               <label htmlFor="review-decision-reject"><input id="review-decision-reject" type="radio" name="review-decision" value="reject" checked={decision === "reject"} onChange={() => setDecision("reject")} />拒绝并终止<small>将当前 Run 标记为失败</small></label>
             </fieldset>

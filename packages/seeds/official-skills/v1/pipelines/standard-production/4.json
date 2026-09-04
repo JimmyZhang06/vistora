@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0.0",
+  "id": "3cbfb0d5-69ab-507d-ac62-e9918b3c3462",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "标准素材优先视频生产",
+  "slug": "standard-production",
+  "description": "先冻结并盘点本地素材，再开展事实研究和库存约束写作；脚本完成后仅对缺失 Beat 补采素材，随后生成时间线、EDL 与质检结果。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 4,
+  "nodes": [
+    {
+      "key": "inventory",
+      "operation": "media.inventory",
+      "depends_on": [],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 300,
+      "review_gate": false
+    },
+    {
+      "key": "research",
+      "operation": "research.collect",
+      "depends_on": ["inventory"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "write",
+      "operation": "writing.compose",
+      "depends_on": ["inventory", "research"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "tts",
+      "operation": "audio.synthesize",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "retrieve",
+      "operation": "media.retrieve",
+      "depends_on": ["write"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "timeline",
+      "operation": "timeline.align",
+      "depends_on": ["write", "tts", "retrieve"],
+      "required": true,
+      "maximum_attempts": 3,
+      "timeout_seconds": 900,
+      "review_gate": false
+    },
+    {
+      "key": "render",
+      "operation": "render.edl",
+      "depends_on": ["tts", "retrieve", "timeline"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 3600,
+      "review_gate": false
+    },
+    {
+      "key": "quality",
+      "operation": "quality.evaluate",
+      "depends_on": ["render"],
+      "required": true,
+      "maximum_attempts": 2,
+      "timeout_seconds": 900,
+      "review_gate": false
+    }
+  ],
+  "capability_requirements": [
+    "model.text_generation",
+    "media.inventory",
+    "media.retrieve",
+    "timeline.align",
+    "render.edl",
+    "render.subtitle_sentence"
+  ],
+  "content_hash": "e6e38496571ef96916444e1ba2db4715cb03dc4f2cc53ca5d1bdc8a45116e756",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-28T07:10:00Z",
+  "published_at": "2026-08-28T07:10:00Z"
+}

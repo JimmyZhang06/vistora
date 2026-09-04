@@ -250,9 +250,18 @@ class FFmpegEdlRenderCapability:
                 await _verify_ai_disclosure(ffprobe, output, context, cwd=work)
             data = output.read_bytes()
 
+        fallback = candidate_manifest.get("editorial_fallback")
+        editorial_draft = (
+            isinstance(fallback, Mapping) and fallback.get("enabled") is True
+        )
         artifact = self.storage.publish(
             context,
-            ProviderArtifact("video", "final.mp4", "video/mp4", data),
+            ProviderArtifact(
+                "video",
+                "editorial-draft.mp4" if editorial_draft else "final.mp4",
+                "video/mp4",
+                data,
+            ),
         )
         summary: dict[str, Any] = {
             "provider": "ffmpeg-edl-render",
@@ -265,6 +274,14 @@ class FFmpegEdlRenderCapability:
             "edl_validated": True,
             "video_padding_seconds": 0,
         }
+        if editorial_draft:
+            summary.update(
+                {
+                    "visual_source_mode": "editorial_fallback",
+                    "draft": True,
+                    "replacement_required": True,
+                }
+            )
         if ai_disclosure is not None:
             summary["ai_generated"] = True
             summary["ai_disclosure_metadata"] = ai_disclosure

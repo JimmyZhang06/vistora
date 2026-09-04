@@ -13,6 +13,7 @@ import {
   type SessionContext,
 } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
 import { useI18n } from "@/lib/i18n";
 import { useTheme, type ThemePreference } from "@/lib/theme";
@@ -42,6 +43,7 @@ export function SettingsView() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const { confirm, confirmationDialog } = useConfirmDialog();
 
   const availableScopes = useMemo<Array<{ value: ApiKeyScope; label: string }>>(() => [
     { value: "account:read", label: t("settings.scope.accountRead") },
@@ -91,7 +93,7 @@ export function SettingsView() {
     if (sessionResult.ok) setSession(sessionResult.data);
     if (capabilitiesResult.ok) setCapabilities(capabilitiesResult.data);
     if (profileResult.ok) {
-      setProfile(profileResult.data.value);
+      setProfile({ ...profileResult.data.value, locale: "zh-CN" });
       setProfileEtag(profileResult.data.etag);
     }
     if (preferencesResult.ok) {
@@ -152,7 +154,12 @@ export function SettingsView() {
 
   async function revokeSession(item: AccountSession) {
     const device = deviceLabel(item.userAgent);
-    if (!window.confirm(t("settings.security.sessionRevokeConfirm", { device }))) return;
+    if (!await confirm({
+      title: t("settings.security.sessionRevoke"),
+      description: t("settings.security.sessionRevokeConfirm", { device }),
+      confirmLabel: t("settings.security.sessionRevoke"),
+      tone: "danger",
+    })) return;
     setBusy(`session:${item.id}`);
     const result = await adapter.revokeAccountSession(item.id);
     setBusy("");
@@ -193,7 +200,12 @@ export function SettingsView() {
   }
 
   async function revokeKey(item: AccountApiKey) {
-    if (!window.confirm(t("settings.api.revokeConfirm", { name: item.name }))) return;
+    if (!await confirm({
+      title: t("settings.api.revoke"),
+      description: t("settings.api.revokeConfirm", { name: item.name }),
+      confirmLabel: t("settings.api.revoke"),
+      tone: "danger",
+    })) return;
     setBusy(`key:${item.id}`);
     const result = await adapter.revokeApiKey(item.id);
     setBusy("");
@@ -294,7 +306,7 @@ export function SettingsView() {
                 <div className="form-grid settings-form-grid">
                   <label className="field"><span className="field-label">{t("settings.profile.displayName")}</span><input className="input" required maxLength={160} value={profile.displayName} onChange={(event) => setProfile({ ...profile, displayName: event.target.value })} /></label>
                   <label className="field"><span className="field-label">{t("settings.profile.email")}</span><input className="input" value={profile.email} readOnly aria-describedby="email-readonly" /><small id="email-readonly" className="field-help">{t("settings.profile.emailReadonly")}</small></label>
-                  <div className="field"><span className="field-label">{t("settings.interfaceLanguage")}</span><UiSelect ariaLabel={t("settings.interfaceLanguage")} value={profile.locale} onChange={(nextLocale) => setProfile({ ...profile, locale: nextLocale })}><option value="zh-CN">简体中文</option><option value="en-US">English</option></UiSelect><small className="field-help">{t("settings.interfaceLanguageHelp")}</small></div>
+                  <div className="field"><span className="field-label">{t("settings.interfaceLanguage")}</span><div className="settings-locked-value"><strong>简体中文</strong><small>完整界面语言</small></div><small className="field-help">英文界面将在所有创作与审核页面完成翻译后开放。</small></div>
                   <div className="field"><span className="field-label">{t("settings.profile.timezone")}</span><UiSelect ariaLabel={t("settings.profile.timezone")} value={profile.timezone} onChange={(timezone) => setProfile({ ...profile, timezone })}><option value="Asia/Shanghai">Asia / Shanghai</option><option value="UTC">UTC</option><option value="America/Los_Angeles">America / Los Angeles</option></UiSelect></div>
                 </div>
                 <div className="settings-form-actions">
@@ -392,6 +404,7 @@ export function SettingsView() {
       ) : null}
 
       <p className="settings-save-status" role="status" aria-live="polite">{notice}</p>
+      {confirmationDialog}
     </div>
   );
 }

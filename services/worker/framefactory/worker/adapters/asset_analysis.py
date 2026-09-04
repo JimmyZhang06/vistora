@@ -10,6 +10,8 @@ import mimetypes
 import re
 import shlex
 import shutil
+import socket
+import struct
 import subprocess
 import tempfile
 import urllib.error
@@ -165,6 +167,93 @@ class ClamAVScanner:
         raise AssetPipelineError(
             "malware_scan_failed",
             "malware scanner could not complete",
+            retryable=True,
+        )
+
+
+class ClamdScanner:
+    """Stream one local object to an isolated ClamAV daemon."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 3310,
+        *,
+        timeout_seconds: float = 120.0,
+        maximum_stream_bytes: int = 25 * 1024 * 1024,
+        connector: Callable[..., Any] | None = None,
+    ) -> None:
+        if not host or any(character.isspace() for character in host) or "/" in host:
+            raise ValueError("ClamAV daemon host must be a hostname or IP address")
+        if not 1 <= port <= 65535:
+            raise ValueError("ClamAV daemon port must be between 1 and 65535")
+        if timeout_seconds <= 0:
+            raise ValueError("ClamAV daemon timeout must be positive")
+        if not 1_048_576 <= maximum_stream_bytes <= 1_073_741_824:
+            raise ValueError("ClamAV stream limit must be between 1 MiB and 1 GiB")
+        self.host = host
+        self.port = port
+        self.timeout_seconds = timeout_seconds
+        self.maximum_stream_bytes = maximum_stream_bytes
+        self._connector = connector or socket.create_connection
+
+    def scan(self, path: Path) -> Mapping[str, Any]:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise AssetPipelineError(
+                "malware_scan_failed",
+                "source object could not be read for malware scanning",
+                retryable=True,
+            ) from exc
+        if size > self.maximum_stream_bytes:
+            raise AssetPipelineError(
+                "malware_scan_too_large",
+                "source object exceeds the configured malware scanning limit",
+                retryable=False,
+            )
+        try:
+            with self._connector(
+                (self.host, self.port), timeout=self.timeout_seconds
+            ) as connection:
+                connection.sendall(b"zINSTREAM\0")
+                with path.open("rb") as stream:
+                    while chunk := stream.read(64 * 1024):
+                        connection.sendall(struct.pack("!I", len(chunk)))
+                        connection.sendall(chunk)
+                connection.sendall(struct.pack("!I", 0))
+                response = bytearray()
+                while len(response) <= 4096:
+                    chunk = connection.recv(4097 - len(response))
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\0" in chunk:
+                        break
+        except (OSError, TimeoutError) as exc:
+            raise AssetPipelineError(
+                "malware_scan_failed",
+                "configured malware scanner could not complete",
+                retryable=True,
+            ) from exc
+        if len(response) > 4096 or b"\0" not in response:
+            raise AssetPipelineError(
+                "malware_scan_failed",
+                "configured malware scanner returned an invalid response",
+                retryable=True,
+            )
+        result = bytes(response).split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        if result.endswith(" OK"):
+            return {"status": "clean", "engine": "clamd"}
+        if result.endswith(" FOUND"):
+            raise AssetPipelineError(
+                "malware_detected",
+                "malware scanner rejected the source object",
+                retryable=False,
+            )
+        raise AssetPipelineError(
+            "malware_scan_failed",
+            "configured malware scanner could not complete",
             retryable=True,
         )
 

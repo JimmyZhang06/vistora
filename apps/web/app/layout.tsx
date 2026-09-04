@@ -23,8 +23,8 @@ export const metadata: Metadata = {
   description:
     "创建、测试并复用属于你的内容生产 Skill。",
   icons: {
-    icon: "/brand/vistora-logo.png",
-    shortcut: "/brand/vistora-logo.png",
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
   },
 };
 

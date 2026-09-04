@@ -19,6 +19,8 @@ import type {
   AssetPreview,
   AssetSegment,
   AssetUploadRequest,
+  DocumentVideoCreateRequest,
+  DocumentVideoCreateResult,
   RemoteAssetImportRequest,
   Channel,
   ChannelDraft,
@@ -45,6 +47,9 @@ import type {
   FullAiSpec,
   WebpageVideoCapture,
   WebpageVideoOptions,
+  WebpageVideoPilotFeedback,
+  WebpageVideoPilotFeedbackSaveRequest,
+  WebpageVideoPilotSummary,
   WebpageVideoReviewRequest,
   WebpageVideoScopeReviewRequest,
   WebpageVideoSitePlan,
@@ -856,6 +861,28 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
     }));
   }
 
+  getWebpageVideoPilotSummary(): Promise<ApiResult<WebpageVideoPilotSummary>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      generatedAt: new Date().toISOString(),
+      totalRecords: 0,
+      includedRecords: 0,
+      truncated: false,
+      recommendedMinimumPilots: 3,
+      pilotTargetMet: false,
+      adoptedCount: 0,
+      evaluatingCount: 0,
+      rejectedCount: 0,
+      baselineMinutesTotal: 0,
+      assistedMinutesTotal: 0,
+      savedMinutesTotal: 0,
+      satisfactionResponseCount: 0,
+      willingnessToPayResponseCount: 0,
+      segments: [],
+      items: [],
+    }));
+  }
+
   createWebpageVideoRun(
     request: WebpageVideoRunCreateRequest,
     idempotencyKey: string,
@@ -911,6 +938,17 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
     void review;
     void idempotencyKey;
     return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持镜头板审核。"));
+  }
+
+  saveWebpageVideoPilotFeedback(
+    runId: string,
+    feedback: WebpageVideoPilotFeedbackSaveRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<WebpageVideoPilotFeedback>> {
+    void runId;
+    void feedback;
+    void idempotencyKey;
+    return this.execute(() => this.fail("WEBPAGE_VIDEO_UNAVAILABLE", "模拟环境不支持保存试点反馈。"));
   }
 
   cancelWebpageVideoRun(runId: string, idempotencyKey: string): Promise<ApiResult<void>> {
@@ -1136,6 +1174,22 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
       if (!library) throw new MockFailure({ code: "ASSET_LIBRARY_NOT_FOUND", message: "素材库不存在" });
       library.assetCount += 1;
       library.readyAssetCount = (library.readyAssetCount ?? 0) + 1;
+    });
+  }
+
+  createDocumentVideoRun(
+    request: DocumentVideoCreateRequest,
+    idempotencyKey: string,
+  ): Promise<ApiResult<DocumentVideoCreateResult>> {
+    void request;
+    void idempotencyKey;
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: "DOCUMENT_VIDEO_REQUIRES_CONTROL_API",
+        message: "文件讲解视频必须连接真实 Control API、对象存储和 Worker。",
+        retryable: false,
+      },
     });
   }
 

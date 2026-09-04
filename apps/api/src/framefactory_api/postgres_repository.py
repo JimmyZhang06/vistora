@@ -121,6 +121,12 @@ viewport_height, full_page, artifact_id, sha256, media_type, metadata, error,
 captured_at, created_at
 """
 
+WEBPAGE_PILOT_FEEDBACK_COLUMNS = """
+id, workspace_id, webpage_video_run_id, customer_segment, baseline_minutes,
+assisted_minutes, revision_count, outcome, satisfaction_score,
+willingness_to_pay_hkd, notes, revision, created_by, created_at, updated_at
+"""
+
 TEST_EXECUTION_COLUMNS = """
 id, workspace_id, ownership_type::text AS ownership_type, skill_id, left_version_id,
 right_version_id, topic, inputs, status, evaluator, result, error, created_by, created_at,
@@ -184,6 +190,20 @@ COALESCE((SELECT jsonb_agg(t.name ORDER BY t.name)
   FROM asset_tags at JOIN tags t
     ON t.workspace_id=at.workspace_id AND t.id=at.tag_id
   WHERE at.workspace_id=a.workspace_id AND at.asset_id=a.id), '[]'::jsonb) AS tags
+"""
+
+DOCUMENT_SOURCE_COLUMNS = """
+id, workspace_id, filename, media_type, byte_size, content_hash, storage_provider,
+bucket, object_key, rights_confirmed, status, validation, revision, created_by,
+created_at, uploaded_at, upload_expires_at, retention_until, legal_hold,
+legal_hold_reason, legal_hold_set_by, legal_hold_set_at, deletion_requested_at,
+purged_at, updated_at
+"""
+
+DOCUMENT_PURGE_REQUEST_COLUMNS = """
+id, workspace_id, source_id, status, reason, delete_derived, requested_by,
+attempt_count, max_attempts, next_attempt_at, last_error, source_object_deleted_at,
+derived_objects_deleted_at, created_at, started_at, completed_at, updated_at
 """
 
 CATALOG_SNAPSHOT_COLUMNS = """
@@ -261,6 +281,60 @@ def _asset_from_row(row: Mapping[str, Any]) -> Resource:
             "height": row["height"],
             "duration_ms": row["duration_ms"],
         },
+    }
+
+
+def _document_source_from_row(row: Mapping[str, Any]) -> Resource:
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "filename": row["filename"],
+        "media_type": row["media_type"],
+        "byte_size": int(row["byte_size"]),
+        "content_hash": row["content_hash"],
+        "storage_provider": row["storage_provider"],
+        "bucket": row["bucket"],
+        "object_key": row["object_key"],
+        "rights_confirmed": bool(row["rights_confirmed"]),
+        "status": row["status"],
+        "validation": _json_value(row["validation"]),
+        "revision": int(row["revision"]),
+        "created_by": _uuid(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+        "uploaded_at": _timestamp(row["uploaded_at"]),
+        "upload_expires_at": _timestamp(row["upload_expires_at"]),
+        "retention_until": _timestamp(row.get("retention_until")),
+        "legal_hold": bool(row.get("legal_hold", False)),
+        "legal_hold_reason": row.get("legal_hold_reason"),
+        "legal_hold_set_by": _uuid(row.get("legal_hold_set_by")),
+        "legal_hold_set_at": _timestamp(row.get("legal_hold_set_at")),
+        "deletion_requested_at": _timestamp(row.get("deletion_requested_at")),
+        "purged_at": _timestamp(row.get("purged_at")),
+        "updated_at": _timestamp(row["updated_at"]),
+    }
+
+
+def _document_purge_request_from_row(row: Mapping[str, Any]) -> Resource:
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "source_id": str(row["source_id"]),
+        "status": row["status"],
+        "reason": row["reason"],
+        "delete_derived": bool(row["delete_derived"]),
+        "requested_by": _uuid(row["requested_by"]),
+        "attempt_count": int(row["attempt_count"]),
+        "max_attempts": int(row["max_attempts"]),
+        "next_attempt_at": _timestamp(row["next_attempt_at"]),
+        "last_error": _json_value(row["last_error"]),
+        "source_object_deleted_at": _timestamp(row["source_object_deleted_at"]),
+        "derived_objects_deleted_at": _timestamp(row["derived_objects_deleted_at"]),
+        "created_at": _timestamp(row["created_at"]),
+        "started_at": _timestamp(row["started_at"]),
+        "completed_at": _timestamp(row["completed_at"]),
+        "updated_at": _timestamp(row["updated_at"]),
     }
 
 
@@ -516,6 +590,33 @@ def _webpage_capture_attempt_from_row(row: Mapping[str, Any]) -> Resource:
         "error": _json_value(row["error"]),
         "captured_at": _timestamp(row["captured_at"]),
         "created_at": _timestamp(row["created_at"]),
+    }
+
+
+def _webpage_pilot_feedback_from_row(row: Mapping[str, Any]) -> Resource:
+    baseline = int(row["baseline_minutes"])
+    assisted = int(row["assisted_minutes"])
+    saved = baseline - assisted
+    reduction = round((saved / baseline) * 100, 1) if baseline else 0.0
+    return {
+        "schema_version": "1.0.0",
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "webpage_video_run_id": str(row["webpage_video_run_id"]),
+        "customer_segment": row["customer_segment"],
+        "baseline_minutes": baseline,
+        "assisted_minutes": assisted,
+        "saved_minutes": saved,
+        "time_reduction_percent": reduction,
+        "revision_count": int(row["revision_count"]),
+        "outcome": row["outcome"],
+        "satisfaction_score": row["satisfaction_score"],
+        "willingness_to_pay_hkd": row["willingness_to_pay_hkd"],
+        "notes": row["notes"],
+        "revision": int(row["revision"]),
+        "created_by": _uuid(row["created_by"]),
+        "created_at": _timestamp(row["created_at"]),
+        "updated_at": _timestamp(row["updated_at"]),
     }
 
 
@@ -779,9 +880,7 @@ class PostgreSQLControlRepository:
         self._default_workspace_slug = default_workspace_slug
         self._official_skills = tuple(official_skills)
         self._official_versions = tuple(official_skill_versions)
-        self._official_pipelines = tuple(
-            getattr(official_skill_versions, "pipelines", ())
-        )
+        self._official_pipelines = tuple(getattr(official_skill_versions, "pipelines", ()))
 
     @classmethod
     async def connect(cls, dsn: str, **kwargs: Any) -> PostgreSQLControlRepository:
@@ -933,9 +1032,7 @@ class PostgreSQLControlRepository:
         assert row is not None
         return _profile_from_row(row)
 
-    async def get_creation_preferences(
-        self, workspace_id: UUID, user_id: UUID
-    ) -> Resource:
+    async def get_creation_preferences(self, workspace_id: UUID, user_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {PREFERENCE_COLUMNS} FROM creation_preferences
@@ -980,9 +1077,7 @@ class PostgreSQLControlRepository:
         assert row is not None
         return _preferences_from_row(row)
 
-    async def list_account_sessions(
-        self, workspace_id: UUID, user_id: UUID
-    ) -> list[Resource]:
+    async def list_account_sessions(self, workspace_id: UUID, user_id: UUID) -> list[Resource]:
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
                 f"""SELECT {SESSION_COLUMNS} FROM sessions
@@ -1043,9 +1138,7 @@ class PostgreSQLControlRepository:
         assert row is not None
         return _api_key_from_row(row)
 
-    async def revoke_api_key(
-        self, workspace_id: UUID, user_id: UUID, key_id: UUID
-    ) -> Resource:
+    async def revoke_api_key(self, workspace_id: UUID, user_id: UUID, key_id: UUID) -> Resource:
         del user_id
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
@@ -1094,9 +1187,7 @@ class PostgreSQLControlRepository:
             )
         return [_channel_from_row(row) for row in rows]
 
-    async def get_platform_connection(
-        self, workspace_id: UUID, connection_id: UUID
-    ) -> Resource:
+    async def get_platform_connection(self, workspace_id: UUID, connection_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 """SELECT id, workspace_id, platform, name, status::text AS status
@@ -1139,9 +1230,7 @@ class PostgreSQLControlRepository:
                 create=lambda: self._insert_channel(connection, resource),
             )
 
-    async def _insert_channel(
-        self, connection: _Connection, resource: Resource
-    ) -> Resource:
+    async def _insert_channel(self, connection: _Connection, resource: Resource) -> Resource:
         composition = resource["default_composition"]
         try:
             await connection.execute(
@@ -1193,9 +1282,7 @@ class PostgreSQLControlRepository:
         assert row is not None
         return _channel_from_row(row)
 
-    async def replace_channel(
-        self, resource: Resource, *, expected_revision: int
-    ) -> Resource:
+    async def replace_channel(self, resource: Resource, *, expected_revision: int) -> Resource:
         composition = resource["default_composition"]
         async with self._transaction() as connection:
             current = await connection.fetchrow(
@@ -1491,9 +1578,7 @@ class PostgreSQLControlRepository:
                 "SELECT EXISTS (SELECT 1 FROM runs WHERE skill_version_id = $1)", version_id
             )
             if in_use:
-                raise ConflictError(
-                    "SKILL_VERSION_IN_USE", "The draft is referenced by a Run"
-                )
+                raise ConflictError("SKILL_VERSION_IN_USE", "The draft is referenced by a Run")
             try:
                 await connection.execute("DELETE FROM skill_versions WHERE id = $1", version_id)
             except Exception as exc:
@@ -1508,6 +1593,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[tuple[Resource, Resource], bool]:
         async with self._transaction() as connection:
+
             async def create() -> dict[str, Resource]:
                 created_skill = await self._insert_skill(connection, skill)
                 created_version = await self._insert_version(connection, version)
@@ -1532,9 +1618,7 @@ class PostgreSQLControlRepository:
             )
         return [_run_from_row(row) for row in rows]
 
-    async def get_pipeline_version(
-        self, workspace_id: UUID, version_id: UUID
-    ) -> Resource:
+    async def get_pipeline_version(self, workspace_id: UUID, version_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 """SELECT pv.id, pv.workspace_id, pv.version, pv.state::text AS state,
@@ -1559,9 +1643,7 @@ class PostgreSQLControlRepository:
         return {
             "id": str(row["id"]),
             "workspace_id": str(row["workspace_id"]),
-            "ownership_type": (
-                "system" if row["workspace_kind"] == "system" else "workspace"
-            ),
+            "ownership_type": ("system" if row["workspace_kind"] == "system" else "workspace"),
             "name": row["name"],
             "slug": row["slug"],
             "description": row["description"],
@@ -1604,9 +1686,7 @@ class PostgreSQLControlRepository:
             )
         return [_generation_batch_from_row(row) for row in rows]
 
-    async def get_generation_batch(
-        self, workspace_id: UUID, batch_id: UUID
-    ) -> Resource:
+    async def get_generation_batch(self, workspace_id: UUID, batch_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {_BATCH_AGGREGATE_COLUMNS}
@@ -1686,9 +1766,7 @@ class PostgreSQLControlRepository:
                     "label": row["label"],
                     "input": _json_value(row["input_snapshot"]),
                     "status": row["status"],
-                    "cancellation_requested_at": _timestamp(
-                        row["cancel_requested_at"]
-                    ),
+                    "cancellation_requested_at": _timestamp(row["cancel_requested_at"]),
                     "created_at": _timestamp(row["created_at"]),
                     "updated_at": _timestamp(row["updated_at"]),
                 }
@@ -1707,6 +1785,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def create() -> Resource:
                 await connection.execute(
                     """INSERT INTO generation_batches (
@@ -1786,6 +1865,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def create() -> Resource:
                 await self._insert_run(connection, scheduler_run)
                 row = await connection.fetchrow(
@@ -1848,9 +1928,7 @@ class PostgreSQLControlRepository:
             )
         return None if row is None else _full_ai_run_from_row(row)
 
-    async def get_full_ai_run(
-        self, workspace_id: UUID, full_ai_run_id: UUID
-    ) -> Resource:
+    async def get_full_ai_run(self, workspace_id: UUID, full_ai_run_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {FULL_AI_RUN_COLUMNS}
@@ -1876,6 +1954,7 @@ class PostgreSQLControlRepository:
         active_run_limit: int,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def create() -> Resource:
                 await connection.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 90521))",
@@ -1897,10 +1976,7 @@ class PostgreSQLControlRepository:
                 if active_count >= active_run_limit:
                     raise ConflictError(
                         "WEBPAGE_VIDEO_ACTIVE_RUN_LIMIT_REACHED",
-                        (
-                            "The workspace has reached its concurrent "
-                            "webpage-video Run limit"
-                        ),
+                        ("The workspace has reached its concurrent webpage-video Run limit"),
                         active_runs=active_count,
                         max_active_runs=active_run_limit,
                     )
@@ -1977,9 +2053,7 @@ class PostgreSQLControlRepository:
             raise NotFoundError("webpage_video_run", str(webpage_video_run_id))
         return _webpage_video_run_from_row(row)
 
-    async def append_webpage_capture_attempt(
-        self, resource: Resource
-    ) -> tuple[Resource, bool]:
+    async def append_webpage_capture_attempt(self, resource: Resource) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
             try:
                 row = await connection.fetchrow(
@@ -2075,9 +2149,7 @@ class PostgreSQLControlRepository:
                 "full_page": bool(resource.get("full_page", False)),
                 "metadata": resource.get("metadata", {}),
                 "error": resource.get("error"),
-                "captured_at": _timestamp(
-                    _datetime_value(resource.get("captured_at"))
-                ),
+                "captured_at": _timestamp(_datetime_value(resource.get("captured_at"))),
             }
             if any(existing.get(key) != expected.get(key) for key in comparable_keys):
                 raise ConflictError(
@@ -2102,6 +2174,120 @@ class PostgreSQLControlRepository:
             )
         return [_webpage_capture_attempt_from_row(row) for row in rows]
 
+    async def get_webpage_pilot_feedback(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource | None:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {WEBPAGE_PILOT_FEEDBACK_COLUMNS}
+                FROM webpage_video_pilot_feedback
+                WHERE workspace_id = $1 AND webpage_video_run_id = $2""",
+                workspace_id,
+                webpage_video_run_id,
+            )
+        return None if row is None else _webpage_pilot_feedback_from_row(row)
+
+    async def list_webpage_pilot_feedback(
+        self, workspace_id: UUID, *, limit: int
+    ) -> tuple[list[Resource], int]:
+        async with self._pool.acquire() as connection:
+            total = await connection.fetchval(
+                """SELECT count(*) FROM webpage_video_pilot_feedback
+                WHERE workspace_id = $1""",
+                workspace_id,
+            )
+            rows = await connection.fetch(
+                f"""SELECT {WEBPAGE_PILOT_FEEDBACK_COLUMNS}
+                FROM webpage_video_pilot_feedback
+                WHERE workspace_id = $1
+                ORDER BY updated_at DESC, id DESC
+                LIMIT $2""",
+                workspace_id,
+                limit,
+            )
+        return [_webpage_pilot_feedback_from_row(row) for row in rows], int(total or 0)
+
+    async def upsert_webpage_pilot_feedback_idempotently(
+        self,
+        resource: Resource,
+        *,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        async with self._transaction() as connection:
+            existed = await connection.fetchval(
+                """SELECT true FROM webpage_video_pilot_feedback
+                WHERE workspace_id = $1 AND webpage_video_run_id = $2""",
+                UUID(resource["workspace_id"]),
+                UUID(resource["webpage_video_run_id"]),
+            )
+            if not existed and expected_revision != 0:
+                raise PreconditionFailedError(0, expected_revision)
+
+            async def save() -> Resource:
+                row = await connection.fetchrow(
+                    f"""INSERT INTO webpage_video_pilot_feedback (
+                      id, workspace_id, webpage_video_run_id, customer_segment,
+                      baseline_minutes, assisted_minutes, revision_count, outcome,
+                      satisfaction_score, willingness_to_pay_hkd, notes, revision,
+                      created_by, created_at, updated_at
+                    ) VALUES (
+                      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, $12, $13, $14
+                    )
+                    ON CONFLICT (workspace_id, webpage_video_run_id) DO UPDATE SET
+                      customer_segment = EXCLUDED.customer_segment,
+                      baseline_minutes = EXCLUDED.baseline_minutes,
+                      assisted_minutes = EXCLUDED.assisted_minutes,
+                      revision_count = EXCLUDED.revision_count,
+                      outcome = EXCLUDED.outcome,
+                      satisfaction_score = EXCLUDED.satisfaction_score,
+                      willingness_to_pay_hkd = EXCLUDED.willingness_to_pay_hkd,
+                      notes = EXCLUDED.notes,
+                      revision = webpage_video_pilot_feedback.revision + 1,
+                      updated_at = EXCLUDED.updated_at
+                    WHERE webpage_video_pilot_feedback.revision = $15
+                    RETURNING {WEBPAGE_PILOT_FEEDBACK_COLUMNS}""",
+                    UUID(resource["id"]),
+                    UUID(resource["workspace_id"]),
+                    UUID(resource["webpage_video_run_id"]),
+                    resource["customer_segment"],
+                    int(resource["baseline_minutes"]),
+                    int(resource["assisted_minutes"]),
+                    int(resource["revision_count"]),
+                    resource["outcome"],
+                    resource.get("satisfaction_score"),
+                    resource.get("willingness_to_pay_hkd"),
+                    resource.get("notes"),
+                    UUID(resource["created_by"]),
+                    _datetime_value(resource["created_at"]),
+                    _datetime_value(resource["updated_at"]),
+                    expected_revision,
+                )
+                if row is None:
+                    current_revision = await connection.fetchval(
+                        """SELECT revision FROM webpage_video_pilot_feedback
+                        WHERE workspace_id = $1 AND webpage_video_run_id = $2""",
+                        UUID(resource["workspace_id"]),
+                        UUID(resource["webpage_video_run_id"]),
+                    )
+                    raise PreconditionFailedError(int(current_revision or 0), expected_revision)
+                return _webpage_pilot_feedback_from_row(row)
+
+            saved, created = await self._idempotent(
+                connection,
+                workspace_id=UUID(resource["workspace_id"]),
+                operation_key=operation_key,
+                request_fingerprint=request_fingerprint,
+                request_path=(
+                    f"/v1/webpage-video/runs/{resource['webpage_video_run_id']}/pilot-feedback"
+                ),
+                response_type="webpage_video_pilot_feedback",
+                create=save,
+                response_status=201 if not existed else 200,
+            )
+            return saved, bool(created and not existed)
+
     async def cancel_run_idempotently(
         self,
         workspace_id: UUID,
@@ -2111,6 +2297,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def cancel() -> Resource:
                 current = await connection.fetchrow(
                     f"""SELECT {RUN_COLUMNS} FROM runs
@@ -2239,6 +2426,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def retry() -> Resource:
                 current = await connection.fetchrow(
                     f"""SELECT {RUN_STEP_COLUMNS} FROM run_steps
@@ -2367,6 +2555,7 @@ class PostgreSQLControlRepository:
         review_metadata: Resource | None = None,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def review() -> Resource:
                 current = await connection.fetchrow(
                     f"""SELECT {RUN_STEP_COLUMNS} FROM run_steps
@@ -2403,10 +2592,7 @@ class PostgreSQLControlRepository:
                         status=current["status"],
                     )
                 current_revision = int(current["worker_revision"])
-                if (
-                    expected_revision is not None
-                    and expected_revision != current_revision
-                ):
+                if expected_revision is not None and expected_revision != current_revision:
                     raise ConflictError(
                         "STEP_STATE_CHANGED",
                         "The step changed after its review evidence was loaded",
@@ -2674,9 +2860,7 @@ class PostgreSQLControlRepository:
             )
         return _catalog_snapshot_from_rows(snapshot_row, persisted_items)
 
-    async def get_catalog_snapshot(
-        self, workspace_id: UUID, snapshot_id: UUID
-    ) -> Resource:
+    async def get_catalog_snapshot(self, workspace_id: UUID, snapshot_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {CATALOG_SNAPSHOT_COLUMNS} FROM catalog_snapshots
@@ -2775,9 +2959,7 @@ class PostgreSQLControlRepository:
                 return _library_build_job_from_row(saved), False
         return _library_build_job_from_row(saved), True
 
-    async def get_library_build_job(
-        self, workspace_id: UUID, job_id: UUID
-    ) -> Resource:
+    async def get_library_build_job(self, workspace_id: UUID, job_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {LIBRARY_BUILD_JOB_COLUMNS} FROM library_build_jobs
@@ -2824,9 +3006,7 @@ class PostgreSQLControlRepository:
                 expected_revision,
             )
             if saved is None:  # pragma: no cover - row is locked above
-                raise PreconditionFailedError(
-                    int(current["revision"]) + 1, expected_revision
-                )
+                raise PreconditionFailedError(int(current["revision"]) + 1, expected_revision)
         return _library_build_job_from_row(saved)
 
     async def list_asset_libraries(self, workspace_id: UUID) -> list[Resource]:
@@ -2841,9 +3021,7 @@ class PostgreSQLControlRepository:
             )
         return [_asset_library_from_row(row) for row in rows]
 
-    async def get_asset_library(
-        self, workspace_id: UUID, library_id: UUID
-    ) -> Resource:
+    async def get_asset_library(self, workspace_id: UUID, library_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {ASSET_LIBRARY_COLUMNS}
@@ -2882,9 +3060,360 @@ class PostgreSQLControlRepository:
                     slug=resource["slug"],
                 ) from exc
             raise
-        return await self.get_asset_library(
-            UUID(resource["workspace_id"]), UUID(resource["id"])
-        )
+        return await self.get_asset_library(UUID(resource["workspace_id"]), UUID(resource["id"]))
+
+    async def create_document_source_idempotently(
+        self,
+        resource: Resource,
+        *,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        workspace_id = UUID(resource["workspace_id"])
+
+        async with self._transaction() as connection:
+
+            async def create() -> Resource:
+                row = await connection.fetchrow(
+                    f"""INSERT INTO document_sources (
+                      id, workspace_id, filename, media_type, byte_size, content_hash,
+                      storage_provider, bucket, object_key, rights_confirmed, status,
+                      validation, revision, created_by, created_at, upload_expires_at,
+                      updated_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,'s3',$7,$8,true,'uploading',$9,1,$10,$11,$12,$11)
+                    RETURNING {DOCUMENT_SOURCE_COLUMNS}""",
+                    UUID(resource["id"]),
+                    workspace_id,
+                    resource["filename"],
+                    resource["media_type"],
+                    int(resource["byte_size"]),
+                    resource["content_hash"],
+                    resource["bucket"],
+                    resource["object_key"],
+                    resource["validation"],
+                    UUID(resource["created_by"]),
+                    _datetime_value(resource["created_at"]),
+                    _datetime_value(resource["upload_expires_at"]),
+                )
+                if row is None:  # pragma: no cover - INSERT RETURNING contract
+                    raise RuntimeError("document source insert returned no row")
+                return {
+                    **_document_source_from_row(row),
+                    **({"upload": resource["upload"]} if resource.get("upload") else {}),
+                }
+
+            return await self._idempotent(
+                connection,
+                workspace_id=workspace_id,
+                operation_key=operation_key,
+                request_fingerprint=request_fingerprint,
+                request_path="/v1/document-sources",
+                response_type="document_source",
+                create=create,
+            )
+
+    async def get_document_source(self, workspace_id: UUID, source_id: UUID) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {DOCUMENT_SOURCE_COLUMNS} FROM document_sources
+                WHERE workspace_id=$1 AND id=$2""",
+                workspace_id,
+                source_id,
+            )
+        if row is None:
+            raise NotFoundError("document_source", str(source_id))
+        return _document_source_from_row(row)
+
+    async def complete_document_source(
+        self, workspace_id: UUID, source_id: UUID, *, byte_size: int
+    ) -> Resource:
+        async with self._transaction() as connection:
+            current = await connection.fetchrow(
+                f"""SELECT {DOCUMENT_SOURCE_COLUMNS} FROM document_sources
+                WHERE workspace_id=$1 AND id=$2 FOR UPDATE""",
+                workspace_id,
+                source_id,
+            )
+            if current is None:
+                raise NotFoundError("document_source", str(source_id))
+            if int(current["byte_size"]) != byte_size:
+                raise ConflictError(
+                    "DOCUMENT_SOURCE_SIZE_MISMATCH",
+                    "Uploaded PDF size does not match the initiated source",
+                )
+            if current["status"] == "uploaded":
+                return _document_source_from_row(current)
+            row = await connection.fetchrow(
+                f"""UPDATE document_sources SET status='uploaded', uploaded_at=now(),
+                revision=revision+1, updated_at=now()
+                WHERE workspace_id=$1 AND id=$2 RETURNING {DOCUMENT_SOURCE_COLUMNS}""",
+                workspace_id,
+                source_id,
+            )
+        if row is None:  # pragma: no cover - locked row contract
+            raise RuntimeError("document source completion returned no row")
+        return _document_source_from_row(row)
+
+    async def update_document_retention(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        retention_until: datetime | None,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource:
+        async with self._transaction() as connection:
+            current = await connection.fetchrow(
+                f"""SELECT {DOCUMENT_SOURCE_COLUMNS} FROM document_sources
+                WHERE workspace_id=$1 AND id=$2 FOR UPDATE""",
+                workspace_id,
+                source_id,
+            )
+            if current is None:
+                raise NotFoundError("document_source", str(source_id))
+            if int(current["revision"]) != expected_revision:
+                raise PreconditionFailedError(int(current["revision"]), expected_revision)
+            if current["status"] in {"deletion_pending", "purging", "purged"}:
+                raise ConflictError(
+                    "DOCUMENT_RETENTION_IMMUTABLE",
+                    "Retention cannot change after deletion has started",
+                )
+            row = await connection.fetchrow(
+                f"""UPDATE document_sources
+                SET retention_until=$3, revision=revision+1, updated_at=now()
+                WHERE workspace_id=$1 AND id=$2 AND revision=$4
+                RETURNING {DOCUMENT_SOURCE_COLUMNS}""",
+                workspace_id,
+                source_id,
+                retention_until,
+                expected_revision,
+            )
+            if row is None:  # pragma: no cover - row is locked above
+                raise PreconditionFailedError(int(current["revision"]) + 1, expected_revision)
+            await connection.execute(
+                """INSERT INTO audit_logs (
+                  workspace_id, actor_type, actor_id, action, resource_type,
+                  resource_id, before_data, after_data, metadata
+                ) VALUES ($1,'user',$2,'document.retention.updated','document_source',$3,
+                  jsonb_build_object('retention_until',$4::timestamptz),
+                  jsonb_build_object('retention_until',$5::timestamptz),
+                  jsonb_build_object('reason',$6))""",
+                workspace_id,
+                str(actor_id),
+                source_id,
+                current["retention_until"],
+                retention_until,
+                reason,
+            )
+        return _document_source_from_row(row)
+
+    async def set_document_legal_hold(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        *,
+        active: bool,
+        reason: str,
+        actor_id: UUID,
+        expected_revision: int,
+    ) -> Resource:
+        async with self._transaction() as connection:
+            current = await connection.fetchrow(
+                f"""SELECT {DOCUMENT_SOURCE_COLUMNS} FROM document_sources
+                WHERE workspace_id=$1 AND id=$2 FOR UPDATE""",
+                workspace_id,
+                source_id,
+            )
+            if current is None:
+                raise NotFoundError("document_source", str(source_id))
+            if int(current["revision"]) != expected_revision:
+                raise PreconditionFailedError(int(current["revision"]), expected_revision)
+            if current["status"] in {"purging", "purged"}:
+                raise ConflictError(
+                    "DOCUMENT_PURGE_ALREADY_STARTED",
+                    "Legal hold cannot change after object deletion has started",
+                )
+            status_value = (
+                "uploaded"
+                if active and current["status"] == "deletion_pending"
+                else current["status"]
+            )
+            row = await connection.fetchrow(
+                f"""UPDATE document_sources SET
+                  legal_hold=$3,
+                  legal_hold_reason=CASE WHEN $3 THEN $4 ELSE NULL END,
+                  legal_hold_set_by=CASE WHEN $3 THEN $5 ELSE NULL END,
+                  legal_hold_set_at=CASE WHEN $3 THEN now() ELSE NULL END,
+                  status=$6, revision=revision+1, updated_at=now()
+                WHERE workspace_id=$1 AND id=$2 AND revision=$7
+                RETURNING {DOCUMENT_SOURCE_COLUMNS}""",
+                workspace_id,
+                source_id,
+                active,
+                reason,
+                actor_id,
+                status_value,
+                expected_revision,
+            )
+            if row is None:  # pragma: no cover - row is locked above
+                raise PreconditionFailedError(int(current["revision"]) + 1, expected_revision)
+            if active:
+                await connection.execute(
+                    """UPDATE document_purge_requests SET status='blocked',
+                      last_error=jsonb_build_object(
+                        'code','DOCUMENT_LEGAL_HOLD_ACTIVE',
+                        'message','Deletion was blocked by a legal hold'),
+                      updated_at=now()
+                    WHERE workspace_id=$1 AND source_id=$2
+                      AND status IN ('queued','retrying')""",
+                    workspace_id,
+                    source_id,
+                )
+            await connection.execute(
+                """INSERT INTO audit_logs (
+                  workspace_id, actor_type, actor_id, action, resource_type,
+                  resource_id, before_data, after_data, metadata
+                ) VALUES ($1,'user',$2,$3,'document_source',$4,
+                  jsonb_build_object('legal_hold',$5::boolean),
+                  jsonb_build_object('legal_hold',$6::boolean),
+                  jsonb_build_object('reason',$7))""",
+                workspace_id,
+                str(actor_id),
+                "document.legal_hold.applied" if active else "document.legal_hold.released",
+                source_id,
+                bool(current["legal_hold"]),
+                active,
+                reason,
+            )
+        return _document_source_from_row(row)
+
+    async def request_document_purge_idempotently(
+        self,
+        resource: Resource,
+        *,
+        actor_id: UUID,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]:
+        workspace_id = UUID(resource["workspace_id"])
+        source_id = UUID(resource["source_id"])
+        async with self._transaction() as connection:
+
+            async def create() -> Resource:
+                source = await connection.fetchrow(
+                    f"""SELECT {DOCUMENT_SOURCE_COLUMNS} FROM document_sources
+                    WHERE workspace_id=$1 AND id=$2 FOR UPDATE""",
+                    workspace_id,
+                    source_id,
+                )
+                if source is None:
+                    raise NotFoundError("document_source", str(source_id))
+                if int(source["revision"]) != expected_revision:
+                    raise PreconditionFailedError(int(source["revision"]), expected_revision)
+                if bool(source["legal_hold"]):
+                    raise ConflictError(
+                        "DOCUMENT_LEGAL_HOLD_ACTIVE",
+                        "The document is protected by an active legal hold",
+                    )
+                retention_until = source["retention_until"]
+                if retention_until is not None and retention_until > datetime.now(UTC):
+                    raise ConflictError(
+                        "DOCUMENT_RETENTION_ACTIVE",
+                        "The document has not reached the end of its retention period",
+                        retention_until=_timestamp(retention_until),
+                    )
+                if source["status"] not in {"uploaded", "rejected"}:
+                    raise ConflictError(
+                        "DOCUMENT_NOT_PURGEABLE",
+                        "Only completed, non-purging document sources can be deleted",
+                        status=source["status"],
+                    )
+                active = await connection.fetchrow(
+                    """SELECT id,status::text AS status FROM runs
+                    WHERE workspace_id=$1
+                      AND input_snapshot->>'document_source_id'=$2
+                      AND status NOT IN ('succeeded','failed','cancelled')
+                    ORDER BY created_at LIMIT 1""",
+                    workspace_id,
+                    str(source_id),
+                )
+                if active is not None:
+                    raise ConflictError(
+                        "DOCUMENT_RUN_ACTIVE",
+                        "A document Run must finish or be cancelled before deletion",
+                        run_id=str(active["id"]),
+                        status=active["status"],
+                    )
+                row = await connection.fetchrow(
+                    f"""INSERT INTO document_purge_requests (
+                      id, workspace_id, source_id, status, reason, delete_derived,
+                      idempotency_key, request_fingerprint, requested_by,
+                      attempt_count, max_attempts, next_attempt_at, created_at, updated_at
+                    ) VALUES ($1,$2,$3,'queued',$4,true,$5,$6,$7,0,$8,
+                      GREATEST($9,$10),$9,$9)
+                    RETURNING {DOCUMENT_PURGE_REQUEST_COLUMNS}""",
+                    UUID(resource["id"]),
+                    workspace_id,
+                    source_id,
+                    resource["reason"],
+                    operation_key,
+                    request_fingerprint,
+                    actor_id,
+                    int(resource["max_attempts"]),
+                    _datetime_value(resource["created_at"]),
+                    source["upload_expires_at"],
+                )
+                if row is None:  # pragma: no cover - INSERT RETURNING contract
+                    raise RuntimeError("document purge request insert returned no row")
+                await connection.execute(
+                    """UPDATE document_sources SET status='deletion_pending',
+                      deletion_requested_at=$3, revision=revision+1, updated_at=$3
+                    WHERE workspace_id=$1 AND id=$2""",
+                    workspace_id,
+                    source_id,
+                    _datetime_value(resource["created_at"]),
+                )
+                await connection.execute(
+                    """INSERT INTO audit_logs (
+                      workspace_id, actor_type, actor_id, action, resource_type,
+                      resource_id, after_data, metadata
+                    ) VALUES ($1,'user',$2,'document.purge.requested',
+                      'document_source',$3,
+                      jsonb_build_object('purge_request_id',$4::text,'status','queued'),
+                      jsonb_build_object('reason',$5,'delete_derived',true))""",
+                    workspace_id,
+                    str(actor_id),
+                    source_id,
+                    UUID(resource["id"]),
+                    resource["reason"],
+                )
+                return _document_purge_request_from_row(row)
+
+            return await self._idempotent(
+                connection,
+                workspace_id=workspace_id,
+                operation_key=operation_key,
+                request_fingerprint=request_fingerprint,
+                request_path=f"/v1/document-sources/{source_id}/purge-requests",
+                response_type="document_purge_request",
+                create=create,
+                response_status=202,
+            )
+
+    async def get_document_purge_request(self, workspace_id: UUID, request_id: UUID) -> Resource:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT {DOCUMENT_PURGE_REQUEST_COLUMNS}
+                FROM document_purge_requests WHERE workspace_id=$1 AND id=$2""",
+                workspace_id,
+                request_id,
+            )
+        if row is None:
+            raise NotFoundError("document_purge_request", str(request_id))
+        return _document_purge_request_from_row(row)
 
     async def create_asset_upload(self, resource: Resource) -> Resource:
         workspace_id = UUID(resource["workspace_id"])
@@ -2912,10 +3441,7 @@ class PostgreSQLControlRepository:
                     file["content_hash"],
                 )
                 if existing is not None:
-                    if (
-                        existing["status"] != "processing"
-                        or existing["scan_status"] != "pending"
-                    ):
+                    if existing["status"] != "processing" or existing["scan_status"] != "pending":
                         raise ConflictError(
                             "ASSET_CONTENT_EXISTS",
                             "This media file already exists in the workspace",
@@ -3018,9 +3544,7 @@ class PostgreSQLControlRepository:
                     saved_asset_id,
                     "website" if locator else "upload",
                     locator,
-                    evidence.get("provider")
-                    or source.get("platform")
-                    or "direct-upload",
+                    evidence.get("provider") or source.get("platform") or "direct-upload",
                     evidence.get("attribution") or source.get("author"),
                     evidence.get("license")
                     or source.get("license")
@@ -3294,9 +3818,7 @@ class PostgreSQLControlRepository:
             rows = await connection.fetch(query, workspace_id, asset_id)
         return [_public_database_row(row) for row in rows]
 
-    async def list_asset_import_jobs(
-        self, workspace_id: UUID, library_id: UUID
-    ) -> list[Resource]:
+    async def list_asset_import_jobs(self, workspace_id: UUID, library_id: UUID) -> list[Resource]:
         await self.get_asset_library(workspace_id, library_id)
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
@@ -3322,6 +3844,7 @@ class PostgreSQLControlRepository:
         request_fingerprint: str,
     ) -> tuple[Resource, bool]:
         async with self._transaction() as connection:
+
             async def create() -> Resource:
                 row = await connection.fetchrow(
                     f"""SELECT {ASSET_COLUMNS} FROM assets a JOIN asset_files f
@@ -3337,9 +3860,7 @@ class PostgreSQLControlRepository:
                 if current["revision"] != expected_revision:
                     raise PreconditionFailedError(current["revision"], expected_revision)
                 if current["status"] == "deleted":
-                    raise ConflictError(
-                        "ASSET_DELETED", "Deleted assets cannot be reanalyzed"
-                    )
+                    raise ConflictError("ASSET_DELETED", "Deleted assets cannot be reanalyzed")
                 job_id = uuid5(NAMESPACE_URL, operation_key)
                 now = datetime.now(UTC)
                 await connection.execute(
@@ -3576,9 +4097,7 @@ class PostgreSQLControlRepository:
             )
         return [_test_execution_from_row(row) for row in rows]
 
-    async def get_skill_test_execution(
-        self, workspace_id: UUID, execution_id: UUID
-    ) -> Resource:
+    async def get_skill_test_execution(self, workspace_id: UUID, execution_id: UUID) -> Resource:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""SELECT {TEST_EXECUTION_COLUMNS} FROM skill_evaluations
@@ -3669,9 +4188,7 @@ class PostgreSQLControlRepository:
             channel_id,
             workspace_id,
         )
-        for ordinal, library_id in enumerate(
-            resource["default_composition"]["asset_library_ids"]
-        ):
+        for ordinal, library_id in enumerate(resource["default_composition"]["asset_library_ids"]):
             await connection.execute(
                 """INSERT INTO channel_default_asset_libraries (
                   channel_id, workspace_id, asset_library_id, ordinal
@@ -3841,9 +4358,7 @@ class PostgreSQLControlRepository:
         )
         return _run_from_row(row)
 
-    async def _insert_test_execution(
-        self, connection: _Connection, resource: Resource
-    ) -> Resource:
+    async def _insert_test_execution(self, connection: _Connection, resource: Resource) -> Resource:
         input_snapshot = {
             "topic": resource["topic"],
             "inputs": resource["inputs"],
@@ -3944,9 +4459,7 @@ class PostgreSQLControlRepository:
         )
         if status != current_run["status"]:
             if status == "running":
-                event_type = (
-                    "run.started" if current_run["status"] == "queued" else "run.retrying"
-                )
+                event_type = "run.started" if current_run["status"] == "queued" else "run.retrying"
             else:
                 event_type = f"run.{status}"
             await self._append_run_event(
@@ -4197,12 +4710,17 @@ class PostgreSQLControlRepository:
         pipeline_matches = await connection.fetchval(
             """SELECT EXISTS (
               SELECT 1 FROM pipeline_versions
-              WHERE id = $1 AND workspace_id = $2 AND pipeline_id = $3 AND content_hash = $4
+              WHERE id = $1 AND workspace_id = $2 AND pipeline_id = $3
+                AND content_hash = $4
+                AND graph = $5::jsonb
+                AND capability_requirements = $6::jsonb
             )""",
             UUID(version["id"]),
             UUID(version["workspace_id"]),
             UUID(pipeline_id),
             version["content_hash"],
+            {"nodes": version["nodes"]},
+            version["capability_requirements"],
         )
         if not pipeline_matches:
             raise RuntimeError(
@@ -4224,9 +4742,7 @@ class PostgreSQLControlRepository:
             _datetime_value(version["published_at"]),
         )
 
-    async def _insert_official_skill(
-        self, connection: _Connection, resource: Resource
-    ) -> None:
+    async def _insert_official_skill(self, connection: _Connection, resource: Resource) -> None:
         await connection.execute(
             """INSERT INTO skills (
               id, workspace_id, ownership_type, publisher_type, publisher_name, name, slug,
@@ -4251,9 +4767,7 @@ class PostgreSQLControlRepository:
             _datetime_value(resource["updated_at"]),
         )
 
-    async def _insert_official_version(
-        self, connection: _Connection, resource: Resource
-    ) -> None:
+    async def _insert_official_version(self, connection: _Connection, resource: Resource) -> None:
         await connection.execute(
             """INSERT INTO skill_versions (
               id, workspace_id, ownership_type, skill_id, version, schema_version, state,
@@ -4292,12 +4806,31 @@ class PostgreSQLControlRepository:
         version_matches = await connection.fetchval(
             """SELECT EXISTS (
               SELECT 1 FROM skill_versions
-              WHERE id = $1 AND workspace_id = $2 AND skill_id = $3 AND content_hash = $4
+              WHERE id = $1 AND workspace_id = $2 AND skill_id = $3
+                AND content_hash = $4
+                AND input_schema = $5::jsonb
+                AND research_policy = $6::jsonb
+                AND writing_policy = $7::jsonb
+                AND visual_policy = $8::jsonb
+                AND asset_policy = $9::jsonb
+                AND qc_policy = $10::jsonb
+                AND capability_requirements = $11::jsonb
+                AND output_contract = $12::jsonb
+                AND default_pipeline_version_id IS NOT DISTINCT FROM $13
             )""",
             UUID(resource["id"]),
             UUID(resource["workspace_id"]),
             UUID(resource["skill_id"]),
             resource["content_hash"],
+            resource["input_schema"],
+            resource["research_policy"],
+            resource["writing_policy"],
+            resource["visual_policy"],
+            resource["asset_policy"],
+            resource["qc_policy"],
+            resource["capability_requirements"],
+            resource["output_contract"],
+            self._optional_uuid(resource["default_pipeline_version_id"]),
         )
         if not version_matches:
             raise RuntimeError(
@@ -4353,9 +4886,7 @@ class PostgreSQLControlRepository:
                     "A skill with this slug already exists in the workspace",
                     slug=resource.get("slug"),
                 ) from exc
-            if resource_type == "skill_version" and constraint.endswith(
-                "skill_id_version_key"
-            ):
+            if resource_type == "skill_version" and constraint.endswith("skill_id_version_key"):
                 raise ConflictError(
                     "SKILL_VERSION_NUMBER_EXISTS",
                     "This semantic version already exists for the skill",
@@ -4368,15 +4899,15 @@ class PostgreSQLControlRepository:
                     "SKILL_VERSION_ALREADY_EXISTS",
                     "A skill version with this id already exists",
                 ),
-                 "run": ("RUN_ALREADY_EXISTS", "A Run with this id already exists"),
-                 "webpage_video_run": (
-                     "WEBPAGE_VIDEO_RUN_ALREADY_EXISTS",
-                     "A webpage-video Run with this id already exists",
-                 ),
-                 "webpage_capture_attempt": (
-                     "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
-                     "The immutable webpage capture attempt conflicts with persisted evidence",
-                 ),
+                "run": ("RUN_ALREADY_EXISTS", "A Run with this id already exists"),
+                "webpage_video_run": (
+                    "WEBPAGE_VIDEO_RUN_ALREADY_EXISTS",
+                    "A webpage-video Run with this id already exists",
+                ),
+                "webpage_capture_attempt": (
+                    "WEBPAGE_CAPTURE_ATTEMPT_CONFLICT",
+                    "The immutable webpage capture attempt conflicts with persisted evidence",
+                ),
                 "skill_test_execution": (
                     "SKILL_TEST_ALREADY_EXISTS",
                     "A Skill test execution with this id already exists",

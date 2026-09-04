@@ -78,7 +78,9 @@ export function ChannelDetail({ channelId }: { channelId: string }) {
       adapter.getComposerOptions(session.data.activeWorkspaceId),
     ]);
     if (!channelResult.ok) {
-      setError(channelResult.error.message || "无法读取频道。");
+      setError(channelResult.error.status === 404 || channelResult.error.status === 422
+        ? "这个频道不存在，可能已被归档、删除，或不属于当前创作空间。"
+        : channelResult.error.message || "无法读取频道。");
       setLoading(false);
       return;
     }

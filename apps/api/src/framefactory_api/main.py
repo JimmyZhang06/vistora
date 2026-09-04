@@ -60,6 +60,12 @@ from .models import (
     BatchItemPage,
     ChannelWrite,
     ContextResponse,
+    DocumentLegalHoldUpdate,
+    DocumentPurgeCreate,
+    DocumentRetentionUpdate,
+    DocumentSourceComplete,
+    DocumentSourceCreate,
+    DocumentVideoRunCreate,
     ForkSkillRequest,
     ForkSkillResponse,
     GenerationBatchCreate,
@@ -95,6 +101,9 @@ from .webpage_video import (
     WebpageCaptureResponse,
     WebpageCaptureReviewRequest,
     WebpagePageResponse,
+    WebpagePilotFeedbackResponse,
+    WebpagePilotFeedbackSave,
+    WebpagePilotSummaryResponse,
     WebpageScopeContent,
     WebpageScopeReviewRequest,
     WebpageSiteManifestResponse,
@@ -253,6 +262,16 @@ def _public_asset(resource: Resource) -> Resource:
         for key in ("bucket", "object_key", "content_hash", "storage_provider"):
             file.pop(key, None)
     value.pop("upload", None)
+    return value
+
+
+def _public_document_source(resource: Resource, *, include_upload: bool = False) -> Resource:
+    value = json.loads(json.dumps(resource, default=str))
+    value.pop("bucket", None)
+    value.pop("storage_provider", None)
+    if not include_upload:
+        value.pop("object_key", None)
+        value.pop("upload", None)
     return value
 
 
@@ -795,6 +814,21 @@ def create_app(
         _require_url_capture_permission(context, "url_capture:read")
         return await webpage_video.options(context)
 
+    @app.get(
+        "/v1/webpage-video/pilot-summary",
+        response_model=WebpagePilotSummaryResponse,
+        tags=["Webpage Video"],
+    )
+    async def get_webpage_video_pilot_summary(
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        response: Response,
+        limit: int = Query(default=200, ge=1, le=500),
+    ) -> WebpagePilotSummaryResponse:
+        _require_url_capture_permission(context, "url_capture:read")
+        response.headers["Cache-Control"] = "private, no-store"
+        return await webpage_video.pilot_summary(context, limit=limit)
+
     @app.post(
         "/v1/webpage-video/runs",
         response_model=WebpageVideoRunResponse,
@@ -968,6 +1002,30 @@ def create_app(
             repository=request.app.state.repository,
             storage=request.app.state.object_storage,
         )
+
+    @app.post(
+        "/v1/webpage-video/runs/{webpage_video_run_id}/pilot-feedback",
+        response_model=WebpagePilotFeedbackResponse,
+        tags=["Webpage Video"],
+    )
+    async def save_webpage_video_pilot_feedback(
+        webpage_video_run_id: UUID,
+        command: WebpagePilotFeedbackSave,
+        webpage_video: WebpageVideoServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        response: Response,
+    ) -> WebpagePilotFeedbackResponse:
+        _require_url_capture_permission(context, "url_capture:write")
+        resource, created = await webpage_video.save_pilot_feedback(
+            context, webpage_video_run_id, command, idempotency_key
+        )
+        response.status_code = (
+            status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+        response.headers["ETag"] = f'"{resource.revision}"'
+        response.headers["Cache-Control"] = "private, no-store"
+        return resource
 
     @app.post(
         "/v1/webpage-video/runs/{webpage_video_run_id}/cancel",
@@ -2189,6 +2247,181 @@ def create_app(
         }
 
     @app.post(
+        "/v1/document-sources",
+        status_code=status.HTTP_201_CREATED,
+        tags=["Document video"],
+    )
+    async def create_document_source(
+        command: DocumentSourceCreate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        storage: ObjectStorage | None = request.app.state.object_storage
+        if storage is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_STORAGE_UNAVAILABLE",
+                "Object storage is required for PDF sources",
+            )
+        try:
+            upload = await storage.initiate_upload(
+                context.workspace_id,
+                sha256=command.sha256,
+                content_type=command.content_type,
+            )
+        except ObjectStorageUnavailable as exc:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_STORAGE_UNAVAILABLE",
+                "Could not prepare the immutable PDF upload",
+            ) from exc
+        bucket = getattr(getattr(storage, "settings", None), "bucket", "")
+        if not bucket:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_STORAGE_UNAVAILABLE",
+                "Document storage does not expose a durable bucket",
+            )
+        resource, created = await service.create_document_source(
+            context,
+            command,
+            upload,
+            bucket=bucket,
+            idempotency_key=idempotency_key,
+        )
+        response.headers["Location"] = f"/v1/document-sources/{resource['id']}"
+        return _public_document_source(resource, include_upload=created or "upload" in resource)
+
+    @app.get("/v1/document-sources/{source_id}", tags=["Document video"])
+    async def get_document_source(
+        source_id: UUID,
+        service: ServiceDependency,
+        context: ContextDependency,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:read")
+        return _public_document_source(
+            await service.get_document_source(context, source_id)
+        )
+
+    @app.patch(
+        "/v1/document-sources/{source_id}/retention", tags=["Document video"]
+    )
+    async def update_document_retention(
+        source_id: UUID,
+        command: DocumentRetentionUpdate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        if_match: IfMatchHeader,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        resource = await service.update_document_retention(
+            context, source_id, command, _revision(if_match)
+        )
+        response.headers["ETag"] = _etag(resource)
+        return _public_document_source(resource)
+
+    @app.post(
+        "/v1/document-sources/{source_id}/legal-hold", tags=["Document video"]
+    )
+    async def set_document_legal_hold(
+        source_id: UUID,
+        command: DocumentLegalHoldUpdate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        if_match: IfMatchHeader,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:review")
+        resource = await service.set_document_legal_hold(
+            context, source_id, command, _revision(if_match)
+        )
+        response.headers["ETag"] = _etag(resource)
+        return _public_document_source(resource)
+
+    @app.post(
+        "/v1/document-sources/{source_id}/purge-requests",
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Document video"],
+    )
+    async def request_document_purge(
+        source_id: UUID,
+        command: DocumentPurgeCreate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        if_match: IfMatchHeader,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        resource, _created = await service.request_document_purge(
+            context,
+            source_id,
+            command,
+            expected_revision=_revision(if_match),
+            idempotency_key=idempotency_key,
+        )
+        response.headers["Location"] = f"/v1/document-purge-requests/{resource['id']}"
+        return resource
+
+    @app.get("/v1/document-purge-requests/{request_id}", tags=["Document video"])
+    async def get_document_purge_request(
+        request_id: UUID,
+        service: ServiceDependency,
+        context: ContextDependency,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:read")
+        return await service.get_document_purge_request(context, request_id)
+
+    @app.post(
+        "/v1/document-sources/{source_id}/complete",
+        tags=["Document video"],
+    )
+    async def complete_document_source(
+        source_id: UUID,
+        command: DocumentSourceComplete,
+        service: ServiceDependency,
+        context: ContextDependency,
+        request: Request,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:write")
+        storage: ObjectStorage | None = request.app.state.object_storage
+        if storage is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_STORAGE_UNAVAILABLE",
+                "Object storage is required for PDF sources",
+            )
+        locator = ObjectLocator(
+            key=command.object_key,
+            sha256=command.sha256,
+            content_type=command.content_type,
+        )
+        try:
+            stored = await storage.complete_upload(context.workspace_id, locator)
+        except ObjectNotFound as exc:
+            raise ApiError(404, "DOCUMENT_UPLOAD_NOT_FOUND", "Uploaded PDF was not found") from exc
+        except ObjectIntegrityError as exc:
+            raise ApiError(
+                409,
+                "DOCUMENT_UPLOAD_INTEGRITY_ERROR",
+                "Uploaded PDF failed immutable hash validation",
+            ) from exc
+        except ObjectStorageUnavailable as exc:
+            raise ApiError(
+                503,
+                "DOCUMENT_STORAGE_UNAVAILABLE",
+                "Could not verify the uploaded PDF",
+            ) from exc
+        return _public_document_source(
+            await service.complete_document_source(context, source_id, command, stored)
+        )
+
+    @app.post(
         "/v1/asset-uploads",
         status_code=status.HTTP_201_CREATED,
         tags=["Assets"],
@@ -2771,6 +3004,51 @@ def create_app(
             "run_id": str(command.run_id) if command.run_id else None,
             "step_id": command.step_id,
         }
+
+    @app.post(
+        "/v1/document-video/runs",
+        status_code=status.HTTP_201_CREATED,
+        tags=["Document video"],
+    )
+    async def create_document_video_run(
+        command: DocumentVideoRunCreate,
+        service: ServiceDependency,
+        context: ContextDependency,
+        idempotency_key: IdempotencyHeader,
+        request: Request,
+        response: Response,
+    ) -> Resource:
+        _require_asset_permission(context, "assets:read")
+        resource, _created = await service.create_document_video_run(
+            context, command, idempotency_key
+        )
+        queue: JobQueue | None = request.app.state.job_queue
+        if queue is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_RUN_QUEUE_UNAVAILABLE",
+                "The PDF is stored, but document-video execution is not configured",
+                details={"run_id": resource["id"]},
+            )
+        try:
+            await queue.enqueue(
+                queue_name="runs",
+                payload={
+                    "workspace_id": resource["workspace_id"],
+                    "run_id": resource["id"],
+                },
+                deduplication_key=f"run:{resource['workspace_id']}:{resource['id']}",
+                max_attempts=5,
+            )
+        except QueueError as exc:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DOCUMENT_RUN_DISPATCH_UNAVAILABLE",
+                "The document Run was saved but could not be dispatched; retry with the same key",
+                details={"run_id": resource["id"]},
+            ) from exc
+        response.headers["Location"] = f"/v1/runs/{resource['id']}"
+        return resource
 
     @app.post("/v1/runs/estimate", tags=["Runs"])
     async def estimate_run(

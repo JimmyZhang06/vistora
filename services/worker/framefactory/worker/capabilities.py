@@ -21,6 +21,7 @@ from .adapters.legacy_media import (
     LegacyAssetCapability,
 )
 from .adapters.openai_compatible import (
+    DashscopeResearchSearchGateway,
     HttpsJsonResearchSearchGateway,
     HttpTransport,
     OpenAICompatibleClient,
@@ -30,11 +31,23 @@ from .adapters.openai_compatible import (
     ResearchSearchGateway,
 )
 from .config import WorkerSettings
+from .document_hybrid.capabilities import (
+    DocumentAugmentCapability,
+    DocumentExtractCapability,
+    DocumentInspectCapability,
+    DocumentMaterializeCapability,
+    DocumentQualityCapability,
+    DocumentRenderCapability,
+    DocumentStoryboardCapability,
+    DocumentTimelineCapability,
+    DocumentWritingCapability,
+)
 from .generation import (
     GeneratedCreativeWritingCapability,
+    GeneratedMediaGenerationCapability,
     RunwayClient,
-    RunwayMediaGenerationCapability,
     RunwayTransport,
+    WanClient,
 )
 from .generation.ports import (
     GeneratedVideoVerifier as GeneratedVideoVerifierPort,
@@ -70,11 +83,18 @@ PRODUCTION_OPERATIONS = (
     "writing.compose.generated",
     "writing.compose.webpage",
     "writing.compose.webpage_story",
+    "writing.compose.document",
     "audio.synthesize",
     "media.select",
     "media.inventory",
     "media.retrieve",
     "media.generate",
+    "media.augment",
+    "document.inspect",
+    "document.extract",
+    "document.storyboard.plan",
+    "document.materialize",
+    "document.timeline.align",
     "web.capture.validate",
     "web.capture.screenshot",
     "web.site.discover",
@@ -85,8 +105,10 @@ PRODUCTION_OPERATIONS = (
     "web.materialize.regions",
     "timeline.align",
     "render.compose",
+    "render.composite",
     "render.edl",
     "quality.evaluate",
+    "quality.evaluate.document",
     "review.gate",
     "delivery.package",
 )
@@ -166,6 +188,7 @@ def configured_capabilities(
     transport: HttpTransport | None = None,
     research_search: ResearchSearchGateway | None = None,
     runway_transport: RunwayTransport | None = None,
+    wan_transport: RunwayTransport | None = None,
     paid_operation_ledger: PaidOperationLedger | None = None,
     generated_video_verifier: GeneratedVideoVerifierPort | None = None,
 ) -> CapabilityRegistry:
@@ -209,13 +232,21 @@ def configured_capabilities(
     resolved_research_search = research_search
     if resolved_research_search is None and settings.research_search is not None:
         search = settings.research_search
-        resolved_research_search = HttpsJsonResearchSearchGateway(
-            url=search.url,
-            bearer_token=search.bearer_token,
-            timeout_seconds=search.timeout_seconds,
-            maximum_response_bytes=search.maximum_response_bytes,
-            transport=transport,
+        gateway_type = (
+            DashscopeResearchSearchGateway
+            if search.protocol == "dashscope"
+            else HttpsJsonResearchSearchGateway
         )
+        gateway_arguments = {
+            "url": search.url,
+            "bearer_token": search.bearer_token,
+            "timeout_seconds": search.timeout_seconds,
+            "maximum_response_bytes": search.maximum_response_bytes,
+            "transport": transport,
+        }
+        if search.protocol == "dashscope":
+            gateway_arguments["model"] = search.model
+        resolved_research_search = gateway_type(**gateway_arguments)
     if provider is not None:
         if artifact_storage is None:
             raise ValueError(
@@ -323,9 +354,43 @@ def configured_capabilities(
             asset_library,
             artifact_storage,
         )
-    runway = settings.runway
-    vision = settings.full_ai_vision
     media = settings.legacy_media
+    document_tools_ready = bool(
+        media is not None
+        and all(
+            shutil.which(name) is not None
+            for name in (
+                "pdfinfo",
+                "pdftoppm",
+                media.ffmpeg_command,
+                media.ffprobe_command,
+            )
+        )
+    )
+    if artifact_storage is not None and media is not None and document_tools_ready:
+        implementations.update(
+            {
+                "document.inspect": DocumentInspectCapability(artifact_storage),
+                "document.extract": DocumentExtractCapability(artifact_storage),
+                "document.storyboard.plan": DocumentStoryboardCapability(
+                    artifact_storage
+                ),
+                "document.materialize": DocumentMaterializeCapability(artifact_storage),
+                "media.augment": DocumentAugmentCapability(artifact_storage),
+                "document.timeline.align": DocumentTimelineCapability(artifact_storage),
+                "render.composite": DocumentRenderCapability(media, artifact_storage),
+                "quality.evaluate.document": DocumentQualityCapability(
+                    media, artifact_storage
+                ),
+            }
+        )
+        if provider is not None:
+            implementations["writing.compose.document"] = DocumentWritingCapability(
+                client(provider.writing_model), artifact_storage
+            )
+    runway = settings.runway
+    wan = settings.wan
+    vision = settings.full_ai_vision
     ffprobe_command = media.ffprobe_command if media is not None else "ffprobe"
     ffmpeg_command = media.ffmpeg_command if media is not None else "ffmpeg"
     verification_tools_ready = generated_video_verifier is not None or (
@@ -333,7 +398,7 @@ def configured_capabilities(
         and shutil.which(ffmpeg_command) is not None
     )
     if (
-        runway is not None
+        (runway is not None or wan is not None)
         and vision is not None
         and artifact_storage is not None
         and paid_operation_ledger is not None
@@ -352,17 +417,29 @@ def configured_capabilities(
             ffmpeg_command=ffmpeg_command,
             command_timeout_seconds=vision.timeout_seconds,
         )
-        implementations["media.generate"] = RunwayMediaGenerationCapability(
+        generation_client = (
             RunwayClient(
                 base_url=runway.base_url,
                 api_key=runway.api_key,
                 timeout_seconds=runway.timeout_seconds,
                 transport=runway_transport,
-            ),
+            )
+            if runway is not None
+            else WanClient(
+                base_url=wan.base_url,
+                api_key=wan.api_key,
+                cost_per_second_minor=wan.cost_per_second_minor,
+                timeout_seconds=wan.timeout_seconds,
+                transport=wan_transport,
+            )
+        )
+        implementations["media.generate"] = GeneratedMediaGenerationCapability(
+            generation_client,
             artifact_storage,
             paid_operation_ledger,
             verifier,
             worker_id=settings.worker_id,
+            ffmpeg_command=ffmpeg_command,
         )
     return CapabilityRegistry(implementations).freeze()
 
@@ -396,6 +473,11 @@ def production_step_registry() -> StepRegistry:
         ),
         "writing.compose.webpage": ("duration_seconds",),
         "writing.compose.webpage_story": ("duration_seconds",),
+        "writing.compose.document": ("duration_seconds",),
+        "document.inspect": (
+            "document_source_id",
+            "rights_confirmed",
+        ),
     }
     required_artifacts = {
         "audio.synthesize": ("script",),
@@ -425,6 +507,26 @@ def production_step_registry() -> StepRegistry:
         "writing.compose.webpage_story": ("manifest", "research"),
         "web.materialize": ("image", "manifest", "script"),
         "web.materialize.regions": ("image", "manifest", "script"),
+        "document.extract": ("asset", "manifest"),
+        "writing.compose.document": ("research", "manifest"),
+        "document.storyboard.plan": ("asset", "research", "script", "manifest"),
+        "document.materialize": ("asset", "manifest"),
+        "media.augment": ("manifest",),
+        "document.timeline.align": (
+            "audio",
+            "asset",
+            "script",
+            "narration_timing",
+            "manifest",
+        ),
+        "render.composite": (
+            "audio",
+            "asset",
+            "timeline",
+            "subtitle",
+            "manifest",
+        ),
+        "quality.evaluate.document": ("video", "timeline", "manifest"),
     }
     return StepRegistry(
         DeclarativeRunStep(

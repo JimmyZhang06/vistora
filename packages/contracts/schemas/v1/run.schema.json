@@ -116,12 +116,29 @@
         },
         "full_ai_generation": { "$ref": "#/$defs/FullAiGenerationSnapshot" },
         "production_settings": { "$ref": "#/$defs/ProductionSettings" },
+        "document_source": { "$ref": "#/$defs/DocumentSourceSnapshot" },
         "capabilities": {
           "type": "array",
           "maxItems": 128,
           "uniqueItems": true,
           "items": { "$ref": "common.schema.json#/$defs/CapabilityName" }
         }
+      }
+    },
+    "DocumentSourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "filename", "media_type", "byte_size", "content_hash", "bucket", "object_key", "revision", "uploaded_at"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "filename": { "type": "string", "minLength": 5, "maxLength": 255, "pattern": "^[^/\\\\]+\\.[Pp][Dd][Ff]$" },
+        "media_type": { "const": "application/pdf" },
+        "byte_size": { "type": "integer", "minimum": 1, "maximum": 209715200 },
+        "content_hash": { "$ref": "common.schema.json#/$defs/Sha256" },
+        "bucket": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "object_key": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "revision": { "type": "integer", "minimum": 2 },
+        "uploaded_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
       }
     },
     "FullAiGenerationSnapshot": {
@@ -153,7 +170,7 @@
               "type": "object",
               "required": ["currency", "credit_unit_minor", "cost_per_second_minor"],
               "properties": {
-                "currency": { "const": "USD" },
+                "currency": { "enum": ["CNY", "USD"] },
                 "credit_unit_minor": { "const": 1 },
                 "cost_per_second_minor": { "type": "integer", "minimum": 1 }
               }
@@ -183,7 +200,7 @@
       "required": [
         "language", "aspect_ratio", "target_duration_seconds", "visibility",
         "auto_quality_check", "resolution", "frame_rate", "layout", "media_fit",
-        "subtitles", "asset_acquisition", "sources"
+        "subtitles", "asset_acquisition", "no_asset_draft", "sources"
       ],
       "properties": {
         "language": { "type": "string", "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$" },
@@ -229,7 +246,20 @@
             },
             "max_assets": { "type": "integer", "minimum": 1, "maximum": 6 },
             "copyright_status": { "type": "string", "enum": ["licensed", "public_domain"] },
-            "rights_confirmed": { "type": "boolean" }
+            "rights_confirmed": { "type": "boolean" },
+            "library_id": { "type": "string", "format": "uuid" },
+            "library_auto_provisioned": { "type": "boolean" }
+          }
+        },
+        "no_asset_draft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "mode", "draft", "replacement_required"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mode": { "const": "procedural_cards" },
+            "draft": { "const": true },
+            "replacement_required": { "const": true }
           }
         },
         "sources": {

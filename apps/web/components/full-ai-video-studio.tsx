@@ -449,11 +449,6 @@ export function FullAiVideoStudio() {
     else void requestEstimate();
   }
 
-  const storyboardCards = [
-    { index: "01", title: "ESTABLISH", copy: selectedDirection.label },
-    { index: "02", title: "DEVELOP", copy: continuity ? "Prompt continuity" : "Free variation" },
-    { index: "03", title: "RESOLVE", copy: `${aspectRatio || "—"} · ${durationSeconds || "—"}s` },
-  ];
   const finalPlan = estimate?.plan;
   const displayedBlockers = estimate?.blockers.length ? estimate.blockers : options?.blockers ?? [];
   const statusLabel: Record<FullAiStudioState, string> = {
@@ -518,17 +513,6 @@ export function FullAiVideoStudio() {
             <strong>独立生成管线</strong>
             <small>浏览器不能指定旧 Pipeline、Skill 或素材来源</small>
           </div>
-        </div>
-
-        <div className="ai-storyboard" aria-label="全 AI 影片分镜预览">
-          {storyboardCards.map((card, index) => (
-            <article key={card.index} className={`ai-storyboard-card ai-storyboard-card--${index + 1}`}>
-              <span>{card.index}</span>
-              <div aria-hidden="true"><i /><i /><i /></div>
-              <footer><strong>{card.title}</strong><small>{card.copy}</small></footer>
-            </article>
-          ))}
-          <div className="ai-storyboard-playhead" aria-hidden="true"><span>GENERATIVE CUT</span></div>
         </div>
       </header>
 

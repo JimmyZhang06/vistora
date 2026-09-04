@@ -1,6 +1,6 @@
 # Vistora Worker
 
-> 文档状态：当前组件说明
+> 文档状态：当前组件说明（2026-09-05）
 > 进程边界：普通 Worker 与 Browser Capture Worker 必须分离
 
 Worker 从 Redis `runs` 队列接收唤醒，将不可变 Pipeline 图物化为 PostgreSQL `run_steps`，再通过 `run-steps` 队列执行。PostgreSQL 扫描会恢复漏发唤醒和过期租约；状态转换使用 revision/CAS 和租约 fencing，支持重试、取消、人工审核与重启恢复。
@@ -27,6 +27,8 @@ Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前�
 | `writing.compose.webpage` / `writing.compose.webpage_story` / `web.materialize*` | 页面证据写稿与批准截图/区域的精确字节物化 | 普通 Worker 的文本 Provider 与对象存储可用 |
 | `writing.compose.generated` / `media.generate` | Full-AI 创意脚本、付费场景生成与持久审计 | 独立生成 Provider、条款/价格/权利与 verifier 完整配置 |
 | `media.inventory` / `media.retrieve` / `timeline.align` / `render.edl` | 快照库存、候选检索、冻结时间线和 EDL 渲染 | 数据库素材库、对象存储、FFmpeg/ffprobe 可用 |
+| `document.inspect` / `document.extract` / `writing.compose.document` / `document.storyboard.plan` | PDF 安全检查、文本/页面证据提取、证据约束写稿与人工审核 Storyboard | S3、Poppler、`pypdf`、文本 Provider 与官方文档 Pipeline 可用 |
+| `document.materialize` / `media.augment` / `document.timeline.align` / `render.composite` / `quality.evaluate.document` | 页面截图固化、非事实背景、配音时间线、合成渲染、解码级 QC 与最终人工审核 | 文档工具链、本地媒体桥、S3、FFmpeg/ffprobe 可用 |
 | 素材视觉分析 | OpenAI-compatible vision | `FRAMEFACTORY_ASSET_VISION_*` |
 | 素材转写 | OpenAI-compatible ASR | `FRAMEFACTORY_ASR_*`，可选 |
 
@@ -36,7 +38,7 @@ Python 包名仍为 `framefactory.worker`，配置仍使用 `FRAMEFACTORY_` 前�
 
 ## 事实与产物边界
 
-研究能力只引用不可变 Run 输入中明确出现的 HTTPS URL，不自行编造来源。来源少于 Skill 最低要求或确定性校验失败时进入人工审核。写作读取研究 Artifact，并检查直接引语、禁止词、未支持数量和镜头断言。
+研究能力只引用不可变 Run 输入中的 HTTPS URL，或已配置结构化搜索 Provider 明确返回的 HTTPS URL，不允许文本模型自行冒充搜索或编造来源。只有主题而没有来源 URL 的标准 Run 需要 `FRAMEFACTORY_RESEARCH_SEARCH_URL` 与 Bearer Token；通用 JSON 搜索使用 `FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL=generic`，DashScope 官方联网搜索使用 `dashscope` 并同时配置 `FRAMEFACTORY_RESEARCH_SEARCH_MODEL`。来源少于 Skill 最低要求或确定性校验失败时进入人工审核。写作读取研究 Artifact，并检查直接引语、禁止词、未支持数量和镜头断言。
 
 Artifact 内容寻址后写入 S3/R2/MinIO并记录数据库。重试会核对既有对象哈希。没有持久对象存储时，不调用会产生 Artifact 的 Provider。
 
@@ -53,6 +55,10 @@ Artifact 内容寻址后写入 S3/R2/MinIO并记录数据库。重试会核对�
 生产模式要求 PostgreSQL/Redis 使用 TLS 或在可信私网显式允许不安全传输。Provider 超时、网络错误、408/409/425/429 和 5xx 可重试；拒绝或无效结构化输出永久失败。错误日志不得包含请求/响应正文、凭据或私密 URL。
 
 浏览器能力使用独立 `browser-capture` 队列和进程；普通 Worker 固定消费 `run-steps`。capture-only 配置拒绝文本模型、Runway、本地媒体、素材库、素材分析和研究 Provider，避免浏览器进程持有无关凭据。应用层会校验每次导航、重定向和子资源的公开 HTTPS DNS 答案，但这不能消除 DNS rebinding 的检查/连接竞态。生产必须由连接路径上的代理或防火墙拒绝私网、loopback、link-local、Unix socket 和云 metadata 地址，并仅在真实策略生效后设置 `FRAMEFACTORY_BROWSER_EGRESS_POLICY_ENFORCED=true`。
+
+PDF 文档流程拒绝加密文件、嵌入 JavaScript、超过 100 页或无文本层的扫描件；当前没有 OCR。文档内文本和链接只作为不可信证据处理，不执行脚本，也不会跟随 PDF 内 URL。页面截图是事实层；Agnes 未配置时 `media.augment` 只输出带 Provider 报告的程序化装饰背景。
+
+普通 Worker 还轮询 `document_purge_requests`，通过 PostgreSQL `SKIP LOCKED` 与到期租约认领任务。它先删除来源和派生 Artifact 的全部 S3 对象版本/delete marker，再在同一受控流程中写 sanitized tombstone；部分删除、权限不足或存储失败会保留冻结状态并重试，不能被记录为已完成。生产凭据必须具备版本枚举与版本删除的最小 Bucket 权限。
 
 `Content-Length` 预检、CDP 传输计数和资源数是纵深限制，不是对 chunked 或伪造长度响应的硬字节配额。硬边界由强制 egress proxy、容器 memory/pids、只读文件系统、受限 tmpfs 和全作业 timeout 共同提供。每个任务创建全新的 Chromium context，并在结束时关闭整个 browser。
 

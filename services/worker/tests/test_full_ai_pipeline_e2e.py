@@ -184,18 +184,22 @@ class FakeRunwayTransport:
 
     def request(
         self,
-        method: str,
-        url: str,
+        method_or_url: str,
+        url: str | None = None,
         *,
         headers: Mapping[str, str],
-        body: bytes | None,
+        body: bytes | None = None,
         timeout_seconds: float,
         maximum_response_bytes: int,
     ) -> RunwayHttpResponse:
         del timeout_seconds, maximum_response_bytes
-        self.requests.append((method, url))
-        if method == "POST" and url.endswith("/v1/text_to_video"):
-            assert headers["Authorization"] == "Bearer no-cost-fake-key"
+        method = method_or_url if url is not None else "GET"
+        requested_url = url or method_or_url
+        self.requests.append((method, requested_url))
+        if method == "POST" and requested_url.endswith("/v1/text_to_video"):
+            assert headers["Authorization"] == (
+                f"Bearer {hashlib.sha256(b'runway-test-fixture').hexdigest()}"
+            )
             payload = json.loads(body or b"{}")
             assert payload["model"] == "gen4.5"
             assert payload["duration"] == 5
@@ -203,15 +207,15 @@ class FakeRunwayTransport:
             task_id = str(uuid4())
             self.task_ids.append(task_id)
             return _http_json(
-                url,
+                requested_url,
                 {"id": task_id, "estimatedCost": {"credits": 5}},
             )
-        if method == "GET" and "/v1/tasks/" in url:
-            task_id = url.rsplit("/", 1)[-1]
+        if method == "GET" and "/v1/tasks/" in requested_url:
+            task_id = requested_url.rsplit("/", 1)[-1]
             assert task_id in self.task_ids
             output_url = f"https://cdn.example.test/{task_id}.mp4"
             return _http_json(
-                url,
+                requested_url,
                 {
                     "id": task_id,
                     "createdAt": "2026-08-24T00:00:00Z",
@@ -220,15 +224,17 @@ class FakeRunwayTransport:
                     "cost": {"credits": 5},
                 },
             )
-        if method == "GET" and url.startswith("https://cdn.example.test/"):
+        if method == "GET" and requested_url.startswith("https://cdn.example.test/"):
             assert "Authorization" not in headers
             return RunwayHttpResponse(
                 status=200,
                 headers={"content-type": "video/mp4"},
                 body=self.video_bytes,
-                final_url=url,
+                final_url=requested_url,
             )
-        raise AssertionError(f"unexpected fake Runway request: {method} {url}")
+        raise AssertionError(
+            f"unexpected fake Runway request: {method} {requested_url}"
+        )
 
 
 class MemoryPaidOperationLedger:
@@ -587,9 +593,10 @@ def test_no_cost_full_ai_pipeline_reaches_disclosed_qc_pass_without_catalog_asse
         generator = RunwayMediaGenerationCapability(
             RunwayClient(
                 base_url="https://api.dev.runwayml.com",
-                api_key="no-cost-fake-key",
+                api_key=hashlib.sha256(b"runway-test-fixture").hexdigest(),
                 timeout_seconds=10,
                 transport=transport,
+                output_transport=transport,
             ),
             storage,
             ledger,

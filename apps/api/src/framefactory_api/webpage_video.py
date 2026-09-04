@@ -74,6 +74,7 @@ DurationSeconds = Literal[15, 30, 45, 60]
 ReviewDecision = Literal["approve", "recapture", "reject"]
 SiteReviewDecision = Literal["approve", "request_changes", "reject"]
 SiteManifestKind = Literal["scope", "storyboard"]
+PilotOutcome = Literal["evaluating", "adopted", "rejected"]
 StableSiteId = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 ]
@@ -259,6 +260,7 @@ class WebpageShotResponse(StrictModel):
     region_id: StableSiteId | None = None
     duration_seconds: float = Field(gt=0, le=60)
     motion: Literal["static", "zoom_in", "zoom_out", "pan"] = "static"
+    transition: Literal["cut", "fade_black"] = "cut"
     narration_cue: str = Field(default="", max_length=1000)
     artifact: WebpageArtifactResponse
 
@@ -366,6 +368,8 @@ class WebpageStoryboardShotSelection(StrictModel):
     id: StableSiteId
     enabled: bool
     order: int = Field(ge=1, le=64)
+    motion: Literal["static", "zoom_in", "zoom_out", "pan"] | None = None
+    transition: Literal["cut", "fade_black"] | None = None
 
 
 class WebpageStoryboardReviewRequest(WebpageSiteReviewRequest):
@@ -453,6 +457,99 @@ class WebpageVideoFailure(StrictModel):
     retryable: bool
 
 
+class WebpagePilotFeedbackSave(StrictModel):
+    customer_segment: str = Field(min_length=1, max_length=120)
+    baseline_minutes: int = Field(ge=1, le=10_080)
+    assisted_minutes: int = Field(ge=1, le=10_080)
+    revision_count: int = Field(ge=0, le=100)
+    outcome: PilotOutcome
+    satisfaction_score: int | None = Field(default=None, ge=1, le=5)
+    willingness_to_pay_hkd: int | None = Field(default=None, ge=0, le=1_000_000)
+    notes: str | None = Field(default=None, max_length=2000)
+    expected_revision: int = Field(ge=0)
+
+    @field_validator("customer_segment")
+    @classmethod
+    def normalize_customer_segment(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("customer_segment must not be blank")
+        return normalized
+
+    @field_validator("notes")
+    @classmethod
+    def normalize_notes(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class WebpagePilotFeedbackResponse(StrictModel):
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
+    id: UUID
+    webpage_video_run_id: UUID
+    customer_segment: str
+    baseline_minutes: int = Field(ge=1)
+    assisted_minutes: int = Field(ge=1)
+    saved_minutes: int
+    time_reduction_percent: float
+    revision_count: int = Field(ge=0)
+    outcome: PilotOutcome
+    satisfaction_score: int | None = Field(default=None, ge=1, le=5)
+    willingness_to_pay_hkd: int | None = Field(default=None, ge=0)
+    notes: str | None
+    revision: int = Field(ge=1)
+    created_by: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WebpagePilotSummaryItem(StrictModel):
+    webpage_video_run_id: UUID
+    customer_segment: str
+    baseline_minutes: int = Field(ge=1)
+    assisted_minutes: int = Field(ge=1)
+    saved_minutes: int
+    time_reduction_percent: float
+    revision_count: int = Field(ge=0)
+    outcome: PilotOutcome
+    satisfaction_score: int | None = Field(default=None, ge=1, le=5)
+    willingness_to_pay_hkd: int | None = Field(default=None, ge=0)
+    updated_at: datetime
+
+
+class WebpagePilotSegmentSummary(StrictModel):
+    customer_segment: str
+    pilot_count: int = Field(ge=1)
+    adopted_count: int = Field(ge=0)
+    saved_minutes: int
+    average_time_reduction_percent: float
+
+
+class WebpagePilotSummaryResponse(StrictModel):
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
+    generated_at: datetime
+    total_records: int = Field(ge=0)
+    included_records: int = Field(ge=0)
+    truncated: bool
+    recommended_minimum_pilots: int = 3
+    pilot_target_met: bool
+    adopted_count: int = Field(ge=0)
+    evaluating_count: int = Field(ge=0)
+    rejected_count: int = Field(ge=0)
+    baseline_minutes_total: int = Field(ge=0)
+    assisted_minutes_total: int = Field(ge=0)
+    saved_minutes_total: int
+    time_reduction_percent: float | None
+    average_satisfaction_score: float | None
+    satisfaction_response_count: int = Field(ge=0)
+    average_willingness_to_pay_hkd: float | None
+    willingness_to_pay_response_count: int = Field(ge=0)
+    segments: list[WebpagePilotSegmentSummary]
+    items: list[WebpagePilotSummaryItem]
+
+
 class WebpageVideoRunResponse(StrictModel):
     schema_version: Literal["1.0.0"] = CONTRACT_VERSION
     id: UUID
@@ -466,6 +563,7 @@ class WebpageVideoRunResponse(StrictModel):
     spec: WebpageVideoRunCreate
     capture: WebpageCaptureResponse
     final_video: WebpageArtifactResponse | None
+    pilot_feedback: WebpagePilotFeedbackResponse | None = None
     failure: WebpageVideoFailure | None
     created_at: datetime
     updated_at: datetime
@@ -495,6 +593,23 @@ class WebpageVideoRepository(Protocol):
     async def list_webpage_capture_attempts(
         self, workspace_id: UUID, webpage_video_run_id: UUID
     ) -> list[Resource]: ...
+
+    async def get_webpage_pilot_feedback(
+        self, workspace_id: UUID, webpage_video_run_id: UUID
+    ) -> Resource | None: ...
+
+    async def list_webpage_pilot_feedback(
+        self, workspace_id: UUID, *, limit: int
+    ) -> tuple[list[Resource], int]: ...
+
+    async def upsert_webpage_pilot_feedback_idempotently(
+        self,
+        resource: Resource,
+        *,
+        expected_revision: int,
+        operation_key: str,
+        request_fingerprint: str,
+    ) -> tuple[Resource, bool]: ...
 
     async def list_run_steps(self, workspace_id: UUID, run_id: UUID) -> list[Resource]: ...
 
@@ -780,6 +895,135 @@ class WebpageVideoControlService:
         steps, attempts = await self._capture_inputs(context, resource)
         return self._capture_response(resource, steps, attempts)
 
+    async def save_pilot_feedback(
+        self,
+        context: WorkspaceContext,
+        webpage_video_run_id: UUID,
+        command: WebpagePilotFeedbackSave,
+        idempotency_key: str,
+    ) -> tuple[WebpagePilotFeedbackResponse, bool]:
+        run = await self.get_run(context, webpage_video_run_id)
+        if run.status != "succeeded":
+            raise ConflictError(
+                "WEBPAGE_PILOT_FEEDBACK_RUN_INCOMPLETE",
+                "Pilot outcome evidence can only be saved after a successful Run",
+                status=run.status,
+            )
+        timestamp = self._now()
+        resource: Resource = {
+            "schema_version": CONTRACT_VERSION,
+            "id": str(uuid4()),
+            "workspace_id": str(context.workspace_id),
+            "webpage_video_run_id": str(webpage_video_run_id),
+            **command.model_dump(exclude={"expected_revision"}),
+            "revision": 1,
+            "created_by": str(context.user_id),
+            "created_at": _timestamp(timestamp),
+            "updated_at": _timestamp(timestamp),
+        }
+        saved, created = (
+            await self.repository.upsert_webpage_pilot_feedback_idempotently(
+                resource,
+                expected_revision=command.expected_revision,
+                operation_key=(
+                    f"{context.workspace_id}:save_webpage_pilot_feedback:"
+                    f"{idempotency_key}"
+                ),
+                request_fingerprint=_fingerprint(
+                    {
+                        "webpage_video_run_id": str(webpage_video_run_id),
+                        **command.model_dump(mode="json"),
+                    }
+                ),
+            )
+        )
+        return WebpagePilotFeedbackResponse.model_validate(
+            _public_pilot_feedback(saved)
+        ), created
+
+    async def pilot_summary(
+        self, context: WorkspaceContext, *, limit: int = 200
+    ) -> WebpagePilotSummaryResponse:
+        feedback, total = await self.repository.list_webpage_pilot_feedback(
+            context.workspace_id, limit=limit
+        )
+        public = [_public_pilot_feedback(item) for item in feedback]
+        baseline_total = sum(int(item["baseline_minutes"]) for item in public)
+        assisted_total = sum(int(item["assisted_minutes"]) for item in public)
+        saved_total = baseline_total - assisted_total
+        satisfaction = [
+            int(item["satisfaction_score"])
+            for item in public
+            if item.get("satisfaction_score") is not None
+        ]
+        willingness = [
+            int(item["willingness_to_pay_hkd"])
+            for item in public
+            if item.get("willingness_to_pay_hkd") is not None
+        ]
+        segment_values: dict[str, list[Resource]] = {}
+        for item in public:
+            segment_values.setdefault(str(item["customer_segment"]), []).append(item)
+        segments = [
+            WebpagePilotSegmentSummary(
+                customer_segment=name,
+                pilot_count=len(items),
+                adopted_count=sum(item["outcome"] == "adopted" for item in items),
+                saved_minutes=sum(int(item["saved_minutes"]) for item in items),
+                average_time_reduction_percent=round(
+                    sum(float(item["time_reduction_percent"]) for item in items)
+                    / len(items),
+                    1,
+                ),
+            )
+            for name, items in sorted(
+                segment_values.items(), key=lambda pair: (-len(pair[1]), pair[0])
+            )
+        ]
+        return WebpagePilotSummaryResponse(
+            generated_at=self._now(),
+            total_records=total,
+            included_records=len(public),
+            truncated=total > len(public),
+            pilot_target_met=total >= 3,
+            adopted_count=sum(item["outcome"] == "adopted" for item in public),
+            evaluating_count=sum(item["outcome"] == "evaluating" for item in public),
+            rejected_count=sum(item["outcome"] == "rejected" for item in public),
+            baseline_minutes_total=baseline_total,
+            assisted_minutes_total=assisted_total,
+            saved_minutes_total=saved_total,
+            time_reduction_percent=(
+                round(saved_total / baseline_total * 100, 1) if baseline_total else None
+            ),
+            average_satisfaction_score=(
+                round(sum(satisfaction) / len(satisfaction), 1)
+                if satisfaction
+                else None
+            ),
+            satisfaction_response_count=len(satisfaction),
+            average_willingness_to_pay_hkd=(
+                round(sum(willingness) / len(willingness), 1) if willingness else None
+            ),
+            willingness_to_pay_response_count=len(willingness),
+            segments=segments,
+            items=[
+                WebpagePilotSummaryItem(
+                    webpage_video_run_id=item["webpage_video_run_id"],
+                    customer_segment=item["customer_segment"],
+                    baseline_minutes=item["baseline_minutes"],
+                    assisted_minutes=item["assisted_minutes"],
+                    saved_minutes=item["saved_minutes"],
+                    time_reduction_percent=item["time_reduction_percent"],
+                    revision_count=item["revision_count"],
+                    outcome=item["outcome"],
+                    satisfaction_score=item.get("satisfaction_score"),
+                    willingness_to_pay_hkd=item.get("willingness_to_pay_hkd"),
+                    updated_at=item["updated_at"],
+                )
+                for item in public
+            ],
+        )
+
     async def get_site(
         self, context: WorkspaceContext, webpage_video_run_id: UUID
     ) -> WebpageSiteResponse:
@@ -1032,6 +1276,9 @@ class WebpageVideoControlService:
         capture = self._capture_response(resource, steps, attempts)
         status = _run_status(resource, steps)
         final_video = _final_video(steps) if status == "succeeded" else None
+        pilot_feedback = await self.repository.get_webpage_pilot_feedback(
+            context.workspace_id, UUID(resource["id"])
+        )
         updated_at = max(
             [
                 _parse_timestamp(resource["updated_at"]),
@@ -1051,6 +1298,11 @@ class WebpageVideoControlService:
             "spec": resource["spec"],
             "capture": capture,
             "final_video": final_video,
+            "pilot_feedback": (
+                _public_pilot_feedback(pilot_feedback)
+                if pilot_feedback is not None
+                else None
+            ),
             "failure": _run_failure(status, steps),
             "created_at": resource["created_at"],
             "updated_at": updated_at,
@@ -1523,7 +1775,9 @@ def _site_review_metadata(
         "schema_version": "2.0.0",
         "kind": "storyboard_selection",
         "manifest_sha256": manifest.sha256,
-        "shots": [shot.model_dump(mode="json") for shot in ordered],
+        "shots": [
+            shot.model_dump(mode="json", exclude_none=True) for shot in ordered
+        ],
     }
 
 
@@ -1769,6 +2023,31 @@ def _final_video(steps: list[Resource]) -> Resource | None:
     return _public_artifact(candidates[0])
 
 
+def _public_pilot_feedback(resource: Resource) -> Resource:
+    baseline = int(resource["baseline_minutes"])
+    assisted = int(resource["assisted_minutes"])
+    saved = baseline - assisted
+    return {
+        "schema_version": CONTRACT_VERSION,
+        "id": resource["id"],
+        "webpage_video_run_id": resource["webpage_video_run_id"],
+        "customer_segment": resource["customer_segment"],
+        "baseline_minutes": baseline,
+        "assisted_minutes": assisted,
+        "saved_minutes": saved,
+        "time_reduction_percent": round((saved / baseline) * 100, 1),
+        "revision_count": resource["revision_count"],
+        "outcome": resource["outcome"],
+        "satisfaction_score": resource.get("satisfaction_score"),
+        "willingness_to_pay_hkd": resource.get("willingness_to_pay_hkd"),
+        "notes": resource.get("notes"),
+        "revision": resource["revision"],
+        "created_by": resource.get("created_by"),
+        "created_at": resource["created_at"],
+        "updated_at": resource["updated_at"],
+    }
+
+
 def _public_review(value: Any) -> WebpageReviewResponse | None:
     if not isinstance(value, Mapping) or value.get("decision") not in {
         "approve",
@@ -1817,6 +2096,12 @@ def _production_settings(command: WebpageVideoRunCreate) -> Resource:
             "copyright_status": "licensed",
             "rights_confirmed": command.rights.rights_confirmed,
         },
+        "no_asset_draft": {
+            "enabled": False,
+            "mode": "procedural_cards",
+            "draft": True,
+            "replacement_required": True,
+        },
         "sources": {
             "language": "system_default",
             "aspect_ratio": "run_override",
@@ -1828,6 +2113,7 @@ def _production_settings(command: WebpageVideoRunCreate) -> Resource:
             "frame_rate": "system_default",
             "subtitles": "run_override",
             "asset_acquisition": "system_default",
+            "no_asset_draft": "system_default",
         },
     }
 

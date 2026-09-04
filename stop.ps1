@@ -9,7 +9,12 @@ $composePath = Join-Path $projectRoot "deploy\docker-compose.persistence.yml"
 
 function Get-DescendantProcessIds {
     param([int]$RootProcessId)
-    $all = @(Get-CimInstance Win32_Process)
+    try {
+        $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    } catch {
+        Write-Warning "无法枚举子进程，将仅尝试终止已验证的根进程：$($_.Exception.Message)"
+        return @()
+    }
     $result = [System.Collections.Generic.List[int]]::new()
     $frontier = [System.Collections.Generic.Queue[int]]::new()
     $frontier.Enqueue($RootProcessId)
@@ -42,11 +47,23 @@ if (Test-Path -LiteralPath $statePath) {
             Write-Warning "跳过 $($entry.name) PID $($entry.pid)：PID 已被其他进程复用"
             continue
         }
+        if (Get-Command "taskkill.exe" -ErrorAction SilentlyContinue) {
+            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[OK] 已停止 $($entry.name) PID $($entry.pid) 及其子进程" -ForegroundColor Green
+                continue
+            }
+            Write-Warning "taskkill 无法终止 $($entry.name) PID $($entry.pid)，尝试 PowerShell 回退路径"
+        }
         $descendants = @(Get-DescendantProcessIds -RootProcessId $process.Id)
         if ($descendants.Count -gt 0) {
-            Stop-Process -Id ($descendants | Sort-Object -Descending) -ErrorAction SilentlyContinue
+            Stop-Process -Id ($descendants | Sort-Object -Descending) -Force -ErrorAction SilentlyContinue
         }
-        Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 100
+        if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+            throw "无法终止 $($entry.name) PID $($entry.pid)；状态文件已保留，请修复权限后重试"
+        }
         Write-Host "[OK] 已停止 $($entry.name) PID $($entry.pid)" -ForegroundColor Green
     }
     Remove-Item -LiteralPath $statePath

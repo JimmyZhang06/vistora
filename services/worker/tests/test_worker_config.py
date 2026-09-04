@@ -111,6 +111,59 @@ class WorkerSettingsTests(unittest.TestCase):
             WorkerSettings.from_environment(
                 {**base, "FRAMEFACTORY_RESEARCH_SEARCH_URL": "https://search.example/v1"}
             )
+
+        dashscope = WorkerSettings.from_environment(
+            {
+                **base,
+                "FRAMEFACTORY_RESEARCH_SEARCH_URL": (
+                    "https://dashscope.example/api/v1/services/aigc/"
+                    "text-generation/generation"
+                ),
+                "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN": "search-secret",
+                "FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL": "dashscope",
+                "FRAMEFACTORY_RESEARCH_SEARCH_MODEL": "qwen-plus",
+            }
+        )
+        self.assertEqual("dashscope", dashscope.research_search.protocol)
+        self.assertEqual("qwen-plus", dashscope.research_search.model)
+        with self.assertRaisesRegex(ValueError, "MODEL is required"):
+            WorkerSettings.from_environment(
+                {
+                    **base,
+                    "FRAMEFACTORY_RESEARCH_SEARCH_URL": "https://dashscope.example/search",
+                    "FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN": "search-secret",
+                    "FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL": "dashscope",
+                }
+            )
+
+    def test_production_asset_analysis_requires_clamd(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "production",
+            "FRAMEFACTORY_ALLOW_INSECURE_TRANSPORT": "true",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+            "FRAMEFACTORY_S3_BUCKET": "artifacts",
+            "FRAMEFACTORY_ASSET_VISION_BASE_URL": "https://vision.example/v1",
+            "FRAMEFACTORY_ASSET_VISION_API_KEY": "dummy-vision-key",
+            "FRAMEFACTORY_ASSET_VISION_MODEL": "vision-model",
+        }
+
+        with self.assertRaisesRegex(ValueError, "FRAMEFACTORY_CLAMD_HOST"):
+            WorkerSettings.from_environment(base)
+
+        settings = WorkerSettings.from_environment(
+            {
+                **base,
+                "FRAMEFACTORY_CLAMD_HOST": "clamav",
+                "FRAMEFACTORY_CLAMD_PORT": "3310",
+                "FRAMEFACTORY_CLAMD_TIMEOUT_SECONDS": "90",
+                "FRAMEFACTORY_CLAMD_MAXIMUM_STREAM_BYTES": "26214400",
+            }
+        )
+        self.assertIsNotNone(settings.clamd)
+        self.assertEqual("clamav", settings.clamd.host)
+        self.assertEqual(90, settings.clamd.timeout_seconds)
         with self.assertRaisesRegex(ValueError, "credential-free HTTPS"):
             WorkerSettings.from_environment(
                 {
@@ -236,6 +289,37 @@ class WorkerSettingsTests(unittest.TestCase):
                     "FRAMEFACTORY_S3_BUCKET": "artifacts",
                     "FRAMEFACTORY_RUNWAY_BASE_URL": "http://runway-proxy.local",
                     "FRAMEFACTORY_RUNWAY_API_KEY": "secret",
+                    "FRAMEFACTORY_RUNWAY_MODEL": "gen4.5",
+                }
+            )
+
+    def test_wan_configuration_is_pinned_cny_secret_safe_and_exclusive(self) -> None:
+        base = {
+            "FRAMEFACTORY_ENV": "test",
+            "FRAMEFACTORY_DATABASE_URL": "postgresql://user:pass@db/framefactory",
+            "FRAMEFACTORY_REDIS_URL": "redis://redis/0",
+            "FRAMEFACTORY_WORKER_ID": "worker-test",
+            "FRAMEFACTORY_S3_BUCKET": "artifacts",
+            "FRAMEFACTORY_WAN_BASE_URL": "https://dashscope.aliyuncs.com/api/v1",
+            "FRAMEFACTORY_WAN_API_KEY": "wan-secret-for-test",
+            "FRAMEFACTORY_WAN_MODEL": "wan2.7-t2v-2026-06-12",
+            "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR": "60",
+        }
+        settings = WorkerSettings.from_environment(base)
+        self.assertIsNotNone(settings.wan)
+        self.assertEqual(60, settings.wan.cost_per_second_minor)
+        self.assertNotIn("wan-secret-for-test", repr(settings))
+
+        with self.assertRaisesRegex(ValueError, "frozen Beijing 720P rate"):
+            WorkerSettings.from_environment(
+                {**base, "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR": "61"}
+            )
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            WorkerSettings.from_environment(
+                {
+                    **base,
+                    "FRAMEFACTORY_RUNWAY_BASE_URL": "https://api.dev.runwayml.com",
+                    "FRAMEFACTORY_RUNWAY_API_KEY": "runway-secret",
                     "FRAMEFACTORY_RUNWAY_MODEL": "gen4.5",
                 }
             )

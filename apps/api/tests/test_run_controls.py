@@ -141,6 +141,31 @@ def test_review_gate_is_listed_and_approval_is_idempotent() -> None:
     assert fetched_run.json()["status"] == "succeeded"
 
 
+def test_editorial_draft_cannot_be_approved_before_material_replacement() -> None:
+    run = _run("awaiting_review")
+    retrieve = _step(run, "retrieve", status="succeeded")
+    retrieve["operation"] = "media.retrieve"
+    retrieve["output_summary"] = {
+        "visual_source_mode": "editorial_fallback",
+        "draft": True,
+        "replacement_required": True,
+    }
+    quality = _step(run, "quality", status="awaiting_review", review_required=True)
+    repository = InMemoryControlRepository(runs=[run], run_steps=[retrieve, quality])
+
+    with TestClient(create_app(repository=repository)) as client:
+        response = client.post(
+            f"/v1/steps/{quality['id']}/review",
+            json={"decision": "approve", "expected_revision": 2},
+            headers={"Idempotency-Key": "approve-editorial-draft-0001"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "EDITORIAL_DRAFT_REPLACEMENT_REQUIRED"
+    assert response.json()["details"] == {
+        "run_id": run["id"],
+        "replacement_path": f"/create?replace={run['id']}",
+    }
 @pytest.mark.parametrize(
     ("decision", "attempt", "expected_status", "stored_decision", "error_code"),
     [

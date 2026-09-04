@@ -41,6 +41,8 @@ class ResearchSearchSettings:
 
     url: str
     bearer_token: str = field(repr=False)
+    protocol: Literal["generic", "dashscope"] = "generic"
+    model: str | None = None
     timeout_seconds: float = 20.0
     maximum_response_bytes: int = 1_048_576
 
@@ -59,6 +61,14 @@ class ResearchSearchSettings:
             )
         if not self.bearer_token:
             raise ValueError("FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN must not be empty")
+        if self.protocol not in {"generic", "dashscope"}:
+            raise ValueError(
+                "FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL must be generic or dashscope"
+            )
+        if self.protocol == "dashscope" and not self.model:
+            raise ValueError(
+                "FRAMEFACTORY_RESEARCH_SEARCH_MODEL is required for dashscope"
+            )
         if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError(
                 "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS must be positive and finite"
@@ -91,6 +101,26 @@ class ObjectStorageSettings:
             parsed = urlsplit(self.endpoint_url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise ValueError("FRAMEFACTORY_S3_ENDPOINT_URL must be an HTTP(S) URL with a host")
+
+
+@dataclass(frozen=True, slots=True)
+class ClamdSettings:
+    host: str
+    port: int = 3310
+    timeout_seconds: float = 120.0
+    maximum_stream_bytes: int = 25 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if not self.host or any(character.isspace() for character in self.host) or "/" in self.host:
+            raise ValueError("FRAMEFACTORY_CLAMD_HOST must be a hostname or IP address")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("FRAMEFACTORY_CLAMD_PORT must be between 1 and 65535")
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("FRAMEFACTORY_CLAMD_TIMEOUT_SECONDS must be positive")
+        if not 1_048_576 <= self.maximum_stream_bytes <= 1_073_741_824:
+            raise ValueError(
+                "FRAMEFACTORY_CLAMD_MAXIMUM_STREAM_BYTES must be between 1 MiB and 1 GiB"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +284,44 @@ class RunwaySettings:
 
 
 @dataclass(frozen=True, slots=True)
+class WanSettings:
+    """Pinned DashScope Wan 2.7 Beijing/720P production profile."""
+
+    base_url: str
+    api_key: str = field(repr=False)
+    model: str = "wan2.7-t2v-2026-06-12"
+    cost_per_second_minor: int = 60
+    timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "FRAMEFACTORY_WAN_BASE_URL must be a credential-free HTTPS URL"
+            )
+        if not self.api_key:
+            raise ValueError("FRAMEFACTORY_WAN_API_KEY must not be empty")
+        if self.model != "wan2.7-t2v-2026-06-12":
+            raise ValueError(
+                "FRAMEFACTORY_WAN_MODEL must be wan2.7-t2v-2026-06-12"
+            )
+        if self.cost_per_second_minor != 60:
+            raise ValueError(
+                "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR must match the frozen "
+                "Beijing 720P rate of 60 CNY minor units"
+            )
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("FRAMEFACTORY_WAN_TIMEOUT_SECONDS must be positive and finite")
+
+
+@dataclass(frozen=True, slots=True)
 class FullAiVisionSettings:
     """Independent per-Beat vision provider for generated-only verification."""
 
@@ -410,7 +478,9 @@ class WorkerSettings:
     legacy_media: LegacyMediaSettings | None = None
     asset_library: AssetLibrarySettings | None = None
     asset_analysis: AssetAnalysisSettings | None = None
+    clamd: ClamdSettings | None = None
     runway: RunwaySettings | None = None
+    wan: WanSettings | None = None
     full_ai_vision: FullAiVisionSettings | None = None
     web_capture: WebCaptureSettings | None = None
     declared_capabilities: tuple[str, ...] = ()
@@ -459,6 +529,7 @@ class WorkerSettings:
                     ("asset_library", self.asset_library),
                     ("asset_analysis", self.asset_analysis),
                     ("runway", self.runway),
+                    ("wan", self.wan),
                     ("full_ai_vision", self.full_ai_vision),
                 )
                 if value is not None
@@ -523,10 +594,20 @@ class WorkerSettings:
             )
         if self.asset_analysis is not None and self.object_storage is None:
             raise ValueError("configured asset analysis requires FRAMEFACTORY_S3_BUCKET")
+        if (
+            self.environment == "production"
+            and self.asset_analysis is not None
+            and self.clamd is None
+        ):
+            raise ValueError("production asset analysis requires FRAMEFACTORY_CLAMD_HOST")
         if self.runway is not None and self.object_storage is None:
             raise ValueError(
                 "configured Runway generation requires FRAMEFACTORY_S3_BUCKET"
             )
+        if self.wan is not None and self.object_storage is None:
+            raise ValueError("configured Wan generation requires FRAMEFACTORY_S3_BUCKET")
+        if self.runway is not None and self.wan is not None:
+            raise ValueError("Runway and Wan generation providers are mutually exclusive")
         if self.full_ai_vision is not None and self.object_storage is None:
             raise ValueError(
                 "configured Full-AI vision verification requires FRAMEFACTORY_S3_BUCKET"
@@ -620,7 +701,9 @@ class WorkerSettings:
             legacy_media=_legacy_media_settings(environment),
             asset_library=_asset_library_settings(environment, database_url),
             asset_analysis=_asset_analysis_settings(environment),
+            clamd=_clamd_settings(environment),
             runway=_runway_settings(environment),
+            wan=_wan_settings(environment),
             full_ai_vision=_full_ai_vision_settings(environment),
             web_capture=_web_capture_settings(environment),
             declared_capabilities=tuple(
@@ -668,7 +751,11 @@ def _research_search_settings(
     raw_maximum = environment.get(
         "FRAMEFACTORY_RESEARCH_SEARCH_MAX_RESPONSE_BYTES", ""
     ).strip()
-    if not any((url, bearer_token, raw_timeout, raw_maximum)):
+    protocol = environment.get(
+        "FRAMEFACTORY_RESEARCH_SEARCH_PROTOCOL", ""
+    ).strip().lower()
+    model = environment.get("FRAMEFACTORY_RESEARCH_SEARCH_MODEL", "").strip()
+    if not any((url, bearer_token, raw_timeout, raw_maximum, protocol, model)):
         return None
     if not url or not bearer_token:
         raise ValueError(
@@ -678,6 +765,8 @@ def _research_search_settings(
     return ResearchSearchSettings(
         url=url,
         bearer_token=bearer_token,
+        protocol=protocol or "generic",
+        model=model or None,
         timeout_seconds=_positive_float(
             environment, "FRAMEFACTORY_RESEARCH_SEARCH_TIMEOUT_SECONDS", "20"
         ),
@@ -700,6 +789,31 @@ def _object_storage_settings(environment: dict[str, str]) -> ObjectStorageSettin
         endpoint_url=environment.get("FRAMEFACTORY_S3_ENDPOINT_URL", "").strip() or None,
         access_key_id=_secret(environment, "FRAMEFACTORY_S3_ACCESS_KEY_ID") or None,
         secret_access_key=_secret(environment, "FRAMEFACTORY_S3_SECRET_ACCESS_KEY") or None,
+    )
+
+
+def _clamd_settings(environment: dict[str, str]) -> ClamdSettings | None:
+    host = environment.get("FRAMEFACTORY_CLAMD_HOST", "").strip()
+    related = (
+        environment.get("FRAMEFACTORY_CLAMD_PORT", "").strip(),
+        environment.get("FRAMEFACTORY_CLAMD_TIMEOUT_SECONDS", "").strip(),
+        environment.get("FRAMEFACTORY_CLAMD_MAXIMUM_STREAM_BYTES", "").strip(),
+    )
+    if not host and not any(related):
+        return None
+    if not host:
+        raise ValueError("FRAMEFACTORY_CLAMD_HOST is required with ClamAV settings")
+    return ClamdSettings(
+        host=host,
+        port=_positive_int(environment, "FRAMEFACTORY_CLAMD_PORT", "3310"),
+        timeout_seconds=_positive_float(
+            environment, "FRAMEFACTORY_CLAMD_TIMEOUT_SECONDS", "120"
+        ),
+        maximum_stream_bytes=_positive_int(
+            environment,
+            "FRAMEFACTORY_CLAMD_MAXIMUM_STREAM_BYTES",
+            str(25 * 1024 * 1024),
+        ),
     )
 
 
@@ -827,6 +941,32 @@ def _runway_settings(environment: dict[str, str]) -> RunwaySettings | None:
         model=model,
         timeout_seconds=_positive_float(
             environment, "FRAMEFACTORY_RUNWAY_TIMEOUT_SECONDS", "60"
+        ),
+    )
+
+
+def _wan_settings(environment: dict[str, str]) -> WanSettings | None:
+    base_url = environment.get("FRAMEFACTORY_WAN_BASE_URL", "").strip()
+    model = environment.get("FRAMEFACTORY_WAN_MODEL", "").strip()
+    raw_rate = environment.get("FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR", "").strip()
+    if not any((base_url, model, raw_rate)):
+        return None
+    api_key = _secret(environment, "FRAMEFACTORY_WAN_API_KEY")
+    if not all((base_url, api_key, model, raw_rate)):
+        raise ValueError(
+            "FRAMEFACTORY_WAN_BASE_URL, FRAMEFACTORY_WAN_API_KEY, "
+            "FRAMEFACTORY_WAN_MODEL and FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR "
+            "must be configured together"
+        )
+    return WanSettings(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        cost_per_second_minor=_positive_int(
+            environment, "FRAMEFACTORY_WAN_COST_PER_SECOND_MINOR", "60"
+        ),
+        timeout_seconds=_positive_float(
+            environment, "FRAMEFACTORY_WAN_TIMEOUT_SECONDS", "60"
         ),
     )
 

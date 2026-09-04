@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "id": "23bf8575-7699-55f8-b568-61de24487693",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "publisher_type": "system",
+  "publisher_name": "Vistora",
+  "name": "贵州广电历史媒资活化",
+  "slug": "guizhou-broadcast-memory-revival",
+  "description": "从已授权的贵州广电历史影像中检索跨年代证据，生成可追溯、可审核、可多端适配的地方文化内容。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "current_version_id": "fd8b67c7-af31-5b20-a813-a6fcbba293b7",
+  "forked_from_skill_id": null,
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-08-28T00:00:00Z",
+  "updated_at": "2026-08-28T07:35:00Z"
+}

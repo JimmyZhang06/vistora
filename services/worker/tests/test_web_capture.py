@@ -519,8 +519,11 @@ class WebCaptureWiringTests(unittest.TestCase):
         self.assertIn("capture_database_url", capture)
         self.assertNotIn("openai_api_key", capture)
         self.assertIn("FRAMEFACTORY_OPENAI_API_KEY_FILE", normal)
+        self.assertIn("FRAMEFACTORY_CLAMD_HOST", normal)
         self.assertNotIn("FRAMEFACTORY_LEGACY_ASSET_ROOT", normal)
         self.assertNotIn("FRAMEFACTORY_LEGACY_ASSET_CATALOGS", normal)
+        self.assertNotIn("FRAMEFACTORY_CLAMD_HOST", capture)
+        self.assertNotIn("clamav: {condition: service_healthy}", capture)
         self.assertIn("FRAMEFACTORY_S3_PUBLIC_ENDPOINT_URL", api)
         dockerfile = (root / "deploy/production/Dockerfile").read_text(encoding="utf-8")
         worker = dockerfile.split("FROM runtime AS worker", 1)[1].split(

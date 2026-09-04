@@ -11,6 +11,13 @@ import {
 } from "@/lib/api";
 import { safeBrowserMediaUrl } from "@/lib/safe-media-url";
 import { WebpageVideoSitePlanPanel } from "@/components/webpage-video-site-plan";
+import { WebpageVideoPilotPanel } from "@/components/webpage-video-pilot-panel";
+import { WebpageVideoEvidenceChain } from "@/components/webpage-video-evidence-chain";
+import { useConfirmDialog } from "@/components/confirm-dialog";
+import {
+  buildWebpageVideoEvidenceReport,
+  webpageVideoEvidenceFilename,
+} from "@/lib/webpage-video-evidence";
 
 type PageState = "loading" | "ready" | "error";
 type CaptureState = "waiting" | "loading" | "ready" | "error";
@@ -116,6 +123,7 @@ function StatusSkeleton() {
 }
 
 export function WebpageVideoDetail({ runId }: { runId: string }) {
+  const { confirm, confirmationDialog } = useConfirmDialog();
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const loadInFlightRef = useRef(false);
   const captureFetchedAtRef = useRef(0);
@@ -131,6 +139,7 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
   const [actionMessage, setActionMessage] = useState("");
   const [reviewConflict, setReviewConflict] = useState(false);
   const [comment, setComment] = useState("");
+  const [evidenceBusy, setEvidenceBusy] = useState(false);
 
   const loadCapture = useCallback(async (currentRun: WebpageVideoRun, force: boolean) => {
     if (!captureStates.has(currentRun.status) && !currentRun.captureSha256 && !currentRun.capture) return;
@@ -178,7 +187,9 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
     const result = await adapter.getWebpageVideoRun(runId);
     if (!result.ok) {
       loadInFlightRef.current = false;
-      setPageError(result.error.message || "无法读取网页截图成片任务。");
+      setPageError(result.error.status === 404 || result.error.status === 422
+        ? "这个网页成片任务不存在，可能已被清理，或不属于当前创作空间。"
+        : result.error.message || "无法读取网页截图成片任务。");
       setPageState((current) => current === "loading" ? "error" : current);
       return;
     }
@@ -281,7 +292,7 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
 
   async function cancelRun() {
     if (!run || !canCancel) return;
-    if (!window.confirm("确定取消这条网页截图成片任务吗？已经完成的截图证据会保留用于审计，但不会继续渲染。")) return;
+    if (!await confirm({ title: "取消网页成片任务", description: "已经完成的截图证据会保留用于审计，但任务不会继续渲染。", confirmLabel: "取消任务", tone: "danger" })) return;
     setAction("cancel");
     setActionMessage("正在请求取消…");
     const result = await adapter.cancelWebpageVideoRun(run.id, idempotencyKey("webpage-video-cancel"));
@@ -297,6 +308,32 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
     }
     setActionMessage("取消请求已接受，正在读取最终状态。");
     await loadRun(true);
+  }
+
+  async function downloadEvidenceReport() {
+    if (!run || evidenceBusy) return;
+    setEvidenceBusy(true);
+    setActionMessage("正在汇总运行、哈希、人工门禁与试点指标…");
+    let site;
+    let siteEvidenceError: string | undefined;
+    if (run.siteMode) {
+      const result = await adapter.getWebpageVideoSite(run.id);
+      if (result.ok) site = result.data;
+      else siteEvidenceError = result.error.message || "Site evidence was unavailable at export time.";
+    }
+    const report = buildWebpageVideoEvidenceReport(run, site, new Date().toISOString(), siteEvidenceError);
+    const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = webpageVideoEvidenceFilename(run.id);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(blobUrl);
+    setEvidenceBusy(false);
+    setActionMessage(report.completeness.complete
+      ? "证据报告已下载，未包含会过期的签名链接。"
+      : `证据报告已下载，并明确标注 ${report.completeness.missing.length} 项待补证据。`);
   }
 
   if (pageState === "loading") {
@@ -412,15 +449,21 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
                 // eslint-disable-next-line jsx-a11y/media-has-caption
                 <video controls preload="metadata" src={finalVideoPreviewUrl}>{captionsUrl ? <track kind="captions" src={captionsUrl} srcLang="zh" label="字幕" default /> : null}浏览器不支持视频播放，请使用下载链接。</video>
               ) : <div className="web-video-capture-empty" role="status"><span aria-hidden="true">…</span><h3>成片已完成，签名预览尚未返回</h3><p>点击刷新重新获取最终视频签名地址。</p></div>}
-              {finalVideoDownloadUrl ? <a className="button web-video-download" href={finalVideoDownloadUrl} target="_blank" rel="noreferrer noopener" referrerPolicy="no-referrer" download={run.finalVideo?.filename}>下载最终视频</a> : <button className="button-ghost web-video-download" type="button" onClick={() => void loadRun(true)}>刷新成片链接</button>}
+              <div className="web-video-final-actions">
+                {finalVideoDownloadUrl ? <a className="button" href={finalVideoDownloadUrl} target="_blank" rel="noreferrer noopener" referrerPolicy="no-referrer" download={run.finalVideo?.filename}>下载最终视频</a> : <button className="button-ghost" type="button" onClick={() => void loadRun(true)}>刷新成片链接</button>}
+                <button className="button-ghost" type="button" disabled={evidenceBusy} onClick={() => void downloadEvidenceReport()}>{evidenceBusy ? "汇总证据中…" : run.pilotFeedback ? "下载完整申请证据" : "下载证据（待补试点数据）"}</button>
+              </div>
             </section>
           ) : null}
+
+          {run.status === "succeeded" && run.siteMode ? <WebpageVideoEvidenceChain run={run} /> : null}
+
+          {run.status === "succeeded" ? <WebpageVideoPilotPanel key={run.pilotFeedback?.revision ?? 0} run={run} onSaved={() => void loadRun(true)} /> : null}
         </main>
 
         <aside className="panel web-video-run-card">
           <p className="eyebrow">RUN SUMMARY</p><h2>任务信息</h2>
           <dl>
-            <div><dt>领域状态</dt><dd>{currentStatus?.label}</dd></div>
             <div><dt>任务 ID</dt><dd><code>{run.id}</code></dd></div>
             <div><dt>采集模式</dt><dd>{run.siteMode ? "定向多页面 v2" : "单截图 v1"}</dd></div>
             <div><dt>主题</dt><dd>{run.spec.topic || "—"}</dd></div>
@@ -428,12 +471,13 @@ export function WebpageVideoDetail({ runId }: { runId: string }) {
             <div><dt>目标时长</dt><dd>{run.spec.durationSeconds ? `${run.spec.durationSeconds}s` : "—"}</dd></div>
             <div><dt>字幕</dt><dd>{run.spec.subtitlesEnabled ? "开启" : "关闭"}</dd></div>
             <div><dt>创建时间</dt><dd>{formatTime(run.createdAt)}</dd></div>
-            <div><dt>更新时间</dt><dd>{formatTime(run.updatedAt)}</dd></div>
           </dl>
           {run.failure ? <div className="web-video-run-failure" role="alert"><strong>{run.failure.code || "RUN FAILED"}</strong><p>{run.failure.message}</p><small>{run.failure.retryable ? "可先刷新确认恢复状态；本页面不会自动新建任务。" : "请修正来源或配置后新建任务。"}</small></div> : null}
-          <p className="web-video-run-note">该入口没有登录页面、Cookie、内网或自定义浏览器脚本能力。所有签名链接均可能过期，刷新页面会请求新链接。</p>
+          <p className="web-video-run-note">预览和下载链接会过期；刷新状态可重新获取。</p>
+          <Link className="button-ghost web-video-evidence-center-link" href="/application-evidence">打开申请证据中心</Link>
         </aside>
       </div>
+      {confirmationDialog}
     </div>
   );
 }

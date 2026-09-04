@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/document-source-create.schema.json",
+  "title": "DocumentSourceCreate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["filename", "content_type", "byte_size", "sha256", "rights_confirmed"],
+  "properties": {
+    "filename": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\]+\\.[Pp][Dd][Ff]$"},
+    "content_type": {"const": "application/pdf"},
+    "byte_size": {"type": "integer", "minimum": 1, "maximum": 209715200},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "rights_confirmed": {"const": true}
+  }
+}

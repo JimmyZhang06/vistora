@@ -94,7 +94,8 @@ function ratioLabel(ratio: WebpageVideoAspectRatio): string {
         : "经典";
 }
 
-export function WebpageVideoStudio() {
+export function WebpageVideoStudio({ mode = "standard" }: { mode?: "standard" | "application-demo" }) {
+  const applicationDemo = mode === "application-demo";
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const router = useRouter();
   const attemptRef = useRef<WebpageVideoSubmissionAttempt | null>(null);
@@ -149,16 +150,24 @@ export function WebpageVideoStudio() {
     const next = result.data;
     setOptions(next);
     if (!pending) {
-      setAspectRatio((current) => next.limits.aspectRatios.includes(current)
-        ? current
-        : next.limits.aspectRatios[0] ?? "16:9");
-      setDurationSeconds((current) => next.limits.durationSeconds.includes(current)
-        ? current
-        : next.limits.durationSeconds[0] ?? 0);
-      setSubtitlesEnabled(next.subtitles.supported && next.subtitles.defaultEnabled);
+      const demoRatio = next.limits.aspectRatios.includes("9:16") ? "9:16" : next.limits.aspectRatios[0] ?? "16:9";
+      const demoDuration = next.limits.durationSeconds.includes(30) ? 30 : next.limits.durationSeconds[0] ?? 0;
+      setAspectRatio((current) => applicationDemo
+        ? demoRatio
+        : next.limits.aspectRatios.includes(current) ? current : next.limits.aspectRatios[0] ?? "16:9");
+      setDurationSeconds((current) => applicationDemo
+        ? demoDuration
+        : next.limits.durationSeconds.includes(current) ? current : next.limits.durationSeconds[0] ?? 0);
+      setSubtitlesEnabled(next.subtitles.supported && (applicationDemo || next.subtitles.defaultEnabled));
       setVoiceProfileId((current) => current && next.voices.some((voice) => voice.id === current) ? current : "");
-      setMaxPages(Math.min(next.limits.crawlMaxPagesDefault, next.limits.crawlMaxPagesLimit));
+      setMaxPages(applicationDemo
+        ? Math.min(4, next.limits.crawlMaxPagesLimit)
+        : Math.min(next.limits.crawlMaxPagesDefault, next.limits.crawlMaxPagesLimit));
       setMaxDepth(Math.min(next.limits.crawlMaxDepthDefault, next.limits.crawlMaxDepthLimit));
+      setIncludeSitemap(!applicationDemo);
+      if (applicationDemo) {
+        setTopic("30 秒竖屏产品导览：展示目标客户痛点、核心功能、可信工作流与明确行动号召。");
+      }
     }
     if (pending) {
       setState("submit_unknown");
@@ -173,7 +182,7 @@ export function WebpageVideoStudio() {
       setState("ready");
       setMessage("服务已就绪。提交后先生成网页截图，只有你批准精确截图后才会进入素材与视频阶段。");
     }
-  }, [adapter, restoreRequest]);
+  }, [adapter, applicationDemo, restoreRequest]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadOptions(), 0);
@@ -189,6 +198,10 @@ export function WebpageVideoStudio() {
     && topic.trim().length <= (options?.limits.topicMaxLength ?? 0)
     && supportedRatio
     && supportedDuration
+    && maxPages >= 1
+    && maxPages <= (options?.limits.crawlMaxPagesLimit ?? 0)
+    && maxDepth >= 0
+    && maxDepth <= (options?.limits.crawlMaxDepthLimit ?? 0)
     && publicPageConfirmed
     && rightsConfirmed;
   const formFrozen = state === "submitting" || state === "submit_unknown";
@@ -247,7 +260,7 @@ export function WebpageVideoStudio() {
       setMessage("请完成 URL、用途、输出规格和两项明确确认后再创建。");
       return;
     }
-    const attempt = { idempotencyKey: idempotencyKey("webpage-video-create"), request: currentRequest() };
+    const attempt = { idempotencyKey: idempotencyKey(applicationDemo ? "application-demo-create" : "webpage-video-create"), request: currentRequest() };
     attemptRef.current = attempt;
     persistPendingAttempt(attempt);
     void submitAttempt(attempt);
@@ -264,31 +277,29 @@ export function WebpageVideoStudio() {
   };
   const blockers = options?.blockers ?? [];
   const statusIsProblem = ["empty", "blocked", "error", "submit_unknown"].includes(state);
+  const readinessCount = [
+    !urlProblem,
+    Boolean(topic.trim()),
+    publicPageConfirmed && rightsConfirmed,
+    state === "ready",
+  ].filter(Boolean).length;
 
   return (
-    <div className="page page--wide web-video-page" data-studio-state={state}>
-      <header className="web-video-hero" aria-labelledby="web-video-title">
+    <div className="page page--wide web-video-page" data-studio-state={state} data-application-demo={applicationDemo || undefined}>
+      <header className={`web-video-hero${applicationDemo ? " web-video-hero--compact" : ""}`} aria-labelledby="web-video-title">
         <div>
-          <p className="eyebrow">DIRECTED SITE CAPTURE · REVIEWED STORYBOARD</p>
-          <h1 id="web-video-title" tabIndex={-1}>从一个网址，定向解析成多镜头视频</h1>
-          <p>系统先发现同站候选页面，由你确认范围；随后逐页截图、识别关键区域并生成镜头板。两次审核通过后才进入成片阶段。</p>
+          <p className="eyebrow">{applicationDemo ? "APPLICATION DEMO · EVIDENCE-READY" : "DIRECTED SITE CAPTURE · REVIEWED STORYBOARD"}</p>
+          <h1 id="web-video-title" tabIndex={-1}>{applicationDemo ? "用一条真实任务，完成申请评审演示" : "从一个网址，定向解析成多镜头视频"}</h1>
+          <p>{applicationDemo ? "预设为 30 秒竖屏、四页以内和字幕输出，重点展示可控生成、人工审核、来源哈希与试点指标；所有结果仍由真实生产链路生成。" : "系统先发现同站候选页面，由你确认范围；随后逐页截图、识别关键区域并生成镜头板。两次审核通过后才进入成片阶段。"}</p>
           <div className="web-video-hero-actions">
-            <a className="button" href="#web-video-form">配置定向解析</a>
-            <Link className="button-ghost" href="/create">返回标准创作</Link>
+            <a className="button" href="#web-video-form">{applicationDemo ? "填写产品网址" : "配置定向解析"}</a>
+            <Link className="button-ghost" href={applicationDemo ? "/create/webpage-video" : "/create"}>{applicationDemo ? "切换标准模式" : "返回标准创作"}</Link>
+            {applicationDemo ? <Link className="button-ghost" href="/application-evidence">查看申请证据中心</Link> : null}
           </div>
           <div className="web-video-boundary">
             <span aria-hidden="true">◎</span>
             <div><strong>仅公开 HTTPS 页面</strong><small>不接收登录态、Cookie、自定义 Header、脚本或内网地址</small></div>
           </div>
-        </div>
-        <div className="web-video-browser" aria-hidden="true">
-          <div className="web-video-browser-bar"><i /><i /><i /><span>https://public.example/page</span></div>
-          <div className="web-video-browser-canvas">
-            <span>DISCOVER · CAPTURE · FOCUS</span>
-            <div><i /><i /><i /></div>
-            <strong>{aspectRatio}</strong>
-          </div>
-          <footer><span>01 DISCOVER</span><span>02 STORYBOARD</span><span>03 VIDEO</span></footer>
         </div>
       </header>
 
@@ -331,11 +342,13 @@ export function WebpageVideoStudio() {
                 />
                 <small>{topic.length} / {options?.limits.topicMaxLength ?? "—"}</small>
               </label>
-              <fieldset className="web-video-crawl" disabled={formFrozen || state !== "ready"}>
+              <details className="web-video-advanced" data-collapsible={applicationDemo || undefined} open={applicationDemo ? undefined : true}>
+                <summary><span>高级抓取设置</span><small>{maxPages} 页 · 深度 {maxDepth}{includeSitemap ? " · Sitemap" : ""}</small></summary>
+                <fieldset className="web-video-crawl" disabled={formFrozen || state !== "ready"}>
                 <legend>定向解析范围</legend>
                 <div>
-                  <label className="field" htmlFor="web-video-max-pages"><span>最多页面</span><select id="web-video-max-pages" className="select" value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))}>{[1, 4, 6, 8, 10, 12].map((value) => <option key={value} value={value}>{value} 页</option>)}</select><small>默认 8 页；发现更多候选时会在上限处停止。</small></label>
-                  <label className="field" htmlFor="web-video-max-depth"><span>链接深度</span><select id="web-video-max-depth" className="select" value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))}><option value={0}>仅目标页</option><option value={1}>导航与一层链接</option><option value={2}>最多两层</option></select><small>默认一层；不会无限遍历分页或日历 URL。</small></label>
+                  <label className="field" htmlFor="web-video-max-pages"><span>最多页面</span><select id="web-video-max-pages" className="select" value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))}>{[1, 4, 6, 8, 10, 12].filter((value) => value <= (options?.limits.crawlMaxPagesLimit ?? 12)).map((value) => <option key={value} value={value}>{value} 页</option>)}</select><small>{applicationDemo ? "演示预设 4 页，控制耗时与现场风险。" : "发现更多候选时会在上限处停止。"}</small></label>
+                  <label className="field" htmlFor="web-video-max-depth"><span>链接深度</span><select id="web-video-max-depth" className="select" value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))}>{[0, 1, 2].filter((value) => value <= (options?.limits.crawlMaxDepthLimit ?? 2)).map((value) => <option key={value} value={value}>{value === 0 ? "仅目标页" : value === 1 ? "导航与一层链接" : "最多两层"}</option>)}</select><small>不会无限遍历分页或日历 URL。</small></label>
                 </div>
                 <label className="web-video-switch">
                   <input aria-label="使用 sitemap 发现候选页面" type="checkbox" checked={includeSitemap} onChange={(event) => setIncludeSitemap(event.target.checked)} />
@@ -343,13 +356,17 @@ export function WebpageVideoStudio() {
                   <div><strong>参考 sitemap.xml</strong><small>仅用于补充同源候选页面，仍受页数和深度上限约束。</small></div>
                 </label>
                 <p>固定为同源发现；不会跨域跟随链接，也不会登录、提交表单或执行自定义交互。页面范围会在批量截图前再次交给你审核。</p>
-              </fieldset>
+                </fieldset>
+              </details>
             </div>
           </section>
 
           <section className="panel web-video-section">
             <header><span>02</span><div><p className="eyebrow">VIDEO OUTPUT</p><h2>成片规格</h2></div><small>由 OPTIONS 提供</small></header>
-            <div className="web-video-output-grid">
+            {applicationDemo ? <div className="web-video-preset"><span>推荐预设</span><strong>{aspectRatio} · {durationSeconds || 30} 秒 · {subtitlesEnabled ? "字幕开启" : "无字幕"}</strong><small>适合现场评审和手机端展示，可在下方修改。</small></div> : null}
+            <details className="web-video-advanced web-video-advanced--output" data-collapsible={applicationDemo || undefined} open={applicationDemo ? undefined : true}>
+              <summary><span>修改成片规格</span><small>{aspectRatio} · {durationSeconds || "—"} 秒</small></summary>
+              <div className="web-video-output-grid">
               <fieldset disabled={formFrozen || state !== "ready"}>
                 <legend>画幅</legend>
                 <div className="web-video-choice-grid">
@@ -385,7 +402,8 @@ export function WebpageVideoStudio() {
                 <span aria-hidden="true" />
                 <div><strong>生成字幕</strong><small>{options?.subtitles.supported ? "字幕将按旁白时间轴生成。" : "当前后端 options 未启用字幕。"}</small></div>
               </label>
-            </div>
+              </div>
+            </details>
           </section>
 
           <section className="panel web-video-section web-video-policy">
@@ -404,8 +422,8 @@ export function WebpageVideoStudio() {
         </div>
 
         <aside className="panel web-video-control" aria-label="网页截图成片控制面">
-          <header><div><p className="eyebrow">{options?.pipeline?.slug ?? "WEBPAGE-CAPTURE-VIDEO"}</p><h2>独立运行计划</h2></div><span data-state={state}>{stateLabel[state]}</span></header>
-          <ol>
+          <header><div><p className="eyebrow">{options?.pipeline?.slug ?? "WEBPAGE-CAPTURE-VIDEO"}</p><h2>{applicationDemo ? "提交前检查" : "独立运行计划"}</h2></div><span data-state={state}>{stateLabel[state]}</span></header>
+          {!applicationDemo ? <><ol>
             <li><span>01</span><div><strong>URL 安全校验</strong><small>HTTPS · DNS · Redirect · SSRF</small></div></li>
             <li><span>02</span><div><strong>定向发现与范围审核</strong><small>同源 · {maxPages} 页 · 深度 {maxDepth}</small></div></li>
             <li><span>03</span><div><strong>逐页截图与区域识别</strong><small>全景 · Hero · 图表 · CTA</small></div></li>
@@ -419,7 +437,19 @@ export function WebpageVideoStudio() {
             <div><dt>成片</dt><dd>{durationSeconds ? `${durationSeconds}s` : "待选择"}</dd></div>
             <div><dt>字幕</dt><dd>{subtitlesEnabled ? "开启" : "关闭"}</dd></div>
             <div><dt>声音</dt><dd>{options?.voices.find((voice) => voice.id === voiceProfileId)?.name ?? "系统默认"}</dd></div>
-          </dl>
+          </dl></> : null}
+          {applicationDemo ? (
+            <section className="web-video-readiness" aria-labelledby="application-readiness-title">
+              <header><h3 id="application-readiness-title">申请演示就绪检查</h3><strong>{readinessCount}/4</strong></header>
+              <ul>
+                <li data-ready={!urlProblem || undefined}><span>{!urlProblem ? "✓" : "·"}</span>公开 HTTPS 产品页</li>
+                <li data-ready={Boolean(topic.trim()) || undefined}><span>{topic.trim() ? "✓" : "·"}</span>问题、创新与客户价值叙事</li>
+                <li data-ready={publicPageConfirmed && rightsConfirmed || undefined}><span>{publicPageConfirmed && rightsConfirmed ? "✓" : "·"}</span>访问权与内容使用权确认</li>
+                <li data-ready={state === "ready" || undefined}><span>{state === "ready" ? "✓" : "·"}</span>真实队列、存储与 Worker 就绪</li>
+              </ul>
+              <p>成功后可在任务详情下载证据报告并填写匿名化试点成效。</p>
+            </section>
+          ) : null}
           <div className="web-video-status" role={statusIsProblem ? "alert" : "status"} aria-live="polite" data-problem={statusIsProblem || undefined}>
             <span aria-hidden="true">{state === "ready" ? "✓" : "!"}</span>
             <div><strong>{state === "submit_unknown" ? "安全重试已锁定" : state === "ready" ? "等待你的配置" : "当前状态"}</strong><p>{message}</p></div>
@@ -429,7 +459,7 @@ export function WebpageVideoStudio() {
             <span>{state === "submitting" ? "正在创建" : state === "submit_unknown" ? "用原幂等键安全重试" : "创建多页面视频任务"}</span><i aria-hidden="true">↗</i>
           </button>
           {["error", "blocked", "empty"].includes(state) ? <button className="button-ghost web-video-retry" type="button" onClick={() => void loadOptions()}>重新读取服务能力</button> : null}
-          <p className="web-video-footnote">页面范围与镜头板分别绑定 revision/hash。任何重新发现、重截或重排都会产生新版本，旧批准不会自动套用。</p>
+          <p className="web-video-footnote">{applicationDemo ? "任务会保留来源哈希与人工审核记录；完成后再填写试点结果并导出证据。" : "页面范围与镜头板分别绑定 revision/hash。任何重新发现、重截或重排都会产生新版本，旧批准不会自动套用。"}</p>
         </aside>
       </form>
     </div>

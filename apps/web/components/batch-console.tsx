@@ -12,7 +12,9 @@ import {
   type VideoSettings,
 } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
+import { useSmartPolling } from "@/lib/use-smart-polling";
 
 const PAGE_SIZE = 50;
 const MAX_BATCH_SIZE = 5_000;
@@ -24,6 +26,7 @@ const defaultVideoSettings: VideoSettings = {
   mediaFit: "cover", frameRate: 30,
   subtitles: { enabled: true, position: "bottom", size: "medium", maxLines: 2 },
   assetAcquisition: { enabled: false, sources: ["wikimedia"], maxAssets: 1, copyrightStatus: "public_domain", rightsConfirmed: false },
+  noAssetDraft: { enabled: false },
 };
 
 type ResearchMode = "off" | "when_missing" | "required";
@@ -120,6 +123,7 @@ function BatchProgress({ batch }: { batch: GenerationBatch }) {
 }
 
 export function BatchConsole() {
+  const { confirm, confirmationDialog } = useConfirmDialog();
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const fileRef = useRef<HTMLInputElement>(null);
   const [workspaceId, setWorkspaceId] = useState("");
@@ -248,12 +252,10 @@ export function BatchConsole() {
     const timer = window.setTimeout(() => void loadSelected(), 0);
     return () => window.clearTimeout(timer);
   }, [loadSelected]);
-  useEffect(() => {
-    const active = batches?.some((batch) => ["queued", "running", "awaiting_review"].includes(batch.status));
-    if (!active) return;
-    const timer = window.setInterval(() => { void loadShell(); void loadSelected(); }, 5_000);
-    return () => window.clearInterval(timer);
-  }, [batches, loadSelected, loadShell]);
+  useSmartPolling(async () => { await Promise.all([loadShell(), loadSelected()]); }, {
+    enabled: Boolean(batches?.some((batch) => ["queued", "running", "awaiting_review"].includes(batch.status))),
+    intervalMs: 5_000,
+  });
 
   function chooseChannel(value: string) {
     setChannelId(value);
@@ -346,7 +348,7 @@ export function BatchConsole() {
   function applySearch(event: FormEvent) { event.preventDefault(); setAppliedSearch(search.trim()); resetPage(); }
 
   async function cancelBatch() {
-    if (!selected || !window.confirm(`确定停止“${selected.name}”中所有未结束任务吗？`)) return;
+    if (!selected || !await confirm({ title: "停止批次", description: `将停止“${selected.name}”中所有未结束任务，已经完成的产物不会被删除。`, confirmLabel: "停止批次", tone: "danger" })) return;
     setCancelling(true);
     setMessage("正在逐条持久化取消请求…");
     const result = await adapter.cancelGenerationBatch(
@@ -436,7 +438,7 @@ export function BatchConsole() {
 
       {batches?.length ? (
         <div className="batch-console">
-          <aside className="batch-list theme-inverse" aria-label="生产批次">
+          <aside className="batch-list" aria-label="生产批次">
             <div className="batch-list-heading"><span>生产批次</span><strong>{batches.length}</strong></div>
             {batches.map((batch) => <button type="button" className={selectedId === batch.id ? "is-selected" : ""} aria-pressed={selectedId === batch.id} key={batch.id} onClick={() => { setSelectedId(batch.id); resetPage(); }}><span className="batch-list-item-heading"><span><strong>{batch.name}</strong><small>{new Date(batch.createdAt).toLocaleString("zh-CN")}</small></span><Badge tone={batch.status === "succeeded" ? "success" : batch.status === "completed_with_errors" ? "warning" : "accent"}>{batchLabels[batch.status]}</Badge></span><BatchProgress batch={batch} /></button>)}
           </aside>
@@ -444,12 +446,13 @@ export function BatchConsole() {
           <section className="batch-detail" aria-live="polite">
             {selected ? <><header><div><p className="eyebrow">BATCH / {selected.id.slice(0, 8)}</p><h2>{selected.name}</h2></div><div className="button-row"><Badge tone={selected.status === "succeeded" ? "success" : selected.status === "completed_with_errors" ? "warning" : "accent"}>{batchLabels[selected.status]}</Badge>{selected.statusCounts.failed ? <button className="button-ghost button-small" type="button" disabled={retryingFailed} onClick={() => void retryFailed()}>{retryingFailed ? "重开中…" : `重开 ${selected.statusCounts.failed} 个失败项`}</button> : null}{["queued", "running", "awaiting_review"].includes(selected.status) ? <button className="button-ghost button-small" type="button" disabled={cancelling} onClick={() => void cancelBatch()}>{cancelling ? "停止中…" : "停止批次"}</button> : null}</div></header><BatchProgress batch={selected} /><div className="batch-metrics"><span><strong>{selected.statusCounts.running}</strong>制作中</span><span><strong>{selected.statusCounts.awaitingReview}</strong>待审核</span><span><strong>{selected.statusCounts.succeeded}</strong>已完成</span><span><strong>{selected.statusCounts.failed}</strong>失败</span></div></> : null}
             <div className="batch-toolbar"><div className="toolbar">{(["all", "queued", "running", "awaiting_review", "succeeded", "failed", "cancelled"] as const).map((value) => <button type="button" className={statusFilter === value ? "button-secondary button-small" : "button-ghost button-small"} aria-pressed={statusFilter === value} key={value} onClick={() => { setStatusFilter(value); resetPage(); }}>{value === "all" ? "全部" : runLabels[value]}</button>)}</div><form onSubmit={applySearch}><input className="input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索主题" aria-label="搜索批次中的主题" /><button className="button-ghost button-small">搜索</button></form></div>
-            <div className="batch-table-wrap"><table className="batch-table"><thead className="theme-inverse"><tr><th>序号</th><th>主题</th><th>状态</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{itemsLoading ? <tr><td colSpan={5}>正在读取当前页…</td></tr> : items.map((item) => <tr key={item.id}><td>{String(item.ordinal + 1).padStart(4, "0")}</td><td><strong>{item.label}</strong><small>{item.runId.slice(0, 8)}</small></td><td><Badge tone={item.status === "succeeded" ? "success" : ["failed", "cancelled"].includes(item.status) ? "warning" : "accent"}>{runLabels[item.status]}</Badge></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN")}</td><td><Link className="button-ghost button-small" href={`/projects/${item.runId}`}>查看</Link></td></tr>)}</tbody></table></div>
+            <div className="batch-table-wrap"><table className="batch-table"><thead><tr><th>序号</th><th>主题</th><th>状态</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{itemsLoading ? <tr><td colSpan={5}>正在读取当前页…</td></tr> : items.map((item) => <tr key={item.id}><td>{String(item.ordinal + 1).padStart(4, "0")}</td><td><strong>{item.label}</strong><small>{item.runId.slice(0, 8)}</small></td><td><Badge tone={item.status === "succeeded" ? "success" : ["failed", "cancelled"].includes(item.status) ? "warning" : "accent"}>{runLabels[item.status]}</Badge></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN")}</td><td><Link className="button-ghost button-small" href={`/projects/${item.runId}`}>查看</Link></td></tr>)}</tbody></table></div>
             {!itemsLoading && items.length === 0 ? <p className="batch-empty">这个筛选下没有任务。</p> : null}
             <footer className="batch-pagination"><span>当前筛选共 {totalItems.toLocaleString("zh-CN")} 条 · 每页 {PAGE_SIZE} 条</span><div><button className="button-ghost button-small" type="button" disabled={!cursorHistory.length} onClick={() => { const history = [...cursorHistory]; setCursor(history.pop()); setCursorHistory(history); }}>上一页</button><button className="button-ghost button-small" type="button" disabled={!nextCursor} onClick={() => { if (!nextCursor) return; setCursorHistory((values) => [...values, cursor ?? ""]); setCursor(nextCursor); }}>下一页</button></div></footer>
           </section>
         </div>
       ) : null}
+      {confirmationDialog}
     </div>
   );
 }

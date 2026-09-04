@@ -54,7 +54,7 @@ class FakeStorage:
         digest = hashlib.sha256(artifact.data).hexdigest()
         return _artifact_ref(
             context,
-            artifact_id=f"published-{len(self.published)}",
+            artifact_id=f"66666666-6666-4666-8666-{len(self.published):012d}",
             kind=artifact.kind,
             filename=artifact.filename,
             media_type=artifact.media_type,
@@ -151,6 +151,8 @@ def context() -> StepContext:
 def acquisition_context(
     *,
     rights_confirmed: bool = True,
+    sources: tuple[str, ...] = ("wikimedia",),
+    copyright_status: str = "public_domain",
     attempt: int = 1,
     maximum_attempts: int = 3,
     review_feedback: str | None = None,
@@ -167,9 +169,9 @@ def acquisition_context(
                     "production_settings": {
                         "asset_acquisition": {
                             "enabled": True,
-                            "sources": ["wikimedia"],
+                            "sources": list(sources),
                             "max_assets": 2,
-                            "copyright_status": "public_domain",
+                            "copyright_status": copyright_status,
                             "rights_confirmed": rights_confirmed,
                         }
                     },
@@ -659,6 +661,183 @@ class RetrievalBeatTests(unittest.TestCase):
 
 
 class DatabaseRetrievalCapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_no_library_can_publish_truthful_editorial_draft_plan(self) -> None:
+        script = acquisition_script()
+        storage = FakeStorage(script)
+        capability = DatabaseRetrievalCapability(
+            AssetLibrarySettings("postgresql://db.example/framefactory"),
+            storage,
+            search_candidates=lambda *_: self.fail("catalog must not be queried"),
+        )
+        step_context = StepContext(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="retrieve",
+            input_snapshot={
+                "topic": "Apollo 11",
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "asset_library_ids": [],
+                        "production_settings": {
+                            "no_asset_draft": {"enabled": True}
+                        },
+                    }
+                },
+            },
+            input_artifacts=(script_ref(),),
+        )
+
+        result = await capability.execute(step_context)
+        generated = manifest(storage)
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual("editorial_fallback", result.output_summary["visual_source_mode"])
+        self.assertEqual("procedural-editorial-cards", generated["provider"])
+        self.assertEqual("complete", generated["coverage"]["status"])
+        self.assertTrue(generated["editorial_fallback"]["replacement_required"])
+        assert_candidate_manifest_valid(generated)
+        self.assertEqual(
+            ["asset", "asset", "video_plan", "candidate_manifest"],
+            [artifact.kind for artifact in result.artifacts],
+        )
+        for beat in generated["beats"]:
+            evidence = beat["candidates"][0]["rights_evidence"]
+            self.assertTrue(rights_evidence_valid(evidence))
+
+    async def test_editorial_draft_bounds_card_objects_for_large_plans(self) -> None:
+        script = {
+            "beats": [
+                {
+                    "id": f"beat-{index:03d}",
+                    "sequence": index,
+                    "narration": f"Narration {index}.",
+                    "visual_description": f"Visual {index}.",
+                    "must_match": [],
+                    "must_not_match": [],
+                }
+                for index in range(1, 18)
+            ]
+        }
+        storage = FakeStorage(script)
+        capability = DatabaseRetrievalCapability(
+            AssetLibrarySettings("postgresql://db.example/framefactory"),
+            storage,
+            search_candidates=lambda *_: self.fail("catalog must not be queried"),
+        )
+        step_context = StepContext(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="retrieve",
+            input_snapshot={
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "asset_library_ids": [],
+                        "production_settings": {
+                            "no_asset_draft": {"enabled": True}
+                        },
+                    }
+                }
+            },
+            input_artifacts=(script_ref(),),
+        )
+
+        result = await capability.execute(step_context)
+        generated = manifest(storage)
+
+        self.assertEqual(8, result.output_summary["materialized_assets"])
+        self.assertEqual(8, len(generated["materialized_assets"]))
+        self.assertEqual(17, len(generated["beats"]))
+        self.assertEqual(
+            generated["beats"][0]["candidates"][0]["artifact_id"],
+            generated["beats"][8]["candidates"][0]["artifact_id"],
+        )
+        assert_candidate_manifest_valid(generated)
+
+    async def test_inventory_without_snapshot_can_plan_editorial_draft(self) -> None:
+        storage = FakeStorage({})
+        capability = DatabaseInventoryCapability(
+            AssetLibrarySettings("postgresql://db.example/framefactory"),
+            storage,
+            search_candidates=lambda *_: self.fail("catalog must not be queried"),
+        )
+        step_context = StepContext(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="inventory",
+            input_snapshot={
+                "topic": "uncovered",
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "asset_library_ids": [],
+                        "production_settings": {
+                            "no_asset_draft": {"enabled": True}
+                        },
+                    }
+                },
+            },
+        )
+
+        result = await capability.execute(step_context)
+        inventory = json.loads(storage.published[0].data)
+
+        self.assertEqual("editorial_fallback", inventory["coverage"]["status"])
+        self.assertTrue(inventory["editorial_fallback"]["replacement_required"])
+        self.assertEqual("editorial_fallback", result.output_summary["visual_source_mode"])
+
+    async def test_inventory_without_materials_plans_live_auto_acquisition(self) -> None:
+        calls: list[tuple[Any, ...]] = []
+
+        def search(*arguments: Any):
+            calls.append(arguments)
+            return ()
+
+        storage = FakeStorage({})
+        capability = DatabaseInventoryCapability(
+            AssetLibrarySettings("postgresql://db.example/framefactory"),
+            storage,
+            search_candidates=search,
+        )
+        step_context = StepContext(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="inventory",
+            input_snapshot={
+                "topic": "城市低碳交通",
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "asset_library_ids": [_LIBRARY_ID],
+                        "production_settings": {
+                            "asset_acquisition": {
+                                "enabled": True,
+                                "sources": ["wikimedia"],
+                                "max_assets": 3,
+                                "copyright_status": "public_domain",
+                                "rights_confirmed": False,
+                            },
+                            "no_asset_draft": {"enabled": True},
+                        },
+                    }
+                },
+            },
+        )
+
+        result = await capability.execute(step_context)
+        inventory = json.loads(storage.published[0].data)
+
+        self.assertEqual("pending_auto_acquisition", inventory["coverage"]["status"])
+        self.assertEqual("live", inventory["catalog_mode"])
+        self.assertTrue(inventory["asset_acquisition"]["pending"])
+        self.assertEqual(
+            "provider_verified_public_domain",
+            inventory["asset_acquisition"]["rights_mode"],
+        )
+        self.assertEqual(
+            "automatic_acquisition_after_script",
+            result.output_summary["action_required"],
+        )
+        self.assertTrue(calls)
+        self.assertTrue(all(call[-1] is None for call in calls))
+
     async def test_frozen_snapshot_missing_coverage_never_calls_acquirer(self) -> None:
         snapshot_id = "33333333-3333-4333-8333-333333333333"
         step_context = StepContext(
@@ -986,6 +1165,76 @@ class DatabaseRetrievalCapabilityTests(unittest.IsolatedAsyncioTestCase):
             [artifact.kind for artifact in result.artifacts],
         )
 
+    async def test_partial_coverage_keeps_real_media_and_fills_only_missing_beats(
+        self,
+    ) -> None:
+        script = {
+            "beats": [
+                {
+                    "id": "covered",
+                    "sequence": 1,
+                    "narration": "Covered.",
+                    "visual_description": "covered visual",
+                    "must_match": [],
+                    "must_not_match": [],
+                },
+                {
+                    "id": "missing",
+                    "sequence": 2,
+                    "narration": "Missing.",
+                    "visual_description": "missing visual",
+                    "must_match": ["required"],
+                    "must_not_match": [],
+                },
+            ]
+        }
+        storage = FakeStorage(script)
+
+        def search(
+            _workspace: str, _libraries: tuple[str, ...], query: str, _limit: int
+        ):
+            return (candidate("covered"),) if query == "covered visual" else ()
+
+        capability = DatabaseRetrievalCapability(
+            AssetLibrarySettings("postgresql://db.example/framefactory"),
+            storage,
+            search_candidates=search,
+        )
+        step_context = StepContext(
+            workspace_id="workspace-one",
+            run_id="run-one",
+            step_id="retrieve",
+            input_snapshot={
+                "_framefactory": {
+                    "composition_snapshot": {
+                        "asset_library_ids": [_LIBRARY_ID],
+                        "production_settings": {
+                            "no_asset_draft": {"enabled": True}
+                        },
+                    }
+                }
+            },
+            input_artifacts=(script_ref(),),
+        )
+
+        result = await capability.execute(step_context)
+
+        payload = manifest(storage)
+        self.assertFalse(result.requires_review)
+        self.assertEqual("hybrid-local-and-editorial", payload["provider"])
+        self.assertEqual("complete", payload["coverage"]["status"])
+        self.assertEqual([], payload["coverage"]["missing_beat_ids"])
+        self.assertEqual("asset-001.mp4", payload["beats"][0]["candidates"][0]["artifact_filename"])
+        self.assertEqual("editorial-card-002.bmp", payload["beats"][1]["candidates"][0]["artifact_filename"])
+        self.assertEqual("hybrid_editorial_fallback", result.output_summary["visual_source_mode"])
+        self.assertEqual(1, result.output_summary["temporary_visuals"])
+        self.assertEqual(2, result.output_summary["materialized_assets"])
+        self.assertEqual(
+            ["asset", "asset", "video_plan", "candidate_manifest"],
+            [artifact.kind for artifact in result.artifacts],
+        )
+        assert_candidate_manifest_valid(payload)
+
     async def test_complete_local_coverage_never_calls_enabled_acquisition(self) -> None:
         storage = FakeStorage(acquisition_script())
         acquirer = FakeAcquirer()
@@ -1259,7 +1508,13 @@ class DatabaseRetrievalCapabilityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(PermanentStepError, "rights confirmation"):
-            await capability.execute(acquisition_context(rights_confirmed=False))
+            await capability.execute(
+                acquisition_context(
+                    rights_confirmed=False,
+                    sources=("youtube",),
+                    copyright_status="licensed",
+                )
+            )
 
         self.assertEqual([], acquirer.calls)
 

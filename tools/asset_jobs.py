@@ -18,22 +18,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKER_ROOT = PROJECT_ROOT / "services" / "worker"
 if str(WORKER_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKER_ROOT))
 
-from framefactory.worker.adapters.asset_analysis import (  # noqa: E402
+from framefactory.worker.adapters.asset_analysis import (
     ClamAVScanner,
     CommandVisionAnalyzer,
     LocalAssetStageProcessor,
     S3MediaObjectStore,
 )
-from framefactory.worker.adapters.postgres_asset_jobs import (  # noqa: E402
+from framefactory.worker.adapters.postgres_asset_jobs import (
     PostgresAssetJobRepository,
 )
-from framefactory.worker.asset_pipeline import AssetAnalysisRunner  # noqa: E402
+from framefactory.worker.asset_pipeline import AssetAnalysisRunner
 
 
 def parser() -> argparse.ArgumentParser:

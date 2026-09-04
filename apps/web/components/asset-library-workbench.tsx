@@ -5,7 +5,9 @@ import Image from "next/image";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFrameFactoryAdapter, type ApiResult, type Asset, type AssetBulkRequest, type AssetPoster, type AssetQuery } from "@/lib/api";
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
+import { useSmartPolling } from "@/lib/use-smart-polling";
 
 const PAGE_SIZE = 50;
 type ViewMode = "grid" | "table";
@@ -22,6 +24,7 @@ function processingLabel(asset: Asset) {
 }
 
 export function AssetLibraryWorkbench({ libraryId }: { libraryId: string }) {
+  const { confirm, confirmationDialog } = useConfirmDialog();
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [libraryName, setLibraryName] = useState("素材库");
@@ -82,11 +85,10 @@ export function AssetLibraryWorkbench({ libraryId }: { libraryId: string }) {
     return () => { window.removeEventListener("online", sync); window.removeEventListener("offline", sync); };
   }, []);
 
-  useEffect(() => {
-    if (!assets.some((asset) => asset.status === "processing" || asset.analysisStatus === "running" || asset.analysisStatus === "pending")) return;
-    const timer = window.setInterval(() => void loadAssets(false), 5000);
-    return () => window.clearInterval(timer);
-  }, [assets, loadAssets]);
+  useSmartPolling(() => loadAssets(false), {
+    enabled: assets.some((asset) => asset.status === "processing" || asset.analysisStatus === "running" || asset.analysisStatus === "pending"),
+    intervalMs: 5_000,
+  });
 
   function applySearch(event: FormEvent) {
     event.preventDefault();
@@ -124,7 +126,12 @@ export function AssetLibraryWorkbench({ libraryId }: { libraryId: string }) {
       if (!tags.length) { setNotice("请输入至少一个标签。"); return; }
       request = { items, action: "add_tags", tags };
     }
-    if (["review_reject", "disable"].includes(bulkAction) && !window.confirm(`确认对 ${ids.length} 个素材执行此危险操作？`)) return;
+    if (["review_reject", "disable"].includes(bulkAction) && !await confirm({
+      title: bulkAction === "disable" ? "批量禁用素材" : "批量拒绝素材",
+      description: `将对 ${ids.length} 个已选素材执行操作，所有结果都会写入审核记录。`,
+      confirmLabel: bulkAction === "disable" ? "确认禁用" : "确认拒绝",
+      tone: "danger",
+    })) return;
     setMutating(true);
     setNotice("正在提交批量操作…");
     const signature = JSON.stringify(request);
@@ -173,6 +180,7 @@ export function AssetLibraryWorkbench({ libraryId }: { libraryId: string }) {
         {view === "grid" ? <div className="asset-grid">{assets.map((asset) => <AssetCard key={asset.id} asset={asset} selected={selected.has(asset.id)} onToggle={() => toggle(asset.id)} loadPoster={loadPoster} />)}</div> : <AssetTable assets={assets} selected={selected} onToggle={toggle} />}
         <div className="load-more"><span>已加载 {assets.length} / {totalCount}</span>{cursor ? <button className="button-secondary" type="button" onClick={() => void loadAssets(true)} disabled={loadingMore}>{loadingMore ? "加载中" : `再加载 ${PAGE_SIZE} 条`}</button> : <Badge tone="success">已到末尾</Badge>}</div>
       </> : null}
+      {confirmationDialog}
     </div>
   );
 }

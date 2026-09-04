@@ -847,12 +847,23 @@ def _asset_acquisition(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     copyright_status = str(raw.get("copyright_status", "licensed"))
     if copyright_status not in {"licensed", "public_domain"}:
         copyright_status = "licensed"
+    provider_verified_public_domain = (
+        sources == ("wikimedia",) and copyright_status == "public_domain"
+    )
     return {
         "enabled": raw.get("enabled") is True,
         "sources": sources or ("wikimedia", "youtube", "bilibili"),
         "max_assets": max_assets,
         "copyright_status": copyright_status,
-        "rights_confirmed": raw.get("rights_confirmed") is True,
+        "rights_confirmed": (
+            raw.get("rights_confirmed") is True
+            or provider_verified_public_domain
+        ),
+        "rights_mode": (
+            "provider_verified_public_domain"
+            if provider_verified_public_domain
+            else "user_attested"
+        ),
     }
 
 

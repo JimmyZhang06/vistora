@@ -1,9 +1,11 @@
 # Vistora 生产部署基线
 
-> 文档状态：自托管后端基线，不是完整公网部署
+> 文档状态：自托管后端基线（2026-09-05），不是完整公网部署
 > 发布结论：缺少身份、出站策略、Secret 或恢复证据时必须视为 `BLOCKED`
 
 `deploy/production/` 提供 API、Worker、PostgreSQL、Redis 和 S3-compatible 存储的自托管基线。它不是完整公网安全边界；Web 需独立构建，并通过 HTTPS `NEXT_PUBLIC_FRAMEFACTORY_API_URL` 访问受保护的 API。
+
+当前数据库迁移集合到 `0027_document_retention_and_purge.sql`，官方 Seed manifest 为 `1.12.0`。配置文件或 Compose 健康检查通过只证明声明和启动探针成立；真实 Provider、身份网关、浏览器出站策略、备份恢复、版本化 Purge 和用户端成片仍须在同一候选版本的目标环境执行发布门禁。
 
 本目录与根目录的 `deploy/docker-compose.persistence.yml` 用途不同：后者直接运行时默认使用 `55432/56379/59000/59001`；根 `start.ps1` 会显式覆盖为 `55433/56380/59002/59003`。两者都只属于开发环境，生产文件不得复用其凭据或数据卷。
 
@@ -22,7 +24,44 @@
 
 网页写稿由普通 Worker 的 OpenAI-compatible structured-text Provider 执行。必须配置独立的 `FF_OPENAI_API_KEY_FILE`、HTTPS `FF_OPENAI_BASE_URL` 和三个明确模型名；这些值不会注入浏览器 Worker。网页流水线同时要求 `FF_LEGACY_MEDIA_ENABLED=true`，否则音频和 FFmpeg 渲染能力的启动探针会失败。普通 Worker 镜像固定安装可再分发的 Noto CJK 字体，并用 `Noto Sans CJK SC` 渲染中文字幕；镜像构建会通过 Fontconfig 检查字体可解析。
 
+标准主题创作还要求独立的结构化搜索凭据和 PostgreSQL 素材库。`FF_RESEARCH_SEARCH_URL` 与
+`FF_RESEARCH_SEARCH_TOKEN_FILE` 必须成对配置；`FF_RESEARCH_SEARCH_PROTOCOL=dashscope` 时还必须指定 `FF_RESEARCH_SEARCH_MODEL`。普通 Worker 会把搜索结果限定为明确返回的
+HTTPS URL，文本模型不能自行冒充搜索。生产 Compose 固定启用数据库素材库，并要求独立的视觉
+分析与 ASR Secret，使新补采素材只有在完成扫描、分析和权利门禁后才进入 `media.select`。
+素材字节通过 ClamAV `INSTREAM` 协议发送到仅位于后端网络的 `clamav` 服务；Worker 不共享源文件
+路径给扫描容器。ClamAV 签名库存放在独立持久卷并由 `freshclam` 更新。超过
+`FF_CLAMD_MAXIMUM_STREAM_BYTES` 的文件会失败关闭；该值必须与 ClamAV 的 `StreamMaxLength`
+运维配置保持一致。
+
 内部对象 CRUD 继续使用 `http://s3:9000`。API 给 Web 返回的 presigned URL 必须使用 `FF_S3_PUBLIC_ENDPOINT_URL` 指定的浏览器可达 HTTPS 反向代理，例如 `https://media.example.com`。反向代理必须原样传递签名所依据的外部 `Host`（以及 path/query），不得在验签前改写，否则 SigV4 会失败。这个 public endpoint 只注入 API，不注入 capture Worker。
+
+PDF 文件讲解还要求普通 Worker 镜像中的 `pdfinfo`、`pdftoppm`、`ffmpeg`、`ffprobe` 和 Python `pypdf` 同时可用，并要求 S3 artifact storage 与 legacy media renderer 已配置。只有这些启动条件满足时，API 的 `FF_WORKER_CAPABILITIES` 才可声明 `document.inspect,document.extract,writing.compose.document,document.storyboard.plan,document.materialize,media.augment,document.timeline.align,render.composite,quality.evaluate.document`（另加共享的 `audio.synthesize`）。缺少任一工具必须保持能力不可用；不得用空文件或模拟成片通过门禁。当前 `media.augment` 会在 Agnes 未配置时写入明确的 provider report 并使用非事实程序化背景，不会消耗检测到但未受治理的凭据。
+
+## 文档保留、legal hold 与删除
+
+迁移 `0027_document_retention_and_purge.sql` 增加修订号保护的 retention/legal-hold
+控制和持久化 purge 请求。删除 API 只把来源冻结为 `deletion_pending`；普通 Worker 通过
+PostgreSQL `SKIP LOCKED` 与到期租约认领请求。它会删除原 PDF、所有关联 document Run
+artifact，以及版本化 Bucket 中同名对象的历史版本和 delete marker。所有对象均确认不可读后，
+才把来源和 artifact 行写成 sanitized tombstone。Run、步骤、review、hash lineage 和 audit 行保留，
+但用户文件名、活动对象 locator 和 artifact metadata 会被清除。
+
+API 会持久化 presigned PUT 的实际到期时间，并把 purge 的最早认领时间推迟到该时间之后，
+防止旧上传 URL 在删除完成后重放同一 object key。升级时无法恢复旧 URL 的精确 TTL，因此迁移对
+历史行使用 `created_at + 7 days` 的保守 fence。完成前 Worker 还会锁定关联 Run、重新核对 artifact
+manifest；若有晚到 artifact 或 S3 批量删除逐项返回错误，事务不会提交 tombstone，而是安全重试。
+
+- legal hold 使用 `assets:review`，retention/purge 使用 `assets:write`，读取进度使用
+  `assets:read`；目标身份网关必须真正签发并限制这些 scope。
+- purge 凭据除普通对象读写外，还必须只在业务 Bucket 上允许 `GetBucketVersioning`、
+  `ListBucketVersions`、`DeleteObject` 和 `DeleteObjectVersion`。缺少任一权限时请求应进入
+  `retrying/failed`，不得提前把 PostgreSQL 标为已删除。
+- 活跃 Run、未到期 retention 或 legal hold 必须返回冲突。purge 已进入 `purging` 后不允许
+  竞态添加 hold；先取消/完成 Run，再由有权用户发起删除。
+- `failed` 请求可能已经删掉部分对象；来源保持冻结，必须先调查 `last_error`，修复凭据/存储，
+  再通过受控运维流程恢复该请求。禁止直接物理删除数据库 lineage 或用 factory reset 清理。
+- 上线前必须在启用 Bucket versioning 的隔离环境验证：Worker 在源对象删除后崩溃、租约到期、
+  重试后幂等完成、对象各版本均不存在、下载 API 返回 404、review/audit 仍可查询。
 
 ## 网页截图 egress 边界
 
@@ -73,9 +112,35 @@ python tools/release/recovery_gate.py
 python tools/release/postgres_restore_gate.py
 python tools/release/s3_integrity_gate.py
 python tools/release/asset_contract_gate.py --report artifacts/release/asset-contract-gate.json
+python tools/release/document_video_e2e_gate.py
 ```
 
 门禁缺少专用 URL、fixture、隔离恢复库、服务控制权限、对象存储凭据或 Provider 能力时返回 `BLOCKED`；这不是通过。恢复门禁会停止并重启指定 Worker，只能使用专用非生产目标。
+
+PDF 成片门禁必须使用有文本层、已获合法使用授权的真实 PDF，并显式设置
+`FF_RELEASE_DOCUMENT_RIGHTS_CONFIRMED=1` 与
+`FF_RELEASE_DOCUMENT_AUTO_APPROVE=1`。后者只允许用于受保护验收工作区：脚本会在读取并核对
+storyboard/quality 的不可变哈希证据后批准两个审核点。最小配置如下；API URL 在非本机环境必须为
+HTTPS，HTTP 仅可在隔离本地环境配合 `FF_RELEASE_ALLOW_HTTP=1` 使用。
+
+```powershell
+$env:FF_RELEASE_API_URL = 'https://release-api.example.com'
+$env:FF_RELEASE_API_TOKEN = '<release identity token>'
+$env:FF_RELEASE_WORKSPACE_ID = '<isolated release workspace UUID>'
+$env:FF_RELEASE_DOCUMENT_PDF = 'D:\release-fixtures\rights-approved-text.pdf'
+$env:FF_RELEASE_DOCUMENT_RIGHTS_CONFIRMED = '1'
+$env:FF_RELEASE_DOCUMENT_AUTO_APPROVE = '1'
+$env:FF_RELEASE_DOCUMENT_VERIFY_PURGE = '1'
+python tools/release/document_video_e2e_gate.py
+```
+
+成功结果同时证明：PDF 全字节 SHA-256 上传/完成、Run 幂等重放、服务端来源快照、storyboard
+页码/哈希绑定、按顺序完成两个人工审核点、必需交付物清单、final MP4 下载后的大小/哈希、H.264
+视频、AAC 音频、目标分辨率、时长与 quality report 一致，以及持久化事件序列。它验证浏览器所调用的同一组
+API 和 presigned URL，但不替代浏览器自动化、恶意 PDF 语料、容量、故障注入或恢复门禁。
+`FF_RELEASE_DOCUMENT_VERIFY_PURGE=1` 是破坏性、仅限隔离验收工作区的收尾步骤：它先证明
+retention 和 legal hold 会阻止删除，再删除该 fixture 的源文件与全部派生产物，核对下载均为 404，
+同时确认 Run、两次 review 和事件 lineage 仍可查询。受保护 CI 固定启用此项。
 
 ## 备份与回滚
 

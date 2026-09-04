@@ -14,24 +14,23 @@ from framefactory_api.seed_catalog import load_official_catalog
 PIPELINE_V1_ID = "30b37ab7-9cf7-5d26-ac3e-6d66880b536c"
 PIPELINE_V2_ID = "3df5479d-9eb2-583f-8531-66ba0bb61204"
 PIPELINE_V3_ID = "4c7d9777-d754-5fa3-bf85-4bf5c9746dba"
+PIPELINE_V4_ID = "3cbfb0d5-69ab-507d-ac62-e9918b3c3462"
 FULL_AI_PIPELINE_ID = "7ed21b77-7e4c-5801-8fc0-bee133575101"
 FULL_AI_PIPELINE_V1_ID = "fe7d52b9-7412-5c96-8214-398f18a2d682"
 FULL_AI_PIPELINE_V2_ID = "6d6bad5a-e758-5d6c-9c39-e7c7713e5a4c"
 WEBPAGE_VIDEO_PIPELINE_ID = "7b80a43b-5752-58f3-aaa4-d423610f848d"
 WEBPAGE_VIDEO_PIPELINE_V1_ID = "eaf69761-8571-5404-a50a-8ef5c0aa90d3"
 WEBPAGE_VIDEO_PIPELINE_V2_ID = "2110e922-329d-565f-ba7a-3616c9d5070b"
+DOCUMENT_HYBRID_PIPELINE_V1_ID = "6a36cbee-99d4-5f25-84fd-5c3352005275"
+DOCUMENT_HYBRID_PIPELINE_V2_ID = "0979fced-2c88-514a-a13a-1f7863798e62"
 GENERAL_EXPLAINER_V2_ID = "ae752896-0fd1-5d6f-ba13-9d4bf504ea12"
 GENERAL_EXPLAINER_V3_ID = "62c48333-d19f-57b0-9479-bb844b63ef08"
+DOCUMENT_VIDEO_V1_1_ID = "91fb01cd-c519-51f8-b077-99a13cc7ef0d"
+DOCUMENT_VIDEO_V1_2_ID = "346045e2-779f-580f-9feb-839f70943827"
 
 
 def _copy_official_package(tmp_path: Path) -> Path:
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "packages"
-        / "seeds"
-        / "official-skills"
-        / "v1"
-    )
+    source = Path(__file__).resolve().parents[3] / "packages" / "seeds" / "official-skills" / "v1"
     package = tmp_path / "official-skills"
     shutil.copytree(source, package)
     return package
@@ -42,9 +41,10 @@ def test_default_app_loads_the_validated_official_catalog() -> None:
         response = client.get("/v1/skills")
         assert response.status_code == 200
         skills = response.json()["data"]
-        assert len(skills) == 7
+        assert len(skills) == 9
         assert all(skill["ownership_type"] == "system" for skill in skills)
         assert all(skill["publisher_type"] == "system" for skill in skills)
+        assert any(skill["slug"] == "guizhou-broadcast-memory-revival" for skill in skills)
 
 
 def test_official_catalog_supports_multiple_skill_and_pipeline_versions() -> None:
@@ -53,14 +53,18 @@ def test_official_catalog_supports_multiple_skill_and_pipeline_versions() -> Non
     assert {version["default_pipeline_version_id"] for version in versions} == {
         PIPELINE_V1_ID,
         PIPELINE_V2_ID,
+        PIPELINE_V3_ID,
+        PIPELINE_V4_ID,
         FULL_AI_PIPELINE_V1_ID,
         FULL_AI_PIPELINE_V2_ID,
         WEBPAGE_VIDEO_PIPELINE_V1_ID,
         WEBPAGE_VIDEO_PIPELINE_V2_ID,
+        DOCUMENT_HYBRID_PIPELINE_V1_ID,
+        DOCUMENT_HYBRID_PIPELINE_V2_ID,
     }
-    assert len(skills) == 7
-    assert len(versions) == 11
-    assert len(versions.pipelines) == 7
+    assert len(skills) == 9
+    assert len(versions) == 17
+    assert len(versions.pipelines) == 10
 
     standard_pipelines = [
         seed.version
@@ -68,7 +72,7 @@ def test_official_catalog_supports_multiple_skill_and_pipeline_versions() -> Non
         if seed.pipeline_id == "2c15b2d6-1460-5d30-a718-f4b06d8e28d7"
     ]
     by_version = {pipeline["version"]: pipeline for pipeline in standard_pipelines}
-    assert set(by_version) == {1, 2, 3}
+    assert set(by_version) == {1, 2, 3, 4}
     assert by_version[1]["id"] == PIPELINE_V1_ID
     pipeline = by_version[2]
     assert pipeline["id"] == PIPELINE_V2_ID
@@ -106,19 +110,22 @@ def test_official_catalog_supports_multiple_skill_and_pipeline_versions() -> Non
     assert "research.web_acquisition" not in batch_pipeline["capability_requirements"]
     assert pipeline["nodes"][-1]["review_gate"] is False
 
+    inventory_first_pipeline = by_version[4]
+    assert inventory_first_pipeline["id"] == PIPELINE_V4_ID
+    inventory_first_nodes = {node["key"]: node for node in inventory_first_pipeline["nodes"]}
+    assert inventory_first_nodes["inventory"]["depends_on"] == []
+    assert inventory_first_nodes["research"]["depends_on"] == ["inventory"]
+    assert inventory_first_nodes["write"]["depends_on"] == ["inventory", "research"]
+
     historical_full_ai = next(
-        seed.version
-        for seed in versions.pipelines
-        if seed.version["id"] == FULL_AI_PIPELINE_V1_ID
+        seed.version for seed in versions.pipelines if seed.version["id"] == FULL_AI_PIPELINE_V1_ID
     )
     assert historical_full_ai["status"] == "archived"
     assert historical_full_ai["version"] == 1
     assert "media.retrieve" in historical_full_ai["capability_requirements"]
 
     full_ai = next(
-        seed.version
-        for seed in versions.pipelines
-        if seed.version["id"] == FULL_AI_PIPELINE_V2_ID
+        seed.version for seed in versions.pipelines if seed.version["id"] == FULL_AI_PIPELINE_V2_ID
     )
     assert full_ai["slug"] == "full-ai-production"
     assert [node["key"] for node in full_ai["nodes"]] == [
@@ -156,15 +163,72 @@ def test_official_catalog_supports_multiple_skill_and_pipeline_versions() -> Non
         if version["skill_id"] == full_ai_skill["id"]
     }
     assert set(full_ai_versions) == {"1.0.0", "1.1.0"}
-    assert (
-        full_ai_versions["1.0.0"]["default_pipeline_version_id"]
-        == FULL_AI_PIPELINE_V1_ID
-    )
+    assert full_ai_versions["1.0.0"]["default_pipeline_version_id"] == FULL_AI_PIPELINE_V1_ID
     full_ai_version = full_ai_versions["1.1.0"]
     assert full_ai_version["state"] == "published"
     assert full_ai_version["default_pipeline_version_id"] == FULL_AI_PIPELINE_V2_ID
     assert full_ai_version["visual_policy"]["generated_media_allowed"] is True
     assert full_ai_version["asset_policy"]["library_binding"] == "none"
+
+    document_pipeline = next(
+        seed.version
+        for seed in versions.pipelines
+        if seed.version["id"] == DOCUMENT_HYBRID_PIPELINE_V2_ID
+    )
+    assert document_pipeline["slug"] == "document-hybrid-production"
+    assert document_pipeline["status"] == "active"
+    assert [node["key"] for node in document_pipeline["nodes"]] == [
+        "inspect",
+        "extract",
+        "write",
+        "storyboard",
+        "materialize",
+        "augment",
+        "tts",
+        "timeline",
+        "render",
+        "quality",
+    ]
+    assert (
+        next(node for node in document_pipeline["nodes"] if node["key"] == "storyboard")[
+            "review_gate"
+        ]
+        is True
+    )
+    document_skill = next(skill for skill in skills if skill["slug"] == "document-video-director")
+    assert document_skill["status"] == "archived"
+    document_versions = {
+        version["version"]: version
+        for version in versions
+        if version["skill_id"] == document_skill["id"]
+    }
+    assert set(document_versions) == {"1.0.0", "1.1.0", "1.2.0"}
+    assert document_skill["current_version_id"] == DOCUMENT_VIDEO_V1_2_ID
+    assert document_versions["1.0.0"]["default_pipeline_version_id"] == (
+        DOCUMENT_HYBRID_PIPELINE_V1_ID
+    )
+    historical_document_version = document_versions["1.1.0"]
+    assert historical_document_version["id"] == DOCUMENT_VIDEO_V1_1_ID
+    assert historical_document_version["content_hash"] == (
+        "2174db855010503d735d10071d6f9af50afc1955b6e8667d64c927950bda47df"
+    )
+    historical_captions = next(
+        artifact
+        for artifact in historical_document_version["output_contract"]["artifacts"]
+        if artifact["name"] == "captions"
+    )
+    assert historical_captions["media_types"] == ["application/x-subrip"]
+
+    document_version = document_versions["1.2.0"]
+    assert document_version["id"] == DOCUMENT_VIDEO_V1_2_ID
+    assert document_version["state"] == "published"
+    assert document_version["default_pipeline_version_id"] == DOCUMENT_HYBRID_PIPELINE_V2_ID
+    captions = next(
+        artifact
+        for artifact in document_version["output_contract"]["artifacts"]
+        if artifact["name"] == "captions"
+    )
+    assert captions["media_types"] == ["text/x-ssa"]
 
     historical_successor = next(
         version for version in versions if version["id"] == GENERAL_EXPLAINER_V2_ID
@@ -240,12 +304,8 @@ def test_official_skill_can_create_a_run_in_memory() -> None:
         )
 
     assert response.status_code == 201
-    assert response.json()["composition_snapshot"]["pipeline_version"]["id"] == (
-        PIPELINE_V2_ID
-    )
-    assert response.json()["composition_snapshot"]["asset_library_ids"] == [
-        library["id"]
-    ]
+    assert response.json()["composition_snapshot"]["pipeline_version"]["id"] == (PIPELINE_V2_ID)
+    assert response.json()["composition_snapshot"]["asset_library_ids"] == [library["id"]]
 
 
 def test_official_pipeline_seed_is_packaged_with_the_manifest() -> None:
@@ -261,6 +321,7 @@ def test_official_pipeline_seed_is_packaged_with_the_manifest() -> None:
 
     assert {seed.pipeline_id for seed in versions.pipelines} == {
         "2c15b2d6-1460-5d30-a718-f4b06d8e28d7",
+        "414940e8-81c1-5f47-b609-03fc01a1a3bc",
         FULL_AI_PIPELINE_ID,
         WEBPAGE_VIDEO_PIPELINE_ID,
     }
@@ -292,7 +353,7 @@ def test_loader_orders_pipeline_versions_independently_of_manifest_order(
         seed.version["version"]
         for seed in versions.pipelines
         if seed.pipeline_id == "2c15b2d6-1460-5d30-a718-f4b06d8e28d7"
-    ] == [1, 2, 3]
+    ] == [1, 2, 3, 4]
     assert [
         seed.version["version"]
         for seed in versions.pipelines

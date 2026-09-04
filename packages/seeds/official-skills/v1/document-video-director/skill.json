@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "id": "d1c67470-20a4-5815-8796-b095a4499813",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "publisher_type": "system",
+  "publisher_name": "Vistora",
+  "name": "文档讲解视频导演（内部试运行）",
+  "slug": "document-video-director",
+  "description": "把用户有权使用的 PDF 转为可溯源混合画面讲解视频；文档截图承载事实，生成式画面只作为装饰底图。",
+  "visibility": "public_readonly",
+  "status": "archived",
+  "current_version_id": "346045e2-779f-580f-9feb-839f70943827",
+  "forked_from_skill_id": null,
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-09-03T00:00:00Z",
+  "updated_at": "2026-09-05T00:00:00Z"
+}

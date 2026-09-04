@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -45,12 +44,13 @@ const fallbackVideoSettings: VideoSettings = {
   frameRate: 30,
   subtitles: { enabled: true, position: "bottom", size: "medium", maxLines: 2 },
   assetAcquisition: {
-    enabled: false,
-    sources: ["wikimedia", "youtube", "bilibili"],
+    enabled: true,
+    sources: ["wikimedia"],
     maxAssets: 3,
-    copyrightStatus: "licensed",
+    copyrightStatus: "public_domain",
     rightsConfirmed: false,
   },
+  noAssetDraft: { enabled: false },
 };
 
 function videoSettingsFromPreferences(preferences: CreationPreferences): VideoSettings {
@@ -70,6 +70,8 @@ export function CreateComposer() {
   const [options, setOptions] = useState<ComposerOptions | null>(null);
   const [selection, setSelection] = useState<ComposerSelection>(emptyComposerSelection);
   const [topic, setTopic] = useState("");
+  const [researchMode, setResearchMode] = useState<"off" | "when_missing" | "required">("when_missing");
+  const [researchSources, setResearchSources] = useState("");
   const [topicError, setTopicError] = useState("");
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [estimateState, setEstimateState] = useState<EstimateState>("idle");
@@ -80,8 +82,13 @@ export function CreateComposer() {
   const [createdRunId, setCreatedRunId] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(fallbackVideoSettings);
+  const [replacementSourceId, setReplacementSourceId] = useState("");
 
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);
+  const researchSourceUrls = useMemo(
+    () => researchSources.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+    [researchSources],
+  );
 
   const loadComposer = useCallback(async () => {
     setLoading(true);
@@ -107,7 +114,9 @@ export function CreateComposer() {
       setLoading(false);
       return;
     }
-    const requestedChannelId = new URLSearchParams(window.location.search).get("channel") ?? "";
+    const searchParams = new URLSearchParams(window.location.search);
+    const requestedChannelId = searchParams.get("channel") ?? "";
+    const requestedReplacementId = searchParams.get("replace") ?? "";
     let composerOptions = optionsResult.data;
     if (requestedChannelId && !composerOptions.channels.some((channel) => channel.id === requestedChannelId)) {
       const channelResult = await adapter.getChannel(requestedChannelId);
@@ -119,11 +128,49 @@ export function CreateComposer() {
         composerOptions = { ...composerOptions, channels: [channelResult.data.value, ...composerOptions.channels] };
       }
     }
-    setOptions(composerOptions);
-    setSelection(selectionFromComposerOptions(composerOptions, requestedChannelId));
-    if (preferencesResult.ok) {
-      setVideoSettings(videoSettingsFromPreferences(preferencesResult.data.value));
+    let nextSelection = selectionFromComposerOptions(composerOptions, requestedChannelId);
+    let nextVideoSettings = preferencesResult.ok
+      ? videoSettingsFromPreferences(preferencesResult.data.value)
+      : fallbackVideoSettings;
+    setReplacementSourceId("");
+    if (requestedReplacementId) {
+      const sourceResult = await adapter.getRun(requestedReplacementId);
+      if (!sourceResult.ok) {
+        setOptions(null);
+        setLoadError(sourceResult.error.message || "无法读取待替换素材的草案");
+        setLoading(false);
+        return;
+      }
+      const source = sourceResult.data;
+      const skillAvailable = composerOptions.skills.some((item) => item.versionId === source.composition.skillVersionId);
+      const pipelineAvailable = composerOptions.pipelines.some((item) => item.id === source.composition.pipelineVersionId);
+      if (!skillAvailable || !pipelineAvailable) {
+        setOptions(null);
+        setLoadError("草案使用的 Skill 或 Pipeline 已不可用，无法保持同一制作方案重剪。");
+        setLoading(false);
+        return;
+      }
+      const availableLibraryIds = new Set(composerOptions.assetLibraries.map((item) => item.id));
+      nextSelection = {
+        channelId: composerOptions.channels.some((item) => item.id === source.channelId) ? source.channelId ?? "" : "",
+        skillVersionId: source.composition.skillVersionId,
+        pipelineVersionId: source.composition.pipelineVersionId,
+        assetLibraryIds: source.composition.assetLibraryIds.filter((id) => availableLibraryIds.has(id)),
+        voiceProfileId: source.composition.voiceProfileId ?? "",
+        renderPresetVersionId: source.composition.renderPresetVersionId ?? "",
+      };
+      nextVideoSettings = {
+        ...(source.videoSettings ?? nextVideoSettings),
+        noAssetDraft: { enabled: false },
+      };
+      setTopic(source.topic);
+      setShowAdvanced(true);
+      setReplacementSourceId(source.id);
+      setMessage("已载入原草案的主题、版本和视频规格。可选择真实素材库，或由系统自动补充公版素材后重剪。");
     }
+    setOptions(composerOptions);
+    setSelection(nextSelection);
+    setVideoSettings(nextVideoSettings);
     setLoading(false);
   }, [adapter]);
 
@@ -150,6 +197,8 @@ export function CreateComposer() {
       adapter.estimateRun({
         workspaceId,
         topic: topic.trim() || "未命名主题",
+        researchMode,
+        sourceUrls: researchSourceUrls,
         channelId: selection.channelId || undefined,
         composition: {
           skillVersionId: selection.skillVersionId,
@@ -175,7 +224,7 @@ export function CreateComposer() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [adapter, options, selection, topic, videoSettings, workspaceId]);
+  }, [adapter, options, researchMode, researchSourceUrls, selection, topic, videoSettings, workspaceId]);
 
   function chooseChannel(channelId: string) {
     const channel = options?.channels.find((item) => item.id === channelId);
@@ -204,6 +253,14 @@ export function CreateComposer() {
       setMessage("当前组合不完整，请先选择已发布的 Skill 和 Pipeline。");
       return;
     }
+    if (
+      replacementSourceId
+      && selection.assetLibraryIds.length === 0
+      && !videoSettings.assetAcquisition.enabled
+    ) {
+      setMessage("替换重剪需要选择真实素材库或开启自动补充；原草案不会被覆盖。");
+      return;
+    }
 
     setTopicError("");
     setSubmitting(true);
@@ -212,6 +269,8 @@ export function CreateComposer() {
     const result = await adapter.createRun({
       workspaceId,
       topic: topic.trim(),
+      researchMode,
+      sourceUrls: researchSourceUrls,
       channelId: selection.channelId || undefined,
       composition: {
         skillVersionId: selection.skillVersionId,
@@ -244,10 +303,14 @@ export function CreateComposer() {
   const hasOptions = Boolean(options && options.skills.length > 0 && options.pipelines.length > 0);
   const selectedSkill = options?.skills.find((item) => item.versionId === selection.skillVersionId);
   const selectedChannel = options?.channels.find((item) => item.id === selection.channelId);
+  const providerVerifiedPublicDomain = (
+    videoSettings.assetAcquisition.sources.length === 1
+    && videoSettings.assetAcquisition.sources[0] === "wikimedia"
+    && videoSettings.assetAcquisition.copyrightStatus === "public_domain"
+  );
   const acquisitionIncomplete = videoSettings.assetAcquisition.enabled && (
-    !videoSettings.assetAcquisition.rightsConfirmed
+    (!videoSettings.assetAcquisition.rightsConfirmed && !providerVerifiedPublicDomain)
     || videoSettings.assetAcquisition.sources.length === 0
-    || selection.assetLibraryIds.length === 0
   );
   const capabilitiesUnknown = estimateState === "ready" && estimate?.capabilitiesKnown === false;
   const preflightBlocked = estimateState === "checking"
@@ -262,21 +325,38 @@ export function CreateComposer() {
         <div className="create-intro">
           <p className="eyebrow">01 / CREATE · DIRECTOR&apos;S DESK</p>
           <h1 id="create-title" tabIndex={-1}>把一个想法，变成可发布的内容</h1>
-          <p>从选题到成片，调用你的 Skill、素材与制作流程。每次运行都保存独立版本快照，过程可追踪、可恢复。</p>
+          <p>从输入、生成与人工审核，到最终成片和证据报告。每次运行都保存独立版本快照，过程可追踪、可恢复。</p>
           <div className="create-intro-actions">
-            <Link className="button" href="/create/ai">进入全 AI 影片</Link>
-            <Link className="button-ghost" href="/create/webpage-video">网页截图成片</Link>
+            <Link className="button" href="/create/application-demo">开始推荐演示</Link>
+            <a className="button-secondary" href="#standard-composer">进入标准创作</a>
             <Link className="button-ghost" href="/projects">查看制作队列</Link>
-            <span><i aria-hidden="true" /> CONTROLLED WORKFLOW</span>
           </div>
         </div>
 
-        <div className="cinema-board" aria-hidden="true">
-          <div className="film-frame film-frame--one"><Image src="/create/research-planning.webp" alt="" fill sizes="(max-width: 767px) 46vw, 22vw" priority /><span>RESEARCH_01</span></div>
-          <div className="film-frame film-frame--two"><Image src="/create/voice-recording.webp" alt="" fill sizes="(max-width: 767px) 49vw, 24vw" priority /><span>VOICE_02</span></div>
-          <div className="film-frame film-frame--three"><Image src="/create/final-grade.webp" alt="" fill sizes="(max-width: 767px) 48vw, 26vw" priority /><span>FINAL_CUT</span></div>
-          <div className="film-frame film-frame--four"><Image src="/create/editing-timeline.webp" alt="" fill sizes="18vw" priority /><span>FRAME / 024</span></div>
-          <div className="cinema-reticle"><i /><span>READY</span></div>
+      </section>
+
+      <section className="create-paths" aria-labelledby="create-paths-title">
+        <div className="create-paths-heading">
+          <p className="eyebrow">CHOOSE A WORKFLOW</p>
+          <h2 id="create-paths-title">选择最接近目标的起点</h2>
+          <p>首次体验建议从申请演示开始；每条路径都会明确展示输入、人工门禁、成本和最终产物。</p>
+        </div>
+        <div className="create-path-grid">
+          <Link className="create-path-card create-path-card--recommended" href="/create/application-demo">
+            <span>推荐</span><h3>申请评审演示</h3><p>用公开网页完成截图、镜头板审核、成片和证据报告闭环。</p><strong>约 3–5 分钟完成配置 →</strong>
+          </Link>
+          <Link className="create-path-card" href="/create/ai">
+            <span>GENERATED</span><h3>全 AI 影片</h3><p>无现有素材时，从脚本、画面到声音全流程生成。</p><strong>进入生成工作台 →</strong>
+          </Link>
+          <Link className="create-path-card" href="/create/webpage-video">
+            <span>WEB CAPTURE</span><h3>网页截图成片</h3><p>将网站内容整理为可审核、可追溯的短视频。</p><strong>创建网页视频 →</strong>
+          </Link>
+          <Link className="create-path-card" href="/create/document-video">
+            <span>LOCAL PILOT</span><h3>文件讲解视频</h3><p>以 PDF 页面为证据层，叠加旁白、字幕与非事实性动态底图。</p><strong>打开本地试运行入口 →</strong>
+          </Link>
+          <Link className="create-path-card" href="/create/broadcast-revival">
+            <span>INDUSTRY</span><h3>广电记忆活化</h3><p>面向历史影像整理、审核和再创作的行业流程。</p><strong>打开行业工作流 →</strong>
+          </Link>
         </div>
       </section>
 
@@ -307,9 +387,10 @@ export function CreateComposer() {
       ) : null}
 
       {!loading && options && hasOptions ? (
-        <form className="composer-workbench" onSubmit={submit}>
+        <form id="standard-composer" className="composer-workbench" onSubmit={submit}>
           <div className="composer-main">
-            <section className="panel composer-hero theme-inverse">
+            {replacementSourceId ? <div className="alert" role="status"><strong>正在从草案派生替换重剪</strong><p>原 Run {replacementSourceId.slice(0, 8)} 保持不可变；新 Run 复用其主题、版本和规格，并强制关闭占位画面降级。</p></div> : null}
+            <section className="panel composer-hero">
               <div className="composer-section-label">
                 <span>01</span>
                 <p>创作主题</p>
@@ -383,6 +464,28 @@ export function CreateComposer() {
                     <span>RUN OVERRIDE</span>
                   </div>
                   <div className="field video-setting-field">
+                    <span className="field-label">内容研究</span>
+                    <UiSelect ariaLabel="内容研究模式" value={researchMode} onChange={(value) => setResearchMode(value as typeof researchMode)}>
+                      <option value="when_missing">缺少来源时联网</option>
+                      <option value="required">始终联网查证</option>
+                      <option value="off">不联网，使用所填来源</option>
+                    </UiSelect>
+                    <span className="field-help">不联网模式只接受 HTTPS 来源，数量必须满足所选 Skill。</span>
+                  </div>
+                  {researchMode === "off" ? (
+                    <label className="field field--wide">
+                      <span className="field-label">事实来源 URL</span>
+                      <textarea
+                        className="textarea theme-input"
+                        value={researchSources}
+                        onChange={(event) => setResearchSources(event.target.value)}
+                        placeholder={"每行一个 HTTPS URL\nhttps://example.com/source"}
+                        aria-describedby="research-sources-help"
+                      />
+                      <span className="field-help" id="research-sources-help">已填写 {researchSourceUrls.length} 条；服务端会去重、校验 HTTPS 并执行 Skill 的 minimum_sources 门禁。</span>
+                    </label>
+                  ) : null}
+                  <div className="field video-setting-field">
                     <span className="field-label">画幅</span>
                     <UiSelect ariaLabel="本次视频画幅" value={videoSettings.aspectRatio} onChange={(aspectRatio) => setVideoSettings((current) => ({ ...current, aspectRatio: aspectRatio as VideoSettings["aspectRatio"] }))}>
                       <option value="9:16">9:16 竖屏</option>
@@ -430,12 +533,27 @@ export function CreateComposer() {
                     </UiSelect>
                     <span className="field-help">渲染时按输出高度映射为实际字号</span>
                   </div>
-                  <div className="field field--wide acquisition-control" data-disabled={selection.assetLibraryIds.length === 0 || undefined}>
+                  <label className="checkbox-field field--wide" aria-label="允许无素材编辑草案">
+                    <input
+                      type="checkbox"
+                      checked={videoSettings.noAssetDraft.enabled}
+                      disabled={Boolean(replacementSourceId)}
+                      onChange={(event) => setVideoSettings((current) => ({
+                        ...current,
+                        noAssetDraft: { enabled: event.target.checked },
+                      }))}
+                    />
+                    <span>
+                      <strong>{replacementSourceId ? "替换重剪必须使用真实素材" : "无素材时先生成可剪草案"}</strong>
+                      <small>{replacementSourceId ? "该选项已关闭，素材仍不足时会明确停止，避免再次生成占位草案。" : "没有可用画面时，用程序化编辑卡片、旁白和字幕完成 MP4 与视频计划；该产物必须复核并替换画面后才能发布。"}</small>
+                    </span>
+                  </label>
+                  <div className="field field--wide acquisition-control">
                     <div className="acquisition-card">
                       <span className="acquisition-mark" aria-hidden="true">↗</span>
                       <div className="acquisition-copy">
-                        <div><strong id="asset-acquisition-label">素材不足时自动补充</strong><Badge tone={videoSettings.assetAcquisition.enabled ? "success" : selection.assetLibraryIds.length ? "neutral" : "warning"}>{videoSettings.assetAcquisition.enabled ? "已开启" : selection.assetLibraryIds.length ? "可选功能" : "需要素材库"}</Badge></div>
-                        <p>仅在当前素材库无法覆盖脚本场景时启动；下载后先分析入库，再重新执行语义匹配。</p>
+                        <div><strong id="asset-acquisition-label">无素材或素材不足时自动补充</strong><Badge tone={videoSettings.assetAcquisition.enabled ? "success" : "warning"}>{videoSettings.assetAcquisition.enabled ? "默认开启" : "已关闭"}</Badge></div>
+                        <p>没有素材库时会自动创建私有补材库；系统按脚本缺口检索、下载、分析入库，再重新执行语义匹配。</p>
                       </div>
                       <label className="acquisition-toggle" htmlFor="asset-acquisition-enabled">
                       <input
@@ -443,7 +561,6 @@ export function CreateComposer() {
                         aria-labelledby="asset-acquisition-label"
                         type="checkbox"
                         checked={videoSettings.assetAcquisition.enabled}
-                        disabled={selection.assetLibraryIds.length === 0}
                         onChange={(event) => setVideoSettings((current) => ({
                           ...current,
                           assetAcquisition: {
@@ -464,7 +581,7 @@ export function CreateComposer() {
                       <li><span>02</span>仅检索缺口</li>
                       <li><span>03</span>分析后重新匹配</li>
                     </ol>
-                    <span className="field-help">{selection.assetLibraryIds.length ? "还需选择允许来源并确认素材使用权；自动补充素材会进入已选的第一个素材库，未配置下载供应商时任务会返回明确错误。" : "请先在下方制作组合中选择素材库，才能启用自动补充。"}</span>
+                    <span className="field-help">{selection.assetLibraryIds.length ? "补充素材会进入已选的第一个素材库；未配置下载供应商时任务会返回明确错误。" : "无需预先建立素材库；创建任务时会自动建立并复用工作区私有补材库。"}</span>
                   </div>
                   {videoSettings.assetAcquisition.enabled ? <>
                     <div className="field field--wide acquisition-options">
@@ -501,7 +618,12 @@ export function CreateComposer() {
                         </label>
                       </div>
                     </div>
-                    <div className="field field--wide acquisition-rights">
+                    {providerVerifiedPublicDomain ? <div className="field field--wide acquisition-rights">
+                      <div className="check-row">
+                        <span aria-hidden="true">✓</span>
+                        <p><strong>Wikimedia 公版证据自动核验</strong><small>只有 Commons API 可证明为 Public Domain 或 CC0，且下载文件与证据页面一致的素材才会入库。</small></p>
+                      </div>
+                    </div> : <div className="field field--wide acquisition-rights">
                       <div className="check-row">
                         <input
                           id="asset-rights-confirmed"
@@ -510,9 +632,9 @@ export function CreateComposer() {
                           checked={videoSettings.assetAcquisition.rightsConfirmed}
                           onChange={(event) => setVideoSettings((current) => ({ ...current, assetAcquisition: { ...current.assetAcquisition, rightsConfirmed: event.target.checked } }))}
                         />
-                        <label id="asset-rights-label" htmlFor="asset-rights-confirmed"><strong>我确认有权使用自动获取的素材</strong><small>系统不会将勾选本身视为平台授权；发布前仍需核验来源许可、人物权利及水印。</small></label>
+                        <label id="asset-rights-label" htmlFor="asset-rights-confirmed"><strong>我确认有权使用所选来源素材</strong><small>可访问不等于获授权；发布前仍需核验来源许可、人物权利及水印。</small></label>
                       </div>
-                    </div>
+                    </div>}
                   </> : null}
                 </div>
                 <div className="composition-list">
@@ -564,6 +686,7 @@ export function CreateComposer() {
               <div><dt>预计耗时</dt><dd>{estimate ? `约 ${Math.max(1, Math.ceil(estimate.durationSeconds / 60))} 分钟` : estimateState === "server" ? "创建时评估" : "—"}</dd></div>
               <div><dt>视频规格</dt><dd>{videoSettings.aspectRatio} · {videoSettings.targetDurationSeconds} 秒</dd></div>
               <div><dt>画面版式</dt><dd>{videoSettings.layout === "editorial" ? "编辑分区" : "沉浸全画面"}</dd></div>
+              <div><dt>无素材策略</dt><dd>{videoSettings.assetAcquisition.enabled ? "自动检索、入库并重匹配" : videoSettings.noAssetDraft.enabled ? "生成可替换草案" : "素材不足即停止"}</dd></div>
               <div><dt>执行方式</dt><dd>版本快照</dd></div>
             </dl>
             {capabilitiesUnknown ? (
@@ -579,7 +702,7 @@ export function CreateComposer() {
             ) : acquisitionIncomplete ? (
               <div className="alert alert--error" role="alert">
                 <strong>自动补素材设置尚未完成</strong>
-                <p>{selection.assetLibraryIds.length === 0 ? "请选择接收自动素材的素材库。" : videoSettings.assetAcquisition.sources.length === 0 ? "请至少选择一个素材来源。" : "请确认你有权使用自动获取的素材。"}</p>
+                <p>{videoSettings.assetAcquisition.sources.length === 0 ? "请至少选择一个素材来源。" : "请确认自动获取素材的许可策略。"}</p>
               </div>
             ) : (
               <ul className="capability-list">
@@ -589,7 +712,7 @@ export function CreateComposer() {
               </ul>
             )}
             <button className="button composer-submit" type="submit" disabled={submitting || preflightBlocked}>
-              <span>{submitting ? "正在创建项目" : "创建项目并开始"}</span>
+              <span>{submitting ? "正在创建项目" : replacementSourceId ? "创建替换重剪 Run" : "创建项目并开始"}</span>
               <i aria-hidden="true">↗</i>
             </button>
             <div className={`composer-status${createdRunId ? " composer-status--success" : ""}`} role="status" aria-live="polite">

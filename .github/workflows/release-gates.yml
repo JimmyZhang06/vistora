@@ -21,6 +21,11 @@ on:
         required: true
         default: false
         type: boolean
+      run_live_document_video:
+        description: Run the rights-approved PDF-to-final-MP4 acceptance gate
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -482,6 +487,54 @@ jobs:
 
       - name: Verify PostgreSQL artifact metadata against S3
         run: python tools/release/s3_integrity_gate.py
+
+  protected-document-video:
+    name: Protected PDF-to-video acceptance
+    needs: [api, worker, contracts-seeds-tools, web]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_live_document_video
+    runs-on: [self-hosted, release-verification]
+    environment: release-verification
+    timeout-minutes: 150
+    env:
+      FF_RELEASE_API_URL: ${{ secrets.FF_RELEASE_API_URL }}
+      FF_RELEASE_API_TOKEN: ${{ secrets.FF_RELEASE_API_TOKEN }}
+      FF_RELEASE_API_KEY: ${{ secrets.FF_RELEASE_API_KEY }}
+      FF_RELEASE_WORKSPACE_ID: ${{ vars.FF_RELEASE_DOCUMENT_WORKSPACE_ID }}
+      FF_RELEASE_DOCUMENT_PDF: ${{ vars.FF_RELEASE_DOCUMENT_PDF }}
+      FF_RELEASE_DOCUMENT_RIGHTS_CONFIRMED: ${{ vars.FF_RELEASE_DOCUMENT_RIGHTS_CONFIRMED }}
+      FF_RELEASE_DOCUMENT_AUTO_APPROVE: ${{ vars.FF_RELEASE_DOCUMENT_AUTO_APPROVE }}
+      FF_RELEASE_DOCUMENT_VERIFY_PURGE: "1"
+      FF_RELEASE_DOCUMENT_DURATION_SECONDS: ${{ vars.FF_RELEASE_DOCUMENT_DURATION_SECONDS }}
+      FF_RELEASE_DOCUMENT_ASPECT_RATIO: ${{ vars.FF_RELEASE_DOCUMENT_ASPECT_RATIO }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify protected runner media tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python
+          command -v ffprobe
+
+      - name: Run immutable PDF through reviews, MP4 verification, and purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release
+          python tools/release/document_video_e2e_gate.py \
+            | tee artifacts/release/document-video-e2e-gate.json
+
+      - name: Upload document-video acceptance report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protected-document-video-release
+          path: artifacts/release/document-video-e2e-gate.json
+          if-no-files-found: error
+          retention-days: 30
 
   protected-backup-restore:
     name: Protected quiesced backup and restore

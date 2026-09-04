@@ -362,11 +362,35 @@ def _validate_manifest_gate(
     generated_audit_ref: ArtifactRef | None = None
     operation = manifest.get("operation")
     if operation == "media.retrieve":
-        if (
-            manifest.get("provider") != "database-asset-library"
-            or manifest.get("catalog_scope") != "local"
-            or manifest.get("local_catalog_only") is not True
-        ):
+        local_catalog = (
+            manifest.get("provider") == "database-asset-library"
+            and manifest.get("catalog_scope") == "local"
+            and manifest.get("local_catalog_only") is True
+        )
+        fallback = manifest.get("editorial_fallback")
+        procedural_draft = (
+            manifest.get("provider") == "procedural-editorial-cards"
+            and manifest.get("catalog_scope") == "run"
+            and manifest.get("local_catalog_only") is False
+            and isinstance(fallback, Mapping)
+            and fallback.get("enabled") is True
+            and fallback.get("mode") == "procedural_cards"
+            and fallback.get("draft") is True
+            and fallback.get("replacement_required") is True
+        )
+        hybrid_draft = (
+            manifest.get("provider") == "hybrid-local-and-editorial"
+            and manifest.get("catalog_scope") == "run"
+            and manifest.get("local_catalog_only") is False
+            and isinstance(manifest.get("retrieval_policy"), Mapping)
+            and isinstance(manifest.get("acquisition"), Mapping)
+            and isinstance(fallback, Mapping)
+            and fallback.get("enabled") is True
+            and fallback.get("mode") == "procedural_cards"
+            and fallback.get("draft") is True
+            and fallback.get("replacement_required") is True
+        )
+        if not local_catalog and not procedural_draft and not hybrid_draft:
             raise PermanentStepError("candidate manifest is not a local catalog snapshot")
     elif operation == "media.generate":
         generation = manifest.get("generation")

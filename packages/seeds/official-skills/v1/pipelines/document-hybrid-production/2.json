@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "id": "0979fced-2c88-514a-a13a-1f7863798e62",
+  "workspace_id": "b5ec9caa-2b49-5c91-9dc0-798645c11a37",
+  "ownership_type": "system",
+  "name": "文档证据混合讲解视频生产",
+  "slug": "document-hybrid-production",
+  "description": "先验证不可变 PDF 来源，再提取和审核页面证据，以文档截图为事实层、程序化动效为装饰底图，合成可溯源讲解视频。Agnes 未配置时留下审计记录并使用契约允许的非事实程序化背景。",
+  "visibility": "public_readonly",
+  "status": "active",
+  "version": 2,
+  "nodes": [
+    {"key": "inspect", "operation": "document.inspect", "depends_on": [], "required": true, "maximum_attempts": 1, "timeout_seconds": 120, "review_gate": false},
+    {"key": "extract", "operation": "document.extract", "depends_on": ["inspect"], "required": true, "maximum_attempts": 2, "timeout_seconds": 600, "review_gate": false},
+    {"key": "write", "operation": "writing.compose.document", "depends_on": ["extract"], "required": true, "maximum_attempts": 3, "timeout_seconds": 300, "review_gate": false},
+    {"key": "storyboard", "operation": "document.storyboard.plan", "depends_on": ["extract", "write"], "required": true, "maximum_attempts": 2, "timeout_seconds": 300, "review_gate": true},
+    {"key": "materialize", "operation": "document.materialize", "depends_on": ["extract", "storyboard"], "required": true, "maximum_attempts": 2, "timeout_seconds": 600, "review_gate": false},
+    {"key": "augment", "operation": "media.augment", "depends_on": ["storyboard"], "required": true, "maximum_attempts": 2, "timeout_seconds": 1800, "review_gate": false},
+    {"key": "tts", "operation": "audio.synthesize", "depends_on": ["write"], "required": true, "maximum_attempts": 3, "timeout_seconds": 900, "review_gate": false},
+    {"key": "timeline", "operation": "document.timeline.align", "depends_on": ["storyboard", "materialize", "augment", "tts"], "required": true, "maximum_attempts": 2, "timeout_seconds": 300, "review_gate": false},
+    {"key": "render", "operation": "render.composite", "depends_on": ["materialize", "augment", "tts", "timeline"], "required": true, "maximum_attempts": 2, "timeout_seconds": 3600, "review_gate": false},
+    {"key": "quality", "operation": "quality.evaluate.document", "depends_on": ["extract", "storyboard", "timeline", "render"], "required": true, "maximum_attempts": 2, "timeout_seconds": 900, "review_gate": true}
+  ],
+  "capability_requirements": [
+    "document.inspect", "document.extract", "writing.compose.document", "document.storyboard.plan",
+    "document.materialize", "media.augment", "audio.synthesize", "document.timeline.align",
+    "render.composite", "quality.evaluate.document"
+  ],
+  "content_hash": "635bca200dbe17dd81daba10885853bf29706f9e81d1097a1772e511276d287a",
+  "created_by": "e1574325-feff-5570-a90f-2261616c9872",
+  "created_at": "2026-09-04T00:00:00Z",
+  "published_at": "2026-09-04T00:00:00Z"
+}

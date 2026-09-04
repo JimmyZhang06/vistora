@@ -15,7 +15,15 @@ from framefactory.worker.generation import (
     RunwayTaskStatus,
     RunwayTextVideoRequest,
 )
-from framefactory.worker.generation.runway import RunwayTransportFailure
+from framefactory.worker.generation.runway import (
+    PinnedRunwayOutputTransport,
+    RunwayOutputPolicyFailure,
+    RunwayTransportFailure,
+)
+from framefactory.worker.web_capture.security import (
+    PublicHttpsPolicy,
+    PublicHttpsUrlValidator,
+)
 
 TASK_ID = "d2e3d1f4-1b3c-4b5c-8d46-1c1d7ee86892"
 
@@ -36,17 +44,19 @@ class FakeTransport:
 
     def request(
         self,
-        method: str,
-        url: str,
+        method_or_url: str,
+        url: str | None = None,
         *,
         headers: Mapping[str, str],
-        body: bytes | None,
+        body: bytes | None = None,
         timeout_seconds: float,
         maximum_response_bytes: int,
     ) -> RunwayHttpResponse:
         del timeout_seconds
+        method = method_or_url if url is not None else "GET"
+        requested_url = url or method_or_url
         self.requests.append(
-            RequestRecord(method, url, dict(headers), body, maximum_response_bytes)
+            RequestRecord(method, requested_url, dict(headers), body, maximum_response_bytes)
         )
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -73,6 +83,66 @@ def response(
     )
 
 
+class FakeHttpResponse:
+    def __init__(
+        self,
+        status: int,
+        body: bytes,
+        headers: Mapping[str, str],
+    ) -> None:
+        self.status = status
+        self._body = body
+        self._headers = dict(headers)
+
+    def read(self, maximum_bytes: int) -> bytes:
+        return self._body[:maximum_bytes]
+
+    def getheaders(self) -> list[tuple[str, str]]:
+        return list(self._headers.items())
+
+
+class FakePinnedConnection:
+    def __init__(self, response: FakeHttpResponse) -> None:
+        self.response = response
+        self.requests: list[tuple[str, str, Mapping[str, str]]] = []
+        self.closed = False
+
+    def request(
+        self,
+        method: str,
+        target: str,
+        *,
+        headers: Mapping[str, str],
+    ) -> None:
+        self.requests.append((method, target, dict(headers)))
+
+    def getresponse(self) -> FakeHttpResponse:
+        return self.response
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakePinnedConnectionFactory:
+    def __init__(self, *responses: FakeHttpResponse) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, int, str, float]] = []
+        self.connections: list[FakePinnedConnection] = []
+
+    def __call__(
+        self,
+        hostname: str,
+        port: int,
+        resolved_ip: str,
+        *,
+        timeout_seconds: float,
+    ) -> FakePinnedConnection:
+        self.calls.append((hostname, port, resolved_ip, timeout_seconds))
+        connection = FakePinnedConnection(self.responses.pop(0))
+        self.connections.append(connection)
+        return connection
+
+
 def request() -> RunwayTextVideoRequest:
     return RunwayTextVideoRequest(
         prompt_text="A cinematic mountain sunrise with a slow camera push.",
@@ -89,6 +159,7 @@ class RunwayClientTests(unittest.TestCase):
             api_key="secret-for-test",
             timeout_seconds=10,
             transport=transport,
+            output_transport=transport,
         )
 
     def test_client_rejects_plaintext_base_url_even_with_fake_transport(self) -> None:
@@ -265,6 +336,146 @@ class RunwayClientTests(unittest.TestCase):
             client.download_output("http://cdn.example.test/generated.mp4", maximum_bytes=100)
         with self.assertRaises(RunwayPermanentError):
             client.download_output("https://cdn.example.test/generated.mp4", maximum_bytes=100)
+
+    def test_download_validates_and_pins_every_https_redirect_hop(self) -> None:
+        resolved_hosts: list[tuple[str, int]] = []
+
+        def resolve(hostname: str, port: int) -> tuple[str, ...]:
+            resolved_hosts.append((hostname, port))
+            return ("93.184.216.34",)
+
+        factory = FakePinnedConnectionFactory(
+            FakeHttpResponse(
+                302,
+                b"",
+                {"Location": "https://media.example.test/final.mp4?signature=redacted"},
+            ),
+            FakeHttpResponse(
+                200,
+                b"0000ftypisom-video-bytes",
+                {"Content-Type": "video/mp4"},
+            ),
+        )
+        output_transport = PinnedRunwayOutputTransport(
+            validator=PublicHttpsUrlValidator(
+                PublicHttpsPolicy(allow_non_standard_ports=True),
+                resolver=resolve,
+            ),
+            connection_factory=factory,
+        )
+        client = RunwayClient(
+            base_url="https://api.dev.runwayml.com",
+            api_key="-".join(("bearer", "secret", "for", "test")),  # noqa: FLY002
+            timeout_seconds=10,
+            transport=FakeTransport(),
+            output_transport=output_transport,
+        )
+
+        data, media_type = client.download_output(
+            "https://cdn.example.test/start.mp4", maximum_bytes=100
+        )
+
+        self.assertEqual("video/mp4", media_type)
+        self.assertEqual(b"0000ftypisom-video-bytes", data)
+        self.assertEqual(
+            [("cdn.example.test", 443), ("media.example.test", 443)], resolved_hosts
+        )
+        self.assertEqual(
+            [
+                ("cdn.example.test", 443, "93.184.216.34", 10),
+                ("media.example.test", 443, "93.184.216.34", 10),
+            ],
+            factory.calls,
+        )
+        self.assertEqual("/start.mp4", factory.connections[0].requests[0][1])
+        self.assertEqual(
+            "/final.mp4?signature=redacted", factory.connections[1].requests[0][1]
+        )
+        for connection in factory.connections:
+            self.assertTrue(connection.closed)
+            self.assertNotIn("Authorization", connection.requests[0][2])
+            self.assertNotIn("bearer-secret-for-test", repr(connection.requests))
+
+    def test_download_rejects_any_private_dns_answer_before_connecting(self) -> None:
+        factory = FakePinnedConnectionFactory()
+        output_transport = PinnedRunwayOutputTransport(
+            validator=PublicHttpsUrlValidator(
+                PublicHttpsPolicy(allow_non_standard_ports=True),
+                resolver=lambda _hostname, _port: ("93.184.216.34", "127.0.0.1"),
+            ),
+            connection_factory=factory,
+        )
+        client = RunwayClient(
+            base_url="https://api.dev.runwayml.com",
+            api_key="-".join(("bearer", "secret", "for", "test")),  # noqa: FLY002
+            timeout_seconds=10,
+            transport=FakeTransport(),
+            output_transport=output_transport,
+        )
+
+        with self.assertRaises(RunwayOutputPolicyFailure) as captured:
+            client.download_output(
+                "https://cdn.example.test/generated.mp4?token=must-not-leak",
+                maximum_bytes=100,
+            )
+
+        self.assertEqual([], factory.calls)
+        self.assertNotIn("must-not-leak", str(captured.exception))
+        self.assertNotIn("bearer-secret-for-test", str(captured.exception))
+
+    def test_download_rejects_private_redirect_before_second_connection(self) -> None:
+        def resolve(hostname: str, _port: int) -> tuple[str, ...]:
+            if hostname == "cdn.example.test":
+                return ("93.184.216.34",)
+            return ("10.0.0.8",)
+
+        factory = FakePinnedConnectionFactory(
+            FakeHttpResponse(
+                302,
+                b"",
+                {"Location": "https://private.example.test/video.mp4?token=hidden"},
+            )
+        )
+        output_transport = PinnedRunwayOutputTransport(
+            validator=PublicHttpsUrlValidator(
+                PublicHttpsPolicy(allow_non_standard_ports=True),
+                resolver=resolve,
+            ),
+            connection_factory=factory,
+        )
+        client = RunwayClient(
+            base_url="https://api.dev.runwayml.com",
+            api_key="secret-for-test",
+            timeout_seconds=10,
+            transport=FakeTransport(),
+            output_transport=output_transport,
+        )
+
+        with self.assertRaises(RunwayOutputPolicyFailure) as captured:
+            client.download_output(
+                "https://cdn.example.test/start.mp4", maximum_bytes=100
+            )
+
+        self.assertEqual(1, len(factory.calls))
+        self.assertNotIn("hidden", str(captured.exception))
+
+    def test_download_redirect_limit_is_fail_closed(self) -> None:
+        redirects = [
+            response(
+                302,
+                b"",
+                headers={"location": f"https://cdn.example.test/{index}.mp4"},
+            )
+            for index in range(6)
+        ]
+        transport = FakeTransport(*redirects)
+
+        with self.assertRaisesRegex(RunwayOutputPolicyFailure, "redirect limit"):
+            self.client(transport).download_output(
+                "https://cdn.example.test/start.mp4", maximum_bytes=100
+            )
+
+        self.assertEqual(6, len(transport.requests))
 
 
 class RunwayRequestTests(unittest.TestCase):

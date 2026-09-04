@@ -11,14 +11,24 @@ from __future__ import annotations
 
 import json
 import math
+import socket
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from http.client import HTTPException, HTTPSConnection
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 from uuid import UUID
+
+from ..web_capture.security import (
+    PublicHttpsPolicy,
+    PublicHttpsUrlValidator,
+    UnsafeWebUrl,
+    ValidatedWebUrl,
+)
 
 RUNWAY_API_VERSION = "2024-11-06"
 _TEXT_TO_VIDEO_PATH = "v1/text_to_video"
@@ -29,6 +39,9 @@ _QUERY_SAFE_RETRY_HTTP_STATUSES = frozenset({429, 502, 503, 504})
 _PERMANENT_HTTP_STATUSES = frozenset({400, 401, 404, 405})
 _GEN45_RATIOS = frozenset({"1280:720", "720:1280"})
 _OUTPUT_MEDIA_TYPES = frozenset({"video/mp4", "application/octet-stream"})
+_OUTPUT_REDIRECT_HTTP_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_OUTPUT_REDIRECTS = 5
+_MAX_NON_OUTPUT_RESPONSE_BYTES = 65_536
 
 
 class RunwayError(Exception):
@@ -55,6 +68,10 @@ class RunwayTransportFailure(Exception):
     """Low-level network failure with no trustworthy HTTP response."""
 
 
+class RunwayOutputPolicyFailure(RunwayPermanentError):
+    """An output URL cannot be proven to remain on public HTTPS infrastructure."""
+
+
 @dataclass(frozen=True, slots=True)
 class RunwayHttpResponse:
     status: int
@@ -71,6 +88,17 @@ class RunwayTransport(Protocol):
         *,
         headers: Mapping[str, str],
         body: bytes | None,
+        timeout_seconds: float,
+        maximum_response_bytes: int,
+    ) -> RunwayHttpResponse: ...
+
+
+class RunwayOutputTransport(Protocol):
+    def request(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
         timeout_seconds: float,
         maximum_response_bytes: int,
     ) -> RunwayHttpResponse: ...
@@ -114,6 +142,115 @@ class UrllibRunwayTransport:
             )
         except (TimeoutError, URLError, OSError) as exc:
             raise RunwayTransportFailure("Runway transport did not return an HTTP response") from exc
+
+
+class _PinnedHttpsConnection(HTTPSConnection):
+    """Connect to one validated IP while retaining the URL host for TLS and Host."""
+
+    def __init__(
+        self,
+        hostname: str,
+        port: int,
+        resolved_ip: str,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=timeout_seconds,
+            context=ssl.create_default_context(),
+        )
+        self._resolved_ip = resolved_ip
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self._resolved_ip, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        try:
+            self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+        except BaseException:
+            raw_socket.close()
+            raise
+
+
+class PinnedRunwayOutputTransport:
+    """Fail-closed output transport with DNS-all-global validation and IP pinning."""
+
+    def __init__(
+        self,
+        *,
+        validator: PublicHttpsUrlValidator | None = None,
+        connection_factory: Any | None = None,
+    ) -> None:
+        self._validator = validator or PublicHttpsUrlValidator(
+            PublicHttpsPolicy(
+                allow_non_standard_ports=True,
+                maximum_url_characters=16_384,
+            )
+        )
+        self._connection_factory = connection_factory or _PinnedHttpsConnection
+
+    def request(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+        maximum_response_bytes: int,
+    ) -> RunwayHttpResponse:
+        if maximum_response_bytes < 1:
+            raise ValueError("maximum_response_bytes must be positive")
+        validated = self._validate(url)
+        last_error: BaseException | None = None
+        for resolved_ip in validated.resolved_ips:
+            connection: Any | None = None
+            try:
+                connection = self._connection_factory(
+                    validated.hostname,
+                    validated.port,
+                    resolved_ip,
+                    timeout_seconds=timeout_seconds,
+                )
+                connection.request(
+                    "GET",
+                    _request_target(validated.navigation_url),
+                    headers=dict(headers),
+                )
+                response = connection.getresponse()
+                maximum_bytes = (
+                    maximum_response_bytes
+                    if int(response.status) == 200
+                    else min(maximum_response_bytes, _MAX_NON_OUTPUT_RESPONSE_BYTES)
+                )
+                body = _bounded_read(response, maximum_bytes)
+                return RunwayHttpResponse(
+                    status=int(response.status),
+                    headers={key.casefold(): value for key, value in response.getheaders()},
+                    body=body,
+                    final_url=validated.navigation_url,
+                )
+            except (HTTPException, OSError) as exc:
+                last_error = exc
+            finally:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except OSError:
+                        pass
+        raise RunwayTransportFailure(
+            "Runway output download did not return an HTTP response"
+        ) from last_error
+
+    def _validate(self, url: str) -> ValidatedWebUrl:
+        try:
+            return self._validator.validate(url)
+        except UnsafeWebUrl as exc:
+            raise RunwayOutputPolicyFailure(
+                "Runway output URL is not a public credential-free HTTPS destination"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +328,7 @@ class RunwayClient:
         api_key: str,
         timeout_seconds: float,
         transport: RunwayTransport | None = None,
+        output_transport: RunwayOutputTransport | None = None,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme != "https" or not parsed.hostname:
@@ -205,6 +343,7 @@ class RunwayClient:
         self._api_key = api_key.strip()
         self._timeout_seconds = timeout_seconds
         self._transport = transport or UrllibRunwayTransport()
+        self._output_transport = output_transport or PinnedRunwayOutputTransport()
 
     def submit_text_to_video(self, request: RunwayTextVideoRequest) -> RunwaySubmitReceipt:
         payload = _canonical_json_bytes(request.to_payload())
@@ -259,36 +398,12 @@ class RunwayClient:
         raise AssertionError("unreachable")
 
     def download_output(self, url: str, *, maximum_bytes: int) -> tuple[bytes, str]:
-        _https_url(url, field="Runway output URL")
-        if maximum_bytes < 1:
-            raise ValueError("maximum output bytes must be positive")
-        try:
-            response = self._transport.request(
-                "GET",
-                url,
-                headers={"User-Agent": "Vistora-FrameFactory/1.0"},
-                body=None,
-                timeout_seconds=self._timeout_seconds,
-                maximum_response_bytes=maximum_bytes,
-            )
-        except RunwayTransportFailure as exc:
-            raise RunwayRetryableError("Runway output download failed before an HTTP response") from exc
-        if response.status in _QUERY_SAFE_RETRY_HTTP_STATUSES:
-            raise RunwayRetryableError(
-                "Runway output download is temporarily unavailable",
-                retry_after_seconds=_retry_after(response.headers),
-            )
-        if response.status != 200:
-            raise RunwayPermanentError(
-                f"Runway output download returned HTTP {response.status}"
-            )
-        _https_url(response.final_url, field="Runway output redirect")
-        media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if media_type not in _OUTPUT_MEDIA_TYPES:
-            raise RunwayPermanentError("Runway output is not a supported MP4 response")
-        if not response.body:
-            raise RunwayPermanentError("Runway output is empty")
-        return response.body, "video/mp4"
+        return download_public_mp4(
+            url,
+            maximum_bytes=maximum_bytes,
+            timeout_seconds=self._timeout_seconds,
+            output_transport=self._output_transport,
+        )
 
     def _api_headers(self, *, content_type: bool) -> dict[str, str]:
         headers = {
@@ -325,6 +440,62 @@ class RunwayClient:
                 retry_after_seconds=_retry_after(response.headers),
             )
         raise RunwayPermanentError(message)
+
+
+def download_public_mp4(
+    url: str,
+    *,
+    maximum_bytes: int,
+    timeout_seconds: float,
+    output_transport: RunwayOutputTransport,
+) -> tuple[bytes, str]:
+    """Download public MP4 without provider credentials, validating every redirect."""
+
+    current_url = _https_url(url, field="provider output URL")
+    if maximum_bytes < 1:
+        raise ValueError("maximum output bytes must be positive")
+    for redirect_count in range(_MAX_OUTPUT_REDIRECTS + 1):
+        try:
+            response = output_transport.request(
+                current_url,
+                headers={"User-Agent": "Vistora-FrameFactory/1.0"},
+                timeout_seconds=timeout_seconds,
+                maximum_response_bytes=maximum_bytes,
+            )
+        except RunwayTransportFailure as exc:
+            raise RunwayRetryableError(
+                "provider output download failed before an HTTP response"
+            ) from exc
+        if response.status in _OUTPUT_REDIRECT_HTTP_STATUSES:
+            if redirect_count >= _MAX_OUTPUT_REDIRECTS:
+                raise RunwayOutputPolicyFailure(
+                    "provider output download exceeded the redirect limit"
+                )
+            location = response.headers.get("location", "").strip()
+            if not location:
+                raise RunwayOutputPolicyFailure(
+                    "provider output redirect did not provide a destination"
+                )
+            current_url = _https_url(
+                urljoin(current_url, location), field="provider output redirect"
+            )
+            continue
+        if response.status in _QUERY_SAFE_RETRY_HTTP_STATUSES:
+            raise RunwayRetryableError(
+                "provider output download is temporarily unavailable",
+                retry_after_seconds=_retry_after(response.headers),
+            )
+        if response.status != 200:
+            raise RunwayPermanentError(
+                f"provider output download returned HTTP {response.status}"
+            )
+        media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type not in _OUTPUT_MEDIA_TYPES:
+            raise RunwayPermanentError("provider output is not a supported MP4 response")
+        if not response.body:
+            raise RunwayPermanentError("provider output is empty")
+        return response.body, "video/mp4"
+    raise AssertionError("unreachable")
 
 
 def _parse_task(payload: bytes, *, expected_task_id: str) -> RunwayTask:
@@ -473,6 +644,12 @@ def _https_url(value: object, *, field: str) -> str:
     ):
         raise RunwayPermanentError(f"{field} must be a credential-free HTTPS URL")
     return text
+
+
+def _request_target(url: str) -> str:
+    parsed = urlsplit(url)
+    target = parsed.path or "/"
+    return f"{target}?{parsed.query}" if parsed.query else target
 
 
 def _provider_error_message(response: RunwayHttpResponse) -> str:
