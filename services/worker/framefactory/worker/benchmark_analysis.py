@@ -31,17 +31,55 @@ from urllib.parse import urlsplit
 MAX_DURATION_MS = 600_000
 MAX_FRAMES = 36
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_ATTEMPT_BYTES = 256 * 1024 * 1024
+MAX_FRAME_BYTES = 2 * 1024 * 1024
+MAX_AUDIO_BYTES = 16_000 * 2 * (MAX_DURATION_MS // 1000) + 4096
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MIN_FREE_DISK_BYTES = 32 * 1024 * 1024
 
 
 class AnalysisError(Exception):
     """Safe error code; never includes model credentials or source URLs."""
 
 
-def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
+class MediaStorageError(AnalysisError):
+    """A resource limit must fail the job, never degrade into a partial report."""
+
+
+class MediaBudget:
+    """Reserve bounded writes against all source, derived and transient files."""
+
+    def __init__(self, output: Path, source: Path, maximum: int = MAX_ATTEMPT_BYTES):
+        self.output = output.resolve()
+        self.source = source.resolve()
+        self.maximum = max(1, min(maximum, MAX_ATTEMPT_BYTES))
+
+    def reserve(self, additional: int = 0) -> None:
+        size = 0
+        try:
+            for path in self.output.rglob("*"):
+                if path.is_symlink():
+                    raise MediaStorageError("media_storage_budget_exceeded")
+                if path.is_file():
+                    size += path.stat().st_size
+            if not self.source.is_relative_to(self.output):
+                size += self.source.stat().st_size
+            if size + additional > self.maximum or shutil.disk_usage(self.output).free < additional + MIN_FREE_DISK_BYTES:
+                raise MediaStorageError("media_storage_budget_exceeded")
+        except OSError as exc:
+            raise MediaStorageError("media_storage_budget_exceeded") from exc
+
+
+def atomic_json(path: Path, value: Mapping[str, Any], *, budget: MediaBudget | None = None) -> None:
+    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    if len(encoded) > MAX_JSON_BYTES:
+        raise MediaStorageError("media_storage_budget_exceeded")
+    if budget is not None:
+        budget.reserve(len(encoded))  # Atomic replacement temporarily owns both files.
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with temporary.open("x", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, allow_nan=False)
+        with temporary.open("xb") as stream:
+            stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -95,7 +133,8 @@ def probe(source: Path, ffprobe: str) -> dict[str, Any]:
 def scene_boundaries(source: Path, ffmpeg: str, duration_ms: int) -> list[int]:
     result = _run([
         ffmpeg, "-hide_banner", "-nostdin", "-threads", "2", "-protocol_whitelist", "file,pipe",
-        "-i", str(source), "-an", "-vf", "fps=3,scale=256:-2,select='gt(scene,0.25)',showinfo",
+        "-filter_threads", "2", "-i", str(source), "-t", str(duration_ms / 1000),
+        "-an", "-vf", "fps=3,scale=256:-2,select='gt(scene,0.25)',showinfo",
         "-f", "null", "-",
     ], timeout=300)
     cuts = {round(float(raw) * 1000) for raw in re.findall(r"pts_time:([0-9.]+)", result.stderr)}
@@ -122,20 +161,25 @@ def sample_intervals(duration_ms: int, cuts: Sequence[int], maximum: int = MAX_F
     return [(start, end) for start, end in itertools.pairwise(boundaries) if end > start]
 
 
-def extract_frames(source: Path, output: Path, ffmpeg: str, intervals: Sequence[tuple[int, int]]) -> list[dict[str, Any]]:
+def extract_frames(source: Path, output: Path, ffmpeg: str, intervals: Sequence[tuple[int, int]], *, budget: MediaBudget | None = None) -> list[dict[str, Any]]:
+    if len(intervals) > MAX_FRAMES:
+        raise AnalysisError("frame_sampling_budget_exceeded")
+    budget = budget or MediaBudget(output, source)
     folder = output / "frames"
     folder.mkdir(exist_ok=True)
     frames = []
     for ordinal, (start, end) in enumerate(intervals):
         timestamp = start if start in {0, 1000, 3000} else round((start + end) / 2)
         key = f"frames/{ordinal:04d}.jpg"
+        budget.reserve(MAX_FRAME_BYTES)
         _run([
             ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "2",
-            "-protocol_whitelist", "file,pipe", "-ss", str(timestamp / 1000), "-i", str(source),
+            "-filter_threads", "2", "-protocol_whitelist", "file,pipe", "-ss", str(timestamp / 1000), "-i", str(source),
             "-frames:v", "1", "-vf", "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease",
-            "-q:v", "3", str(output / key),
+            "-q:v", "3", "-threads:v", "2", "-fs", str(MAX_FRAME_BYTES), str(output / key),
         ], timeout=30)
-        if not (output / key).is_file() or (output / key).stat().st_size > 2 * 1024 * 1024:
+        budget.reserve()
+        if not (output / key).is_file() or (output / key).stat().st_size > MAX_FRAME_BYTES:
             raise AnalysisError("representative_frame_invalid")
         frames.append({"id": ordinal, "timestamp_ms": timestamp, "key": key, "start_ms": start, "end_ms": end})
     return frames
@@ -366,11 +410,17 @@ def analyze_narrative(
     return empty, capability("complete" if grounded else "partial", "openai-compatible", "策略解释基于画面/字幕/转录证据，属于待验证的创作假设。", request_count=1, model=model)
 
 
-def extract_audio(source: Path, output: Path, ffmpeg: str) -> Path:
+def extract_audio(source: Path, output: Path, ffmpeg: str, *, budget: MediaBudget | None = None) -> Path:
     audio = output / "audio.wav"
+    budget = budget or MediaBudget(output, source)
+    budget.reserve(MAX_AUDIO_BYTES)
     _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "2",
-          "-protocol_whitelist", "file,pipe", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000",
-          "-c:a", "pcm_s16le", str(audio)], timeout=180)
+          "-filter_threads", "2", "-protocol_whitelist", "file,pipe", "-i", str(source),
+          "-t", str(MAX_DURATION_MS / 1000), "-vn", "-ac", "1", "-ar", "16000",
+          "-c:a", "pcm_s16le", "-threads:a", "2", "-fs", str(MAX_AUDIO_BYTES), str(audio)], timeout=180)
+    budget.reserve()
+    if not audio.is_file() or audio.stat().st_size > MAX_AUDIO_BYTES:
+        raise MediaStorageError("media_storage_budget_exceeded")
     return audio
 
 
@@ -595,8 +645,10 @@ def analyze(source: Path, output: Path, title: str, *, environment: Mapping[str,
     if not source.is_file() or source.stat().st_size > 300 * 1024 * 1024:
         raise AnalysisError("source_must_be_local_file_below_300_mib")
     output.mkdir(parents=True, exist_ok=True)
+    budget = MediaBudget(output, source, int(env.get("FRAMEFACTORY_BENCHMARK_MAX_ATTEMPT_BYTES", str(MAX_ATTEMPT_BYTES))))
+    budget.reserve()
     def progress(stage: str, percent: int, message: str) -> None:
-        atomic_json(output / "progress.json", {"stage": stage, "percent": percent, "message": message, "updated_at": time.time()})
+        atomic_json(output / "progress.json", {"stage": stage, "percent": percent, "message": message, "updated_at": time.time()}, budget=budget)
     progress("probe", 5, "正在验证视频与音轨")
     ffmpeg, ffprobe = shutil.which(env.get("FRAMEFACTORY_FFMPEG_COMMAND", "ffmpeg")), shutil.which(env.get("FRAMEFACTORY_FFPROBE_COMMAND", "ffprobe"))
     if not ffmpeg or not ffprobe:
@@ -611,7 +663,7 @@ def analyze(source: Path, output: Path, title: str, *, environment: Mapping[str,
     except AnalysisError:
         cuts = []
         capabilities["scene_detection"] = capability("failed", "ffmpeg-scene", "场景检测失败，采用均匀抽样，不能将采样区间数解释为镜头数。")
-    frames = extract_frames(source, output, ffmpeg, sample_intervals(technical["duration_ms"], cuts))
+    frames = extract_frames(source, output, ffmpeg, sample_intervals(technical["duration_ms"], cuts), budget=budget)
     progress("ocr", 25, "正在逐张识别画面文字")
     capabilities["ocr"] = recognize_text(frames, output)
     capabilities["vision"], insights = analyze_vision(frames, output, env, progress)
@@ -621,7 +673,7 @@ def analyze(source: Path, output: Path, title: str, *, environment: Mapping[str,
     if technical["has_audio"]:
         progress("audio", 65, "正在分析完整音轨与语音时间戳")
         try:
-            audio_path = extract_audio(source, output, ffmpeg)
+            audio_path = extract_audio(source, output, ffmpeg, budget=budget)
             audio = audio_metrics(audio_path)
             capabilities["audio_metrics"] = capability("complete", "pcm-energy", *audio["limitations"])
             transcript, temporal, capabilities["asr"] = speech_analysis(audio_path, technical["duration_ms"], env)
@@ -635,6 +687,8 @@ def analyze(source: Path, output: Path, title: str, *, environment: Mapping[str,
             audio["pitch_analysis"] = pitch_metrics(audio_path, temporal["speech_regions"])
             audio["limitations"].extend(audio["pitch_analysis"]["limitations"])
             capabilities["audio_metrics"]["limitations"] = list(audio["limitations"])
+        except MediaStorageError:
+            raise
         except AnalysisError:
             temporal = {"speech_status": "unknown", "speech_detection_method": None, "silences": [], "speech_regions": []}
             capabilities["audio_metrics"] = capability("failed", "ffmpeg+pcm", "音轨提取或测量失败。")
@@ -660,7 +714,7 @@ def analyze(source: Path, output: Path, title: str, *, environment: Mapping[str,
         "temporal": temporal, "transcript": transcript, "audio_analysis": audio,
         "creative_insights": insights, "narrative_analysis": narrative, "capabilities": capabilities, "limitations": list(dict.fromkeys(limitations)),
     }
-    atomic_json(output / "analysis.json", result)
+    atomic_json(output / "analysis.json", result, budget=budget)
     progress(result["status"], 100, "分析完成" if result["status"] == "complete" else "分析已完成，部分能力不可用，请查看结果说明")
     return result
 

@@ -9,5 +9,5 @@
     "apps/web",
     "services/worker"
   ],
-  "npm_audit_level": "high"
+  "npm_audit_level": "moderate"
 }

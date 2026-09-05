@@ -10,6 +10,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,11 @@ from .benchmark_accounts import (
     resolve_xiaohongshu_profile,
 )
 from .benchmark_note_identity import NoteIdentityError, click_verified_profile_note
+from .browser_process import (
+    BrowserProcessError,
+    run_browser_operation,
+    run_browser_operation_async,
+)
 
 _NOTE_ID = re.compile(r"^[0-9a-f]{24}$")
 _NOTE_MAX_PENDING = 32
@@ -140,9 +146,13 @@ class BenchmarkNoteSourceGateway:
             self._pending -= 1
             raise
         try:
-            task = asyncio.create_task(
-                asyncio.to_thread(self._provider.collect, profile_url, note_id)
-            )
+            if isinstance(self._provider, XiaohongshuAuthenticatedNoteProvider):
+                # This await does not release the lock until cancellation has
+                # terminated and reaped the isolated client and its driver.
+                return await self._provider.collect_async(profile_url, note_id)
+            task = asyncio.create_task(asyncio.to_thread(
+                self._provider.collect, profile_url, note_id,
+            ))
             cancelled = False
             while True:
                 try:
@@ -185,19 +195,65 @@ class XiaohongshuAuthenticatedNoteProvider:
         self._max_scrolls = max(0, min(max_scrolls, 30))
 
     def collect(self, profile_url: str, note_id: str) -> BenchmarkNoteSourceEvidence:
-        result = self._collect(profile_url, note_id)
-        assert isinstance(result, BenchmarkNoteSourceEvidence)
-        return result
+        result = self._isolated_collect(profile_url, note_id)
+        return BenchmarkNoteSourceEvidence.model_validate(result)
 
-    def acquire_media(self, profile_url: str, note_id: str, destination: Path) -> dict[str, Any]:
+    async def collect_async(self, profile_url: str, note_id: str) -> BenchmarkNoteSourceEvidence:
+        try:
+            result = await run_browser_operation_async(
+                "note", self._operation_arguments(profile_url, note_id), timeout_seconds=115,
+            )
+        except BrowserProcessError:
+            raise BenchmarkAccountError(
+                "BENCHMARK_PROVIDER_UNAVAILABLE", "Note collection timed out or was unavailable",
+                retryable=True,
+            ) from None
+        return BenchmarkNoteSourceEvidence.model_validate(result)
+
+    def acquire_media(
+        self, profile_url: str, note_id: str, destination: Path, *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """Acquire one video into caller-owned isolated research storage.
 
         Source-supplied media URLs are ephemeral in-process values. No credentials
         are exported from the browser and no signed URL is returned or persisted.
         """
-        result = self._collect(profile_url, note_id, destination=destination)
-        assert isinstance(result, dict)
-        return result
+        return self._isolated_collect(
+            profile_url, note_id, destination=destination, cancel_event=cancel_event,
+        )
+
+    def _operation_arguments(
+        self, profile_url: str, note_id: str, destination: Path | None = None,
+    ) -> dict[str, Any]:
+        identity = resolve_xiaohongshu_profile(profile_url)
+        if not _NOTE_ID.fullmatch(note_id):
+            raise BenchmarkAccountError(
+                "BENCHMARK_NOTE_INVALID", "The note ID must be 24 lowercase hexadecimal characters",
+            )
+        return {
+            "provider": {
+                "managed_browser_base_url": self._base_url,
+                "timeout_seconds": self._timeout_seconds, "max_scrolls": self._max_scrolls,
+            },
+            "profile_url": identity.profile_url, "note_id": note_id,
+            "destination": str(destination.resolve()) if destination is not None else None,
+        }
+
+    def _isolated_collect(
+        self, profile_url: str, note_id: str, *, destination: Path | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return run_browser_operation(
+                "note", self._operation_arguments(profile_url, note_id, destination),
+                timeout_seconds=115, cancel_event=cancel_event,
+            )
+        except BrowserProcessError as exc:
+            raise BenchmarkAccountError(
+                "BENCHMARK_MEDIA_CANCELLED" if exc.cancelled else "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "Note collection was cancelled, timed out or was unavailable", retryable=True,
+            ) from None
 
     def _collect(
         self, profile_url: str, note_id: str, *, destination: Path | None = None

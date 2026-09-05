@@ -20,6 +20,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from pydantic import BaseModel, ConfigDict, Field
 
 from .benchmark_seeds import BAIZHOU_XIAOXIONG
+from .browser_process import BrowserProcessError, run_browser_operation
 
 _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
 _XIAOHONGSHU_PROFILE_PATH = re.compile(r"^/user/profile/([0-9a-f]{24})/?$")
@@ -277,7 +278,7 @@ class BenchmarkAccountGateway:
                 fetcher=fetcher,
                 authenticated_fetcher=(
                     partial(
-                        _fetch_managed_profile,
+                        _fetch_managed_profile_isolated,
                         base_url=_managed_browser_base_url(managed_browser_base_url),
                     )
                     if managed_browser_base_url
@@ -554,6 +555,23 @@ def _managed_browser_base_url(value: str | None) -> str:
             "managed browser base URL must be an explicit http://127.0.0.1:<port> origin"
         )
     return f"http://127.0.0.1:{port}"
+
+
+def _fetch_managed_profile_isolated(
+    url: str, timeout_seconds: float, max_bytes: int, *, base_url: str,
+) -> bytes:
+    try:
+        result = run_browser_operation(
+            "profile", {"url": url, "timeout_seconds": timeout_seconds,
+                        "max_bytes": max_bytes, "base_url": base_url},
+            timeout_seconds=max(1, min(timeout_seconds, 60)) + 5,
+        )
+        return result.encode("utf-8")
+    except BrowserProcessError:
+        raise BenchmarkAccountError(
+            "BENCHMARK_PROVIDER_UNAVAILABLE", "Profile discovery timed out or was unavailable",
+            retryable=True,
+        ) from None
 
 
 def _fetch_managed_profile(

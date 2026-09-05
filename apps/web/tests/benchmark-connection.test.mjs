@@ -42,6 +42,27 @@ test("connection methods use the research API, no-store, bounded cancellable req
   assert.ok(calls.every((call) => call.init.signal.aborted));
 });
 
+test("old API endpoints explain the required paired upgrade without retrying or exposing its response", async () => {
+  for (const status of [404, 405]) {
+    let calls = 0;
+    const adapter = new HttpFrameFactoryAdapter({ fetch: async () => {
+      calls += 1;
+      return json({ message: "private-old-service-response" }, status);
+    } });
+    for (const result of [await adapter.getBenchmarkConnectionStatus(), await adapter.startBenchmarkConnection("user-click"), await adapter.listBenchmarkHistory({})]) {
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "BENCHMARK_API_VERSION_MISMATCH");
+      assert.equal(result.error.retryable, false);
+      assert.match(result.error.message, /更新并重启/);
+      assert.doesNotMatch(JSON.stringify(result), /private-old/);
+    }
+    assert.equal(calls, 3);
+  }
+  const adapter = new HttpFrameFactoryAdapter({ fetch: async () => json({ code: "BENCHMARK_HISTORY_NOT_FOUND" }, 404) });
+  const result = await adapter.getBenchmarkHistory("12345678-1234-1234-1234-123456789abc");
+  assert.equal(result.error.code, "BENCHMARK_HISTORY_NOT_FOUND");
+});
+
 test("connection parser rejects unsafe QR images, incompatible schemas and missing expiration", async () => {
   for (const patch of [
     { qr_image_data_url: "https://third-party.test/login.png?token=private" },

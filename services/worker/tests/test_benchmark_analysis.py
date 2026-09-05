@@ -26,6 +26,56 @@ def test_sampling_covers_whole_video_and_caps_model_budget() -> None:
     assert worker.sample_intervals(500, []) == [(0, 500)]
 
 
+def test_media_budget_includes_external_source_and_reserves_atomic_replacement(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"s" * 4096)
+    output = tmp_path / "output"
+    output.mkdir()
+    target = output / "analysis.json"
+    target.write_bytes(b"r" * 4096)
+    budget = worker.MediaBudget(output, source, 8192)
+    budget.reserve()
+    with pytest.raises(worker.MediaStorageError, match="media_storage_budget_exceeded"):
+        worker.atomic_json(target, {"status": "complete"}, budget=budget)
+    assert target.read_bytes() == b"r" * 4096
+    assert not list(output.glob(".*.tmp"))
+
+
+def test_frame_budget_rejects_before_ffmpeg_or_provider_spend(tmp_path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    output = tmp_path / "output"
+    output.mkdir()
+    def forbidden_command(*_args, **_kwargs):
+        pytest.fail("Insufficient disk budget must not start ffmpeg")
+    monkeypatch.setattr(worker, "_run", forbidden_command)
+    budget = worker.MediaBudget(output, source, worker.MAX_FRAME_BYTES)
+    with pytest.raises(worker.MediaStorageError, match="media_storage_budget_exceeded"):
+        worker.extract_frames(source, output, "ffmpeg", [(0, 1000)], budget=budget)
+    with pytest.raises(worker.AnalysisError, match="frame_sampling_budget_exceeded"):
+        worker.extract_frames(source, output, "ffmpeg", [(0, 1000)] * 37)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="Real FFmpeg required")
+def test_real_audio_extraction_stops_at_600_seconds_and_stays_within_byte_cap(tmp_path):
+    # A real overlong local source exercises FFmpeg's output deadline even when
+    # container metadata would otherwise let decoding continue past the limit.
+    source = tmp_path / "long-audio.wav"
+    with wave.open(str(source), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        second = b"\x00\x00" * 16000
+        for _ in range(605):
+            stream.writeframesraw(second)
+    output = tmp_path / "output"
+    output.mkdir()
+    audio = worker.extract_audio(source, output, shutil.which("ffmpeg"))
+    assert audio.stat().st_size <= worker.MAX_AUDIO_BYTES
+    with wave.open(str(audio), "rb") as stream:
+        assert stream.getnframes() == 600 * 16_000
+
+
 def test_json_only_asr_never_invents_timestamps() -> None:
     value = worker.normalize_transcript({"text": "这是一段配音"}, 15_000, provider="sensevoice")
     assert value["text"] == "这是一段配音"

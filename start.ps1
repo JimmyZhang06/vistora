@@ -912,6 +912,9 @@ $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
 Clear-ProviderEnvironment
 Import-ProviderEnvironment -Path $ProviderEnvFile
 if ($BenchmarkAnalysis) {
+    # This mode starts research routes in this API. Override a stale .env.local
+    # research URL so the Web cannot keep targeting a previous standalone API.
+    $env:NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL = $apiUrl
     if ([string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL)) {
         throw "Benchmark analysis requires FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL pointing to a running local browser provider. Connect Xiaohongshu from /benchmarks after startup. See docs/sop/benchmark-video-analysis.md."
     }
@@ -1160,6 +1163,12 @@ try {
     Assert-FullAiApiConfiguration -ExpectedReady $fullAiExpectedReady `
         -ExpectedProvider $env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME `
         -ExpectedModel $env:FRAMEFACTORY_FULL_AI_MODEL_ID
+    if ($BenchmarkAnalysis) {
+        Invoke-Checked -FilePath $venvPython -Arguments @(
+            (Join-Path $projectRoot "tools\verify_benchmark_runtime.py"),
+            "--api-url", $apiUrl, "--web-origin", $webUrl
+        ) -TimeoutSeconds 55 -FailureMessage "研究 API 接口或配置不兼容，请检查并更新 API/Web；此检查不会生成二维码"
+    }
 
     # Provider credentials use the supported v3 environment contract documented in
     # services/worker/.env.example. The launcher only reads the ignored v3 secret

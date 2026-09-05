@@ -1,8 +1,9 @@
 """Durable, explicitly local benchmark jobs; no asset-library or queue side effects.
 
-One API process owns this SQLite directory. Media acquisition must implement its
-own bounded I/O deadline; a timed-out Python thread retains the sole acquisition
-slot until it exits. CPU/model work runs in a terminable subprocess. Neither
+One API process owns this SQLite directory. The real media provider supervises a
+cancellable child tree; legacy acquisition callbacks retain the sole lane until
+they exit. Source, derived and transient files are measured during acquisition and
+CPU/model execution; over-budget work is terminated before cleanup. Neither
 provider logs nor transient source URLs are persisted or returned.
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -19,6 +21,7 @@ import shutil
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -33,6 +36,7 @@ from .benchmark_media_reports import (
     build_benchmark_deep_note_report,
     timeline_from_worker_analysis,
 )
+from .owned_process import WindowsProcessJob as _WindowsWorkerJob
 
 MediaAcquirer = Callable[[str, str, Path], dict[str, Any]]
 _ACTIVE = {"pending", "collecting", "analyzing"}
@@ -47,6 +51,10 @@ _ENV_PREFIXES = (
 )
 _ARTIFACT_TYPES = {".jpg": "image/jpeg", ".wav": "audio/wav", ".mp3": "audio/mpeg"}
 _MAX_JSON_BYTES = 8 * 1024 * 1024
+_ATTEMPT_STORAGE_BYTES = 256 * 1024**2
+_FREE_DISK_HEADROOM_BYTES = 32 * 1024**2
+_PERSISTENCE_HEADROOM_BYTES = 32 * 1024**2
+_STORAGE_POLL_SECONDS = 0.1
 _SECRET_FIELDS = re.compile(r"(?:token|cookie|secret|password|api_key|authorization)", re.I)
 
 
@@ -77,11 +85,17 @@ class BenchmarkJobService:
         self.root = root.resolve()
         self._env_file = provider_env_file
         self._acquire = media_acquirer
+        # Older embedding callbacks retain their three-argument contract. The
+        # real provider accepts this event and terminates its owned child tree.
+        self._acquire_cancellable = "cancel_event" in inspect.signature(media_acquirer).parameters
+        self._acquire_cancel: threading.Event | None = None
         self._media_timeout = max(0.1, min(media_timeout_seconds, 120))
         self._worker_timeout = max(0.1, min(worker_timeout_seconds, 1800))
         self._capacity = max(1, min(max_outstanding, 10))
         self._retention_days = max(1, min(retention_days, 7))
         self._storage_limit = max(1024, min(max_storage_bytes, 20 * 1024**3))
+        self._attempt_storage_limit = min(_ATTEMPT_STORAGE_BYTES, self._storage_limit)
+        self._persistence_headroom = min(_PERSISTENCE_HEADROOM_BYTES, self._storage_limit // 16)
         self._connection: sqlite3.Connection | None = None
         self._lock_file: BinaryIO | None = None
         self._runner: asyncio.Task[None] | None = None
@@ -176,6 +190,8 @@ class BenchmarkJobService:
 
     async def close(self) -> None:
         self._closing = True
+        if self._acquire_cancel:
+            self._acquire_cancel.set()
         if self._active_id:
             job = self._find(self._active_id)
             if job and job["status"] in _ACTIVE:
@@ -310,6 +326,8 @@ class BenchmarkJobService:
         if job["status"] in _ACTIVE:
             self._finish_error(job, "cancelled", "BENCHMARK_JOB_CANCELLED", "Cancelled by the user")
             if self._active_id == job_id:
+                if self._acquire_cancel:
+                    self._acquire_cancel.set()
                 await self._stop_process()
         return self._public(job)
 
@@ -395,6 +413,7 @@ class BenchmarkJobService:
                 await self._stop_process()
                 self._cleanup_temporary_source(job)
                 self._attempt_directory = None
+                self._acquire_cancel = None
                 self._active_id = None
 
     async def _execute(self, job: dict[str, Any]) -> None:
@@ -414,17 +433,35 @@ class BenchmarkJobService:
         self._attempt_directory = attempt_dir
         source = attempt_dir / "source.mp4"
         self._progress(job, "collecting", 5, "Acquiring the selected note's media")
+        self._acquire_cancel = threading.Event()
         acquisition = asyncio.create_task(
             asyncio.to_thread(
                 self._acquire,
                 job["profile_url"],
                 job["note_id"],
                 source,
+                **({"cancel_event": self._acquire_cancel} if self._acquire_cancellable else {}),
             )
         )
         try:
-            evidence = await asyncio.wait_for(asyncio.shield(acquisition), self._media_timeout)
+            deadline = time.monotonic() + self._media_timeout
+            while not acquisition.done():
+                await asyncio.to_thread(self._check_running_storage, attempt_dir)
+                if not self._is_active(job) or self._closing:
+                    self._acquire_cancel.set()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                await asyncio.wait({acquisition}, timeout=_STORAGE_POLL_SECONDS)
+            evidence = acquisition.result()
+            await asyncio.to_thread(self._check_running_storage, attempt_dir)
+        except BenchmarkJobError as exc:
+            self._acquire_cancel.set()
+            with contextlib.suppress(Exception):
+                await acquisition
+            self._finish_if_active(job, exc.code, exc.message)
+            return
         except TimeoutError:
+            self._acquire_cancel.set()
             self._finish_if_active(
                 job, "BENCHMARK_MEDIA_TIMEOUT", "Media acquisition exceeded its time limit"
             )
@@ -503,6 +540,12 @@ class BenchmarkJobService:
             self._process.stdin.close()
         deadline = time.monotonic() + self._worker_timeout
         while self._process.returncode is None:
+            try:
+                await asyncio.to_thread(self._check_running_storage, attempt_dir)
+            except BenchmarkJobError as exc:
+                await self._stop_process()
+                self._finish_if_active(job, exc.code, exc.message)
+                return
             if not self._is_active(job) or self._closing:
                 await self._stop_process()
                 return
@@ -511,12 +554,26 @@ class BenchmarkJobService:
                 self._finish_if_active(job, "BENCHMARK_WORKER_TIMEOUT", "Analysis timed out")
                 return
             try:
-                await asyncio.wait_for(self._process.wait(), timeout=0.25)
+                await asyncio.wait_for(self._process.wait(), timeout=_STORAGE_POLL_SECONDS)
             except TimeoutError:
                 self._read_progress(job, attempt_dir)
         if not self._is_active(job):
             return
+        try:
+            await asyncio.to_thread(self._check_running_storage, attempt_dir)
+        except BenchmarkJobError as exc:
+            self._finish_if_active(job, exc.code, exc.message)
+            return
         if self._process.returncode != 0:
+            progress = self._read_json(attempt_dir / "progress.json", limit=16_384)
+            if (
+                isinstance(progress, dict)
+                and progress.get("message") == "media_storage_budget_exceeded"
+            ):
+                self._finish_if_active(
+                    job, "BENCHMARK_JOB_STORAGE_FULL", "Analysis exceeded its local storage budget"
+                )
+                return
             self._finish_if_active(
                 job,
                 "BENCHMARK_WORKER_FAILED",
@@ -614,6 +671,15 @@ class BenchmarkJobService:
         environment["PYTHONUNBUFFERED"] = "1"
         # Hard cap independent of a user-provided env file.
         environment["FRAMEFACTORY_BENCHMARK_MAX_DURATION_SECONDS"] = "600"
+        environment["FRAMEFACTORY_BENCHMARK_MAX_ATTEMPT_BYTES"] = str(self._attempt_storage_limit)
+        environment["FRAMEFACTORY_BENCHMARK_ALLOW_MODEL_DOWNLOAD"] = "false"
+        if self._attempt_directory:
+            # Provider libraries must place transient files under the watched
+            # attempt, so cancellation/expiry cleanup also owns those files.
+            temporary = self._attempt_directory / "tmp"
+            temporary.mkdir(exist_ok=True)
+            for key in ("TEMP", "TMP", "TMPDIR"):
+                environment[key] = str(temporary)
         return environment
 
     async def _stop_process(self) -> None:
@@ -783,15 +849,12 @@ class BenchmarkJobService:
         self._check_storage_capacity()
 
     def _check_storage_capacity(self) -> None:
-        # There is only one running media/worker lane. Reserve 256 MiB for its
-        # source (provider cap 200 MiB), mono audio and derived frames.
-        reserve = 256 * 1024**2
-        size = sum(
-            path.stat().st_size
-            for path in self.root.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        )
-        if size + reserve > self._storage_limit or shutil.disk_usage(self.root).free < reserve:
+        size, _attempt_size = self._storage_usage()
+        reserve = self._attempt_storage_limit
+        if (
+            size + reserve + self._persistence_headroom > self._storage_limit
+            or shutil.disk_usage(self.root).free < reserve + _FREE_DISK_HEADROOM_BYTES
+        ):
             raise BenchmarkJobError(
                 "BENCHMARK_JOB_STORAGE_FULL",
                 "The local 2 GiB analysis budget or free disk space is exhausted. "
@@ -799,27 +862,98 @@ class BenchmarkJobService:
                 507,
             )
 
+    def _storage_usage(self, attempt: Path | None = None) -> tuple[int, int]:
+        """Count source, derived media, transient files and SQLite without following links."""
+        total = current = entries = 0
+
+        def fail_unreadable(error: OSError) -> None:
+            raise error
+
+        try:
+            for folder, directories, filenames in os.walk(
+                self.root, followlinks=False, onerror=fail_unreadable
+            ):
+                parent = Path(folder)
+                entries += len(directories) + len(filenames)
+                if entries > 50_000:
+                    raise OSError("Local analysis file count exceeded")
+                directories[:] = [
+                    name for name in directories
+                    if not (parent / name).is_symlink()
+                    and not getattr(parent / name, "is_junction", lambda: False)()
+                ]
+                for name in filenames:
+                    path = parent / name
+                    try:
+                        if path.is_symlink():
+                            continue
+                        size = path.stat().st_size
+                    except FileNotFoundError:
+                        continue  # An atomic progress update or cleanup just completed.
+                    total += size
+                    if attempt is not None and path.is_relative_to(attempt):
+                        current += size
+        except OSError as exc:
+            raise BenchmarkJobError(
+                "BENCHMARK_JOB_STORAGE_FULL", "Local analysis storage could not be measured", 507
+            ) from exc
+        return total, current
+
+    def _check_running_storage(self, attempt: Path) -> None:
+        total, current = self._storage_usage(attempt)
+        if (
+            total + self._persistence_headroom > self._storage_limit
+            or current > self._attempt_storage_limit
+            or shutil.disk_usage(self.root).free < _FREE_DISK_HEADROOM_BYTES
+        ):
+            raise BenchmarkJobError(
+                "BENCHMARK_JOB_STORAGE_FULL",
+                "Analysis exceeded its storage budget or free disk headroom. "
+                "Temporary files are being removed; free disk space before retrying.",
+                507,
+            )
+
     def _cleanup_temporary_source(self, job: dict[str, Any]) -> None:
         directory = self._attempt_directory
-        if directory is None or not directory.resolve().is_relative_to(self.root):
+        expected = self._directory(job) / f"attempt-{int(job['attempt'])}"
+        if (
+            directory is None
+            or directory != expected
+            or directory.is_symlink()
+            or not directory.resolve().is_relative_to(self.root)
+        ):
             return
+        current = self._find(job["job_id"])
         cleanup_failed = False
-        for filename in ("source.mp4", "source.part"):
+        # Incomplete output is not published. Remove the whole owned attempt
+        # only after both acquisition and the worker tree have stopped writing.
+        if current and current["status"] in _RETRYABLE:
+            try:
+                if directory.exists():
+                    shutil.rmtree(directory)
+            except OSError:
+                cleanup_failed = True
+        for filename in ("source.mp4", "source.part", "tmp"):
             path = directory / filename
             if not path.resolve().is_relative_to(directory.resolve()):
                 continue
             try:
-                path.unlink(missing_ok=True)
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
             except OSError:
                 cleanup_failed = True
         if cleanup_failed:
-            current = self._find(job["job_id"])
             warning = "Temporary media cleanup failed; local retention cleanup will retry."
             if current and current.get("report"):
                 current["report"]["limitations"].append(warning)
                 current["report"]["status"] = "partial"
                 current["status"] = "partial"
                 current["progress"]["stage"] = "partial"
+                self._save(current)
+            elif current and current.get("error"):
+                current["error"]["message"] += " " + warning
                 self._save(current)
 
     def _ensure_running(self) -> None:
@@ -956,88 +1090,3 @@ def _is_canonical_url(value: Any) -> bool:
         and not parsed.fragment
         and re.fullmatch(r"/(?:explore|user/profile)/[0-9a-f]{24}", parsed.path) is not None
     )
-
-
-class _WindowsWorkerJob:
-    """Own one child tree with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-
-    The anonymous handle is not inheritable. Windows closes it on an API hard
-    crash and kills the assigned worker and descendants. No persisted PID is
-    trusted for crash recovery. See Microsoft Learn /windows/win32/procthread/job-objects.
-    """
-
-    def __init__(self) -> None:
-        import ctypes
-        from ctypes import wintypes
-
-        class BasicLimits(ctypes.Structure):
-            _fields_ = [
-                ("process_time", ctypes.c_int64),
-                ("job_time", ctypes.c_int64),
-                ("flags", wintypes.DWORD),
-                ("minimum_working_set", ctypes.c_size_t),
-                ("maximum_working_set", ctypes.c_size_t),
-                ("active_processes", wintypes.DWORD),
-                ("affinity", ctypes.c_size_t),
-                ("priority", wintypes.DWORD),
-                ("scheduling_class", wintypes.DWORD),
-            ]
-
-        class IoCounters(ctypes.Structure):
-            _fields_ = [
-                (name, ctypes.c_uint64)
-                for name in ("read_ops", "write_ops", "other_ops", "read", "write", "other")
-            ]
-
-        class ExtendedLimits(ctypes.Structure):
-            _fields_ = [
-                ("basic", BasicLimits),
-                ("io", IoCounters),
-                ("process_memory", ctypes.c_size_t),
-                ("job_memory", ctypes.c_size_t),
-                ("peak_process_memory", ctypes.c_size_t),
-                ("peak_job_memory", ctypes.c_size_t),
-            ]
-
-        self._kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        self._kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-        self._kernel.CreateJobObjectW.restype = wintypes.HANDLE
-        self._kernel.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        self._kernel.SetInformationJobObject.restype = wintypes.BOOL
-        self._kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-        self._kernel.AssignProcessToJobObject.restype = wintypes.BOOL
-        self._kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        self._kernel.OpenProcess.restype = wintypes.HANDLE
-        self._kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        self._kernel.CloseHandle.restype = wintypes.BOOL
-        self._handle = self._kernel.CreateJobObjectW(None, None)
-        if not self._handle:
-            raise OSError("Windows worker Job Object could not be created")
-        limits = ExtendedLimits()
-        limits.basic.flags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if not self._kernel.SetInformationJobObject(
-            self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
-        ):
-            self.close()
-            raise OSError("Windows worker Job Object limits could not be set")
-
-    def attach(self, process_id: int) -> None:
-        # SET_QUOTA | TERMINATE, the rights required by AssignProcessToJobObject.
-        process_handle = self._kernel.OpenProcess(0x0101, False, process_id)
-        if not process_handle:
-            raise OSError("Windows worker process could not be attached")
-        try:
-            if not self._kernel.AssignProcessToJobObject(self._handle, process_handle):
-                raise OSError("Windows worker process could not be assigned to its Job Object")
-        finally:
-            self._kernel.CloseHandle(process_handle)
-
-    def close(self) -> None:
-        if self._handle:
-            self._kernel.CloseHandle(self._handle)
-            self._handle = None

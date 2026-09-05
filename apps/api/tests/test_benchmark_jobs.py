@@ -496,3 +496,148 @@ def test_windows_bootstrap_exits_on_eof_before_importing_worker(tmp_path):
     )
     assert result.returncode == 125
     assert not (tmp_path / "analysis.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_quota_kills_worker_cleans_derived_files_and_allows_retry(tmp_path):
+    class GrowingWorker(ChildFixtureService):
+        def _worker_command(self, source, directory, title):
+            if self.worker_mode != "grow":
+                return super()._worker_command(source, directory, title)
+            script = (
+                "import pathlib,sys,time\n"
+                "directory=pathlib.Path(sys.argv[1])\n"
+                "(directory/'frames').mkdir()\n"
+                "(directory/'frames'/'0001.jpg').write_bytes(b'f'*32768)\n"
+                "(directory/'audio.wav').write_bytes(b'a'*32768)\n"
+                "(directory/'tmp'/'partial.bin').write_bytes(b't'*32768)\n"
+                "time.sleep(30)\n"
+            )
+            return [sys.executable, "-c", script, str(directory)]
+
+    untouched = tmp_path / "caller-note.txt"
+    untouched.write_text("keep this unrelated file", encoding="utf-8")
+    service = GrowingWorker(tmp_path, None, acquire, worker_mode="grow")
+    service._attempt_storage_limit = 65_536
+    await service.start()
+    try:
+        first = await service.create("workspace-a", PROFILE, NOTE, "runtime-quota-request")
+        failed = await terminal(service, "workspace-a", first["job_id"])
+        assert failed["error"]["code"] == "BENCHMARK_JOB_STORAGE_FULL"
+        assert failed["artifacts"] == [] and failed["report"] is None
+        assert service._process is not None and service._process.returncode is not None
+        for _ in range(100):
+            if service._active_id is None:
+                break
+            await asyncio.sleep(0.01)
+        assert not (tmp_path / first["job_id"] / "attempt-1").exists()
+        assert untouched.read_text(encoding="utf-8") == "keep this unrelated file"
+        service.worker_mode = "complete"
+        await service.retry("workspace-a", first["job_id"])
+        ready = await terminal(service, "workspace-a", first["job_id"])
+        assert ready["status"] == "ready" and ready["attempt"] == 2
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_quota_cancels_acquisition_before_starting_worker(tmp_path):
+    stopped = threading.Event()
+
+    def growing_acquire(_profile, _note, destination, *, cancel_event=None):
+        assert cancel_event is not None
+        try:
+            with destination.with_suffix(".part").open("wb") as stream:
+                while not cancel_event.wait(0.01):
+                    stream.write(b"x" * 16_384)
+                    stream.flush()
+            raise BenchmarkAccountError("BENCHMARK_MEDIA_CANCELLED", "cancelled")
+        finally:
+            stopped.set()
+
+    service = ChildFixtureService(tmp_path, None, growing_acquire)
+    service._attempt_storage_limit = 32_768
+    await service.start()
+    try:
+        first = await service.create("workspace-a", PROFILE, NOTE, "acquisition-quota-request")
+        failed = await terminal(service, "workspace-a", first["job_id"])
+        assert failed["error"]["code"] == "BENCHMARK_JOB_STORAGE_FULL"
+        assert stopped.is_set()
+        assert service._process is None
+        assert not (tmp_path / first["job_id"] / "attempt-1").exists()
+    finally:
+        await service.close()
+    reopened = ChildFixtureService(tmp_path, None, acquire)
+    await reopened.start()
+    try:
+        stored = await reopened.get("workspace-a", first["job_id"])
+        assert stored["error"]["code"] == "BENCHMARK_JOB_STORAGE_FULL"
+        assert stored["error"]["retryable"] is True
+    finally:
+        await reopened.close()
+
+
+def test_runtime_storage_counts_whole_tree_and_low_free_disk(tmp_path, monkeypatch):
+    import framefactory_api.benchmark_jobs as jobs_module
+
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "source.mp4").write_bytes(b"s" * 400)
+    (attempt / "audio.wav").write_bytes(b"a" * 400)
+    (tmp_path / "other-report.json").write_bytes(b"r" * 400)
+    service = ChildFixtureService(tmp_path, None, acquire, max_storage_bytes=1024)
+    with pytest.raises(BenchmarkJobError, match="storage budget"):
+        service._check_running_storage(attempt)
+    assert service._storage_usage(attempt) == (1200, 800)
+    service._storage_limit = 4096
+    usage = jobs_module.shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(jobs_module.shutil, "disk_usage", lambda _path: type(usage)(4096, 4095, 1))
+    with pytest.raises(BenchmarkJobError, match="free disk headroom"):
+        service._check_running_storage(attempt)
+
+
+@pytest.mark.asyncio
+async def test_quota_cancel_reaps_real_provider_owned_process(tmp_path, monkeypatch):
+    """Inject a growing child in place of CDP, retaining the real provider/cancel supervisor."""
+    from framefactory_api import benchmark_note_sources, browser_process
+
+    children = []
+    real_popen = browser_process.subprocess.Popen
+
+    def record_process(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def growing_browser(_operation, arguments, *, timeout_seconds, cancel_event):
+        script = (
+            "import pathlib,sys,time\n"
+            "sys.stdin.buffer.read()\n"
+            "stream=pathlib.Path(sys.argv[1]).with_suffix('.part').open('wb')\n"
+            "while True:\n"
+            " stream.write(b'x'*16384); stream.flush(); time.sleep(0.01)\n"
+        )
+        return browser_process._run_owned_process(
+            [sys.executable, "-c", script, arguments["destination"]],
+            b"ready", timeout_seconds=timeout_seconds, cancel_event=cancel_event,
+        )
+
+    monkeypatch.setattr(browser_process.subprocess, "Popen", record_process)
+    monkeypatch.setattr(benchmark_note_sources, "run_browser_operation", growing_browser)
+    provider = benchmark_note_sources.XiaohongshuAuthenticatedNoteProvider(
+        managed_browser_base_url="http://127.0.0.1:5556"
+    )
+    service = ChildFixtureService(tmp_path, None, provider.acquire_media)
+    service._attempt_storage_limit = 32_768
+    await service.start()
+    try:
+        started = time.monotonic()
+        first = await service.create("workspace-a", PROFILE, NOTE, "owned-quota-cancel-request")
+        failed = await terminal(service, "workspace-a", first["job_id"])
+        assert time.monotonic() - started < 3
+        assert failed["error"]["code"] == "BENCHMARK_JOB_STORAGE_FULL"
+        assert len(children) == 1 and children[0].poll() is not None
+        assert service._process is None
+        assert not (tmp_path / first["job_id"] / "attempt-1").exists()
+    finally:
+        await service.close()

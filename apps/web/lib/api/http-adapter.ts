@@ -790,7 +790,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const result = await this.request<JsonRecord>("/v1/benchmark-auth/xiaohongshu/status", {
       signal: benchmarkRequestSignal(signal), cache: "no-store",
     });
-    return result.ok ? this.mapBenchmarkConnection(result.data) : result;
+    return result.ok ? this.mapBenchmarkConnection(result.data) : this.benchmarkEndpointFailure(result);
   }
 
   async startBenchmarkConnection(idempotencyKey: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkConnection>> {
@@ -798,7 +798,15 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       method: "POST", body: "{}", headers: { "Idempotency-Key": idempotencyKey },
       signal: benchmarkRequestSignal(signal), cache: "no-store",
     });
-    return result.ok ? this.mapBenchmarkConnection(result.data) : result;
+    return result.ok ? this.mapBenchmarkConnection(result.data) : this.benchmarkEndpointFailure(result);
+  }
+
+  private benchmarkEndpointFailure(result: { ok: false; error: ApiProblem }): { ok: false; error: ApiProblem } {
+    if (result.error.status !== 404 && result.error.status !== 405) return result;
+    return { ok: false, error: {
+      code: "BENCHMARK_API_VERSION_MISMATCH", status: result.error.status, retryable: false,
+      message: "当前研究服务尚未提供此功能。请更新并重启研究 API 和网页服务，再重新连接。",
+    } };
   }
 
   private mapBenchmarkConnection(raw: JsonRecord): ApiResult<BenchmarkConnection> {
@@ -985,7 +993,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
     const result = await this.request<JsonRecord>(`/v1/benchmark-history?${params}`, {
       signal: benchmarkRequestSignal(signal), cache: "no-store",
     });
-    if (!result.ok) return result;
+    if (!result.ok) return this.benchmarkEndpointFailure(result);
     return { ok: true, data: { items: records(result.data.items).map((item) => this.mapHistorySummary(item)), nextCursor: text(result.data.next_cursor) || undefined } };
   }
 

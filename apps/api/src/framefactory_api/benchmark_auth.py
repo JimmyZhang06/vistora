@@ -22,6 +22,7 @@ from fastapi import Request as ApiRequest
 from pydantic import BaseModel, ConfigDict, Field
 
 from .benchmark_accounts import _managed_browser_base_url, _RejectRedirects
+from .browser_process import run_browser_operation_async
 from .context import WorkspaceContext
 from .errors import ApiError
 from .settings import Settings
@@ -255,14 +256,21 @@ class BenchmarkAuthService:
         self._closed = False
 
     async def _request(self, method: str, path: str, body: dict[str, Any] | None) -> dict[str, Any]:
-        return await asyncio.to_thread(_provider_request, self.base_url, method, path, body)
+        return await run_browser_operation_async(
+            "provider_request", {"base_url": self.base_url, "method": method,
+                                 "path": path, "body": body}, timeout_seconds=10,
+        )
 
     async def _check(self) -> bool:
-        return await asyncio.to_thread(_fresh_platform_login, self.base_url)
+        return await run_browser_operation_async(
+            "login", {"base_url": self.base_url}, timeout_seconds=35,
+        )
 
     async def close(self) -> None:
         self._closed = True
         if self._operations:
+            for task in tuple(self._operations):
+                task.cancel()
             await asyncio.gather(
                 *(asyncio.shield(task) for task in self._operations), return_exceptions=True
             )
@@ -305,7 +313,7 @@ class BenchmarkAuthService:
             return operation.result() if done else self._view("checking")
         finally:
             # Cancelled HTTP callers must not release the browser guard while their
-            # to_thread operation is still navigating or waiting for provider I/O.
+            # isolated operation is still navigating or waiting for provider I/O.
             if operation.done():
                 self._lock.release()
             else:
