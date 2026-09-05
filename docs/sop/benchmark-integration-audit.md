@@ -1,6 +1,6 @@
 # 对标功能整合与小红书连接审计 · 2026-09-06
 
-结论：代码已整合为可审查的单一分支，本地代码检查通过；提交供合并审查，不能作为生产发布验收。真实用户扫码闭环、运行中旧 API 升级和生产基础设施验收尚未完成。
+结论：跨账号对标、报告历史和本机小红书连接已完成源码整合；本地检查及 GitHub 的八项常规 CI 门禁通过。按用户要求交付至唯一远端分支 `main`。这不构成生产发布验收：真实用户扫码闭环、运行中旧 API 升级和生产实机验收仍未完成。
 
 ## 本次结果
 
@@ -41,7 +41,7 @@
 
 | 级别 | 触发、影响及证据 | 后续动作 |
 | --- | --- | --- |
-| P1，确认的验收缺口 | 用户首次扫码和登录过期后的完整交互尚未经真实扫码验证；运行中 8210 仍返回 404，新 Web 暂不能在该进程上连接或读历史。[连接验收要求](xiaohongshu-connection.md#验证要求)、[API 路由](../../apps/api/src/framefactory_api/main.py#L894) | 升级本机 API/Web 后，在独立测试会话由用户扫码并验证免费恢复及显式分析；完成前保持合并审查状态，不宣称正式可用 |
+| P1，确认的验收缺口 | 用户首次扫码和登录过期后的完整交互尚未经真实扫码验证；运行中 8210 仍返回 404，新 Web 暂不能在该进程上连接或读历史。[连接验收要求](xiaohongshu-connection.md#验证要求)、[API 路由](../../apps/api/src/framefactory_api/main.py#L894) | 主线源码整合后仍须升级本机 API/Web，在独立测试会话由用户扫码并验证免费恢复及显式分析；完成前不宣称正式可用 |
 | P2，确认依赖告警 | 当前开发依赖树包含 vulnerable esbuild；在使用其开发服务并访问恶意页面等公告条件下有读取开发服务响应风险。[锁文件](../../apps/web/package-lock.json#L859) | 在隔离分支验证兼容升级或替换 drizzle-kit 依赖链；避免未经验证的 `npm audit fix --force` 降级 |
 | P2，静态推断 | CDP `new_page`/`close` 在极端永久阻塞时仍可占用线程、操作锁和关闭流程，当前线程不能强杀。[登录采集](../../apps/api/src/framefactory_api/benchmark_auth.py#L172)、[详情锁](../../apps/api/src/framefactory_api/benchmark_note_sources.py#L126) | 公网或长期无人值守前使用可终止的隔离进程；现有串行限制仅防叠加，不能保证硬实时回收 |
 | P2，静态推断 | 磁盘检查预留 256 MiB，但没有运行中的硬配额；源媒体与派生音轨/帧叠加可能超过预留或配置预算。[容量检查](../../apps/api/src/framefactory_api/benchmark_jobs.py#L785) | 增加执行中计量/硬配额和有界中止策略；在此之前监控专用研究目录容量 |
@@ -57,3 +57,13 @@
 - 完整性与恢复：审阅 WAL/FULL、事务、幂等键、按尝试归档、取消、线程串行、Windows 子进程回收、媒体保留、SQLite 迁移与备份说明。既有 Windows 崩溃回收测试通过；生产数据库备份恢复/并发租户模式未验收。
 - 容量与成本：单执行通道、任务数量/尝试上限、有界浏览器扫描、媒体限量、最多 36 帧、模型调用限额和显式付费重试有实现及回归。底层 CDP 硬卡死、运行中存储配额和长期历史管理保留上述风险。
 - 发布与运维：审阅 CI 类型/测试/构建步骤、锁文件、启动器、SOP、独立 Provider 契约及旧 API 升级限制。本轮 GitHub 交付是源码审查，不执行 Sites 发布；没有新增生产监控告警或替代受保护环境发布门禁。
+
+## 干净环境 CI 复验与主线交付
+
+首次 GitHub 检查暴露了本机已有依赖掩盖的问题，已逐项修复并保留门禁：API/Worker 测试依赖显式声明，Web HTTP 测试安装真实 API，契约工具安装 Worker 依赖；ESLint glob 跨 shell 一致，Node 22.13 显式启用 TypeScript stripping；Compose 语法 fixture 补齐必填参数；生产锁恢复 uv/Linux 格式及排序，wheel 校验覆盖目标平台兼容的较旧 manylinux 标签，继续要求 SHA256 和二进制包。四条假凭据改为明确的 dummy fixture，安全检测器未改。
+
+在 `e126ac5` 上，[GitHub Release gates #8](https://github.com/JimmyZhang06/vistora/actions/runs/33984551472) 的 API、Worker、Web、契约/工具、Compose/PowerShell、生产锁、秘密/配置/依赖、素材发布契约共八项全部通过。四项受保护的真实生产/恢复验收按 PR 配置跳过，不能算通过。完整 npm audit 的四项 moderate 开发依赖风险仍存在；安全发布门禁通过不代表所有级别告警均为零。
+
+干净 Python 环境复验 API 为 462 passed / 4 skipped；Worker 为 513 passed / 2 skipped，发现第二个跳过源于缺少 NumPy，随后在 Worker dev 声明加入已锁定分析环境使用的 `numpy==2.2.6`，相关分析文件重新验证 14 passed / 0 skipped，生产锁逐字节不变。官方 Node 22.13.0/npm 10.9.2 的干净安装、Windows/Bash lint、类型检查、构建和 84 项 Web 测试通过。四份 Python 锁再次编译逐字节一致，全部目标 Linux wheel 下载及哈希校验通过。最后提交仅补充该测试依赖和本审计记录；应用源码与通过 CI 的版本一致。
+
+期间另一个 UI 任务在原项目目录切换分支并修改 `apps/web/components/batch-console.tsx` 和 `apps/web/app/globals.css`。最终整合及复验在独立检出中完成，保留原目录未提交修改，未将进行中的 UI 改动混入本次提交。原目录存在并发写入，不能把隔离检出的稳定结果称为原目录全部当前 UI 的验收结果。
