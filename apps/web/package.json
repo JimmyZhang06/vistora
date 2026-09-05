@@ -10,8 +10,8 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "lint": "eslint app components lib tests worker *.ts *.mjs --max-warnings=0",
+    "test": "npm run build && node --experimental-strip-types --test \"tests/*.test.mjs\"",
+    "lint": "eslint app components lib tests worker \"*.ts\" \"*.mjs\" --max-warnings=0",
     "typecheck": "tsc --noEmit --incremental false",
     "db:generate": "drizzle-kit generate"
   },

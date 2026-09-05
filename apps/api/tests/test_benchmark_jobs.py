@@ -106,7 +106,7 @@ async def test_acquisition_diagnostics_persist_without_provider_exception_detail
     tmp_path,
     provider_code,
 ):
-    private_detail = "https://fixture.invalid/note?xsec_token=never-persist-provider-detail"
+    private_detail = "https://fixture.invalid/note?xsec_token=dummy-never-persist-provider-detail"
 
     def failed_acquisition(_profile, _note, _destination):
         if provider_code is None:
@@ -319,7 +319,7 @@ async def test_restart_marks_unfinished_job_recoverable(tmp_path):
 def test_provider_environment_is_allowlisted_and_output_redacted(tmp_path, monkeypatch):
     configuration = tmp_path / "provider.env"
     configuration.write_text(
-        "FRAMEFACTORY_ASSET_VISION_API_KEY=only-worker-secret\n"
+        "FRAMEFACTORY_ASSET_VISION_API_KEY=dummy-only-worker-secret\n"
         "FRAMEFACTORY_ASR_MODEL=actual-provider\n"
         "FRAMEFACTORY_BENCHMARK_MAX_DURATION_SECONDS=99999\n"
         "DATABASE_URL=do-not-forward\n"
@@ -329,19 +329,19 @@ def test_provider_environment_is_allowlisted_and_output_redacted(tmp_path, monke
     monkeypatch.setenv("OTHER_API_KEY", "unrelated-secret")
     service = ChildFixtureService(tmp_path / "jobs", configuration, acquire)
     environment = service._worker_environment()
-    assert environment["FRAMEFACTORY_ASSET_VISION_API_KEY"] == "only-worker-secret"
+    assert environment["FRAMEFACTORY_ASSET_VISION_API_KEY"] == "dummy-only-worker-secret"
     assert environment["FRAMEFACTORY_BENCHMARK_MAX_DURATION_SECONDS"] == "600"
     assert "OTHER_API_KEY" not in environment
     assert "DATABASE_URL" not in environment
     assert environment.get("PYTHONPATH") != "untrusted-python-path"
     cleaned = service._sanitize(
         {
-            "message": "failed only-worker-secret https://cdn.invalid/?xsec_token=secret",
+            "message": "failed dummy-only-worker-secret https://cdn.invalid/?xsec_token=secret",
             "api_key": "hidden",
             "token": "hidden",
         }
     )
-    assert "only-worker-secret" not in json.dumps(cleaned)
+    assert "dummy-only-worker-secret" not in json.dumps(cleaned)
     assert "cdn.invalid" not in json.dumps(cleaned)
     assert "api_key" not in cleaned
 

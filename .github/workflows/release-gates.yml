@@ -86,7 +86,7 @@ jobs:
       - name: Install Worker test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          -e "./apps/api[dev]" -e ./services/worker
+          -e "./apps/api[dev]" -e "./services/worker[dev]"
 
       - name: Lint Worker
         run: python -m ruff check services/worker
@@ -114,10 +114,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: tests/contract/requirements.txt
+          cache-dependency-path: |
+            tests/contract/requirements.txt
+            services/worker/pyproject.toml
+            services/worker/requirements-prod.txt
 
       - name: Install contract test dependencies
-        run: python -m pip install --disable-pip-version-check -r tests/contract/requirements.txt
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r tests/contract/requirements.txt -e "./services/worker[dev]"
 
       - name: Test contracts and release-tool boundaries
         run: python -m pytest tests/contract tools/tests
@@ -177,15 +182,46 @@ jobs:
           printf '%s' 'redis://:ci-only@redis:6379/0' > "$secret_dir/redis_url"
           printf '%s' 'ci-dummy-s3-access-key' > "$secret_dir/s3_access_key"
           printf '%s' 'ci-dummy-s3-secret-key' > "$secret_dir/s3_secret_key"
+          printf '%s' 'ci-dummy-openai-api-key' > "$secret_dir/openai_api_key"
+          printf '%s' 'ci-dummy-search-token' > "$secret_dir/research_search_token"
+          printf '%s' 'ci-dummy-vision-api-key' > "$secret_dir/asset_vision_api_key"
+          printf '%s' 'ci-dummy-asr-api-key' > "$secret_dir/asr_api_key"
+          printf '%s' 'postgresql://capture:ci-only@postgres:5432/capture' > "$secret_dir/capture_database_url"
+          printf '%s' 'redis://:ci-only-capture@redis:6379/1' > "$secret_dir/capture_redis_url"
+          printf '%s' 'ci-dummy-capture-access-key' > "$secret_dir/capture_s3_access_key"
+          printf '%s' 'ci-dummy-capture-secret-key' > "$secret_dir/capture_s3_secret_key"
           export FF_DEFAULT_USER_ID='11111111-1111-4111-8111-111111111111'
           export FF_DEFAULT_WORKSPACE_ID='22222222-2222-4222-8222-222222222222'
           export FF_CORS_ALLOW_ORIGINS='https://framefactory.invalid'
+          # Syntax-only fixture: no services or providers are started by config.
+          export FF_WORKER_CAPABILITIES='research.collect,writing.compose,media.inventory,media.match,web.capture.validate,web.capture.screenshot,writing.compose.webpage,web.materialize,audio.synthesize,render.compose,quality.evaluate'
+          export FF_S3_PUBLIC_ENDPOINT_URL='https://media.invalid'
+          export FF_OPENAI_BASE_URL='https://text-provider.invalid/v1'
+          export FF_OPENAI_RESEARCH_MODEL='ci-dummy-research'
+          export FF_OPENAI_WRITING_MODEL='ci-dummy-writing'
+          export FF_OPENAI_QUALITY_MODEL='ci-dummy-quality'
+          export FF_RESEARCH_SEARCH_URL='https://search-provider.invalid/search'
+          export FF_LEGACY_MEDIA_ENABLED='false'
+          export FF_ASSET_VISION_BASE_URL='https://vision-provider.invalid/v1'
+          export FF_ASSET_VISION_MODEL='ci-dummy-vision'
+          export FF_ASR_BASE_URL='https://asr-provider.invalid/v1'
+          export FF_ASR_MODEL='ci-dummy-asr'
+          export FF_BROWSER_EGRESS_POLICY_ENFORCED='false'
+          export FF_BROWSER_EGRESS_PROXY_URL='http://egress-proxy.invalid:3128'
           export FF_POSTGRES_PASSWORD_FILE="$secret_dir/postgres_password"
           export FF_DATABASE_URL_FILE="$secret_dir/database_url"
           export FF_REDIS_PASSWORD_FILE="$secret_dir/redis_password"
           export FF_REDIS_URL_FILE="$secret_dir/redis_url"
           export FF_S3_ACCESS_KEY_FILE="$secret_dir/s3_access_key"
           export FF_S3_SECRET_KEY_FILE="$secret_dir/s3_secret_key"
+          export FF_OPENAI_API_KEY_FILE="$secret_dir/openai_api_key"
+          export FF_RESEARCH_SEARCH_TOKEN_FILE="$secret_dir/research_search_token"
+          export FF_ASSET_VISION_API_KEY_FILE="$secret_dir/asset_vision_api_key"
+          export FF_ASR_API_KEY_FILE="$secret_dir/asr_api_key"
+          export FF_CAPTURE_DATABASE_URL_FILE="$secret_dir/capture_database_url"
+          export FF_CAPTURE_REDIS_URL_FILE="$secret_dir/capture_redis_url"
+          export FF_CAPTURE_S3_ACCESS_KEY_FILE="$secret_dir/capture_s3_access_key"
+          export FF_CAPTURE_S3_SECRET_KEY_FILE="$secret_dir/capture_s3_secret_key"
           docker compose -f deploy/production/compose.yml config --quiet
 
       - name: Parse start and stop PowerShell scripts
@@ -279,6 +315,13 @@ jobs:
           set -euo pipefail
           wheelhouse="$RUNNER_TEMP/python-wheelhouse"
           mkdir -p "$wheelhouse"
+          # pip's explicit --platform does not expand the glibc compatibility
+          # ladder. Include older Linux x86_64 tags accepted by the 2.28 target.
+          platforms=()
+          for glibc_minor in {28..5}; do
+            platforms+=(--platform "manylinux_2_${glibc_minor}_x86_64")
+          done
+          platforms+=(--platform manylinux2014_x86_64 --platform manylinux2010_x86_64 --platform manylinux1_x86_64)
           for lock in \
             apps/api/requirements-build.txt \
             apps/api/requirements-prod.txt \
@@ -290,7 +333,7 @@ jobs:
               --dest "$wheelhouse" \
               --require-hashes \
               --only-binary=:all: \
-              --platform manylinux_2_28_x86_64 \
+              "${platforms[@]}" \
               --implementation cp \
               --python-version 312 \
               --abi cp312 \

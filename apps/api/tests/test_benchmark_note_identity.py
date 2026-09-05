@@ -261,7 +261,7 @@ def test_real_dom_discovers_same_card_links_and_never_merges_duplicate_titles(is
     page.set_content(f"""
       <a href="/user/profile/{OTHER}/{OTHER}">unrelated page navigation</a>
       <section class="note-item">
-        <a href="/user/profile/{PROFILE}/{NOTE}?xsec_token=private-fixture-token">cover</a>
+        <a href="/user/profile/{PROFILE}/{NOTE}?xsec_token=dummy-private-fixture-token">cover</a>
         <a class="title" href="/user/profile/{PROFILE}/{NOTE}">same title</a>
         <span class="count">10万+</span>
       </section>
@@ -275,7 +275,7 @@ def test_real_dom_discovers_same_card_links_and_never_merges_duplicate_titles(is
     assert cards[0]["likes_display"] == "10万+"
     assert all(item["format"] == "unknown" and item["published_at"] is None for item in cards)
     serialized = json.dumps(cards)
-    assert "xsec_token" not in serialized and "private-fixture-token" not in serialized
+    assert "xsec_token" not in serialized and "dummy-private-fixture-token" not in serialized
 
 
 @pytest.mark.parametrize(
@@ -307,7 +307,7 @@ def test_real_dom_rejects_disagreeing_sources_on_one_card(isolated_dom_page):
     assert error.value.code == "BENCHMARK_NOTE_IDENTITY_CONFLICT"
 
 
-@pytest.mark.parametrize("query", ["", "?xsec_token=private-fixture-token"])
+@pytest.mark.parametrize("query", ["", "?xsec_token=dummy-private-fixture-token"])
 def test_real_dom_clicks_identity_with_or_without_token(isolated_dom_page, query):
     page = isolated_dom_page
     page.set_content(f"""<section class="note-item"><a

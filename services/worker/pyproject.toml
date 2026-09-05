@@ -17,6 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "jsonschema>=4.26,<5",
+  "Pillow>=12.3,<13",
+  "pytest>=9.0.3,<10",
+  "ruff>=0.12,<1",
+]
 browser-capture = [
   "playwright==1.62.0",
 ]
