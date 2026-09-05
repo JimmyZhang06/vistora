@@ -26,6 +26,30 @@ import type {
   AssetSegment,
   AssetTag,
   AssetUploadRequest,
+  BenchmarkAccountSnapshot,
+  BenchmarkAccountPreviewRequest,
+  BenchmarkAccountReport,
+  BenchmarkConnection,
+  BenchmarkConnectionState,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryDetail,
+  BenchmarkHistoryQuery,
+  BenchmarkHistorySummary,
+  BenchmarkAccountStrategyReport,
+  BenchmarkAnalysisJob,
+  BenchmarkVideoAnalysis,
+  BenchmarkDeepFinding,
+  BenchmarkDeepMetric,
+  BenchmarkDeepNoteReport,
+  BenchmarkDeepTimelineItem,
+  BenchmarkInsight,
+  BenchmarkNotePerformance,
+  BenchmarkNoteReport,
+  BenchmarkNote,
+  BenchmarkNoteSourceEvidence,
+  BenchmarkNoteSourceRequest,
+  BenchmarkStrategySignal,
+  BenchmarkTitlePattern,
   DocumentVideoCreateRequest,
   DocumentVideoCreateResult,
   RemoteAssetImportRequest,
@@ -88,11 +112,13 @@ import type {
   VersionedResource,
 } from "./contracts";
 import { normalizeChannelPlatform } from "../channel-platforms.ts";
+import { benchmarkProfile } from "../benchmark-recovery.ts";
 
 type JsonRecord = Record<string, unknown>;
 
 export interface HttpAdapterOptions {
   baseUrl?: string;
+  benchmarkBaseUrl?: string;
   fetch?: typeof globalThis.fetch;
   testPollIntervalMs?: number;
   testPollAttempts?: number;
@@ -120,6 +146,10 @@ function optionalNumber(value: unknown): number | undefined {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function numbers(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === "number") : [];
 }
 
 function records(value: unknown): JsonRecord[] {
@@ -158,6 +188,11 @@ function normalizeWebpageVideoStatus(value: unknown): string {
 function idempotencyKey(prefix: string): string {
   const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}:${suffix}`;
+}
+
+function benchmarkRequestSignal(signal?: AbortSignal, timeoutMs = 20_000): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 function slugify(value: string): string {
@@ -355,6 +390,7 @@ export function skillSpecToCanonicalPatch(spec: Partial<SkillSpec>, raw: JsonRec
 
 export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
   private readonly baseUrl: string;
+  private readonly benchmarkBaseUrl: string;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly pollIntervalMs: number;
   private readonly pollAttempts: number;
@@ -362,6 +398,7 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
 
   constructor(options: HttpAdapterOptions = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.NEXT_PUBLIC_FRAMEFACTORY_API_URL ?? DEFAULT_API_URL).replace(/\/$/, "");
+    this.benchmarkBaseUrl = (options.benchmarkBaseUrl ?? process.env.NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL ?? this.baseUrl).replace(/\/$/, "");
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.pollIntervalMs = options.testPollIntervalMs ?? 500;
     this.pollAttempts = options.testPollAttempts ?? 120;
@@ -369,7 +406,8 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<ApiResult<T>> {
     try {
-      const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      const baseUrl = path.startsWith("/v1/benchmark-") ? this.benchmarkBaseUrl : this.baseUrl;
+      const response = await this.fetcher(`${baseUrl}${path}`, {
         ...init,
         headers: { Accept: "application/json", ...(init.body ? { "Content-Type": "application/json" } : {}), ...init.headers },
       });
@@ -746,6 +784,569 @@ export class HttpFrameFactoryAdapter implements FrameFactoryAdapter {
       name: text(result.data.name), description: text(result.data.description),
       assetCount: number(result.data.asset_count), readyAssetCount: number(result.data.ready_asset_count),
     } };
+  }
+
+  async getBenchmarkConnectionStatus(signal?: AbortSignal): Promise<ApiResult<BenchmarkConnection>> {
+    const result = await this.request<JsonRecord>("/v1/benchmark-auth/xiaohongshu/status", {
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    return result.ok ? this.mapBenchmarkConnection(result.data) : result;
+  }
+
+  async startBenchmarkConnection(idempotencyKey: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkConnection>> {
+    const result = await this.request<JsonRecord>("/v1/benchmark-auth/xiaohongshu/qrcode", {
+      method: "POST", body: "{}", headers: { "Idempotency-Key": idempotencyKey },
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    return result.ok ? this.mapBenchmarkConnection(result.data) : result;
+  }
+
+  private mapBenchmarkConnection(raw: JsonRecord): ApiResult<BenchmarkConnection> {
+    const states: BenchmarkConnectionState[] = ["not_configured", "provider_unavailable", "checking", "login_required", "awaiting_scan", "authorized", "expired", "error"];
+    const state = raw.state as BenchmarkConnectionState;
+    const qr = raw.qr_image_data_url;
+    const validTimestamp = (value: unknown) => value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+    if (raw.schema_version !== "1.0.0" || raw.platform !== "xiaohongshu" || raw.mode !== "local_browser" || !states.includes(state)
+      || !validTimestamp(raw.expires_at) || !validTimestamp(raw.checked_at)
+      || (qr !== null && (typeof qr !== "string" || qr.length > 1_400_000 || !/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(qr)))
+      || (state === "awaiting_scan" && (!qr || !raw.expires_at))) {
+      return { ok: false, error: { code: "BENCHMARK_AUTH_INVALID_RESPONSE", message: "小红书连接服务返回了不兼容的数据，请更新研究 API 后重试。", retryable: false } };
+    }
+    return { ok: true, data: {
+      platform: "xiaohongshu", mode: "local_browser", state,
+      qrImageDataUrl: state === "awaiting_scan" ? qr as string : null,
+      expiresAt: raw.expires_at as string | null, checkedAt: raw.checked_at as string | null,
+      retryAfterSeconds: typeof raw.retry_after_seconds === "number" && Number.isFinite(raw.retry_after_seconds) ? Math.min(10, Math.max(3, raw.retry_after_seconds)) : 3,
+      errorCode: typeof raw.error_code === "string" ? raw.error_code : null,
+    } };
+  }
+
+  async getBenchmarkAccountDemo(): Promise<ApiResult<BenchmarkAccountSnapshot>> {
+    const result = await this.request<JsonRecord>("/v1/benchmark-accounts/demo");
+    if (!result.ok) return result;
+    const compatibility = this.benchmarkDiscoveryProblem(result.data);
+    if (compatibility) return { ok: false, error: compatibility };
+    return { ok: true, data: this.mapBenchmarkAccountSnapshot(result.data) };
+  }
+
+  async previewBenchmarkAccount(
+    request: BenchmarkAccountPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAccountSnapshot>> {
+    const profile = benchmarkProfile(request.profileUrl);
+    if (!profile) return { ok: false, error: { code: "BENCHMARK_INVALID_PROFILE_URL", message: "请输入有效的小红书 HTTPS 博主主页链接。" } };
+    const result = await this.request<JsonRecord>("/v1/benchmark-accounts/preview", {
+      method: "POST", signal: benchmarkRequestSignal(signal, 60_000),
+      body: JSON.stringify({ platform: request.platform, profile_url: profile.url, refresh_note_identity: request.refreshNoteIdentity ?? false }),
+    });
+    if (!result.ok) return result;
+    const compatibility = this.benchmarkDiscoveryProblem(result.data, profile.userId);
+    if (compatibility) return { ok: false, error: compatibility };
+    return { ok: true, data: this.mapBenchmarkAccountSnapshot(result.data) };
+  }
+
+  async generateBenchmarkAccountReport(
+    request: BenchmarkAccountPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAccountReport>> {
+    const profile = benchmarkProfile(request.profileUrl);
+    if (!profile) return { ok: false, error: { code: "BENCHMARK_INVALID_PROFILE_URL", message: "请输入有效的小红书 HTTPS 博主主页链接。" } };
+    const result = await this.request<JsonRecord>("/v1/benchmark-accounts/report", {
+      method: "POST", signal: benchmarkRequestSignal(signal, 60_000),
+      body: JSON.stringify({ platform: request.platform, profile_url: profile.url, refresh_note_identity: request.refreshNoteIdentity ?? false }),
+    });
+    if (!result.ok) return result;
+    const compatibility = this.benchmarkDiscoveryProblem(record(result.data.snapshot), profile.userId);
+    if (compatibility) return { ok: false, error: compatibility };
+    return { ok: true, data: this.mapBenchmarkAccountReport(result.data) };
+  }
+
+  async getBenchmarkDeepReportDemo(): Promise<ApiResult<BenchmarkDeepNoteReport>> {
+    const result = await this.request<JsonRecord>("/v1/benchmark-notes/deep-report/demo");
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkDeepNoteReport(result.data) };
+  }
+
+  async collectBenchmarkNoteSourceEvidence(
+    request: BenchmarkNoteSourceRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkNoteSourceEvidence>> {
+    const profile = benchmarkProfile(request.profileUrl);
+    if (!profile || !/^[a-f0-9]{24}$/.test(request.noteId)) return { ok: false, error: { code: "BENCHMARK_INVALID_NOTE_IDENTITY", message: "当前笔记身份无效，请补全笔记信息后重新选择。" } };
+    const result = await this.request<JsonRecord>("/v1/benchmark-notes/source-evidence", {
+      method: "POST", signal: benchmarkRequestSignal(signal, 60_000),
+      body: JSON.stringify({
+        platform: request.platform,
+        profile_url: profile.url,
+        note_id: request.noteId,
+      }),
+    });
+    if (!result.ok) return result;
+    if (result.data.profile_user_id !== profile.userId || result.data.note_id !== request.noteId || result.data.platform !== "xiaohongshu") {
+      return { ok: false, error: { code: "BENCHMARK_NOTE_IDENTITY_CONFLICT", message: "返回的详情不属于当前账号和笔记，已停止展示。" } };
+    }
+    const media = record(result.data.media);
+    if (media.kind !== "video" && media.kind !== "image") return { ok: false, error: { code: "BENCHMARK_SOURCE_CHANGED", message: "详情未提供可核验的媒体类型，请补全笔记信息后重试。" } };
+    return { ok: true, data: this.mapBenchmarkNoteSourceEvidence(result.data) };
+  }
+
+  private mapBenchmarkNoteSourceEvidence(raw: JsonRecord): BenchmarkNoteSourceEvidence {
+    const media = record(raw.media);
+    const metric = (value: unknown) => {
+      const item = record(value);
+      return {
+        display: text(item.display, "—"),
+        lowerBound: typeof item.lower_bound === "number" ? item.lower_bound : undefined,
+        precision: text(item.precision, "unknown") as "exact" | "rounded" | "lower_bound" | "unknown",
+      };
+    };
+    return {
+      schemaVersion: "1.0.0",
+      platform: "xiaohongshu",
+      profileUserId: text(raw.profile_user_id),
+      noteId: text(raw.note_id),
+      canonicalUrl: text(raw.canonical_url),
+      capturedAt: text(raw.captured_at),
+      acquisitionMethod: "authenticated_managed_browser",
+      title: text(raw.title),
+      description: text(raw.description),
+      likes: metric(raw.likes),
+      collects: metric(raw.collects),
+      comments: metric(raw.comments),
+      media: {
+        kind: text(media.kind) === "image" ? "image" : "video",
+        videoAvailable: Boolean(media.video_available),
+        imageCount: number(media.image_count),
+        durationMs: typeof media.duration_ms === "number" ? media.duration_ms : undefined,
+        width: typeof media.width === "number" ? media.width : undefined,
+        height: typeof media.height === "number" ? media.height : undefined,
+        trustedMediaOrigin: Boolean(media.trusted_media_origin),
+      },
+      limitations: strings(raw.limitations),
+    };
+  }
+
+  async createBenchmarkAnalysisJob(
+    request: BenchmarkNoteSourceRequest,
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    const profile = benchmarkProfile(request.profileUrl);
+    if (!profile || !/^[a-f0-9]{24}$/.test(request.noteId)) return { ok: false, error: { code: "BENCHMARK_INVALID_NOTE_IDENTITY", message: "当前笔记身份无效，请补全笔记信息后重新选择。" } };
+    const result = await this.request<JsonRecord>("/v1/benchmark-analysis/jobs", {
+      method: "POST", signal: benchmarkRequestSignal(signal),
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ platform: request.platform, profile_url: profile.url, note_id: request.noteId }),
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkAnalysisJob(result.data) };
+  }
+
+  async getBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    const result = await this.request<JsonRecord>(`/v1/benchmark-analysis/jobs/${encodeURIComponent(jobId)}`, {
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkAnalysisJob(result.data) };
+  }
+
+  async getLatestBenchmarkAnalysisJob(
+    profileUserId: string, noteId: string, signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    const query = new URLSearchParams({ profile_user_id: profileUserId, note_id: noteId });
+    const result = await this.request<JsonRecord>(`/v1/benchmark-analysis/latest?${query}`, {
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkAnalysisJob(result.data) };
+  }
+
+  async cancelBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    const result = await this.request<JsonRecord>(`/v1/benchmark-analysis/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST", signal: benchmarkRequestSignal(signal),
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkAnalysisJob(result.data) };
+  }
+
+  async retryBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    const result = await this.request<JsonRecord>(`/v1/benchmark-analysis/jobs/${encodeURIComponent(jobId)}/retry`, {
+      method: "POST", signal: benchmarkRequestSignal(signal),
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkAnalysisJob(result.data) };
+  }
+
+  async listBenchmarkHistory(query: BenchmarkHistoryQuery, signal?: AbortSignal): Promise<ApiResult<BenchmarkHistoryPage>> {
+    const params = new URLSearchParams();
+    if (query.kind) params.set("kind", query.kind);
+    if (query.q) params.set("q", query.q);
+    if (query.cursor) params.set("cursor", query.cursor);
+    const result = await this.request<JsonRecord>(`/v1/benchmark-history?${params}`, {
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    if (!result.ok) return result;
+    return { ok: true, data: { items: records(result.data.items).map((item) => this.mapHistorySummary(item)), nextCursor: text(result.data.next_cursor) || undefined } };
+  }
+
+  async getBenchmarkHistory(recordId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkHistoryDetail>> {
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(recordId)) {
+      return { ok: false, error: { code: "BENCHMARK_HISTORY_NOT_FOUND", message: "历史记录链接无效，请从列表重新选择。" } };
+    }
+    const result = await this.request<JsonRecord>(`/v1/benchmark-history/${encodeURIComponent(recordId)}`, {
+      signal: benchmarkRequestSignal(signal), cache: "no-store",
+    });
+    if (!result.ok) return result;
+    const raw = result.data;
+    const account = record(raw.account_report);
+    const accountProfile = record(record(account.snapshot).profile);
+    const video = record(raw.video_job);
+    const matches = raw.record_id === recordId && /^[a-f0-9]{24}$/.test(text(raw.profile_user_id))
+      && (raw.kind === "account"
+        ? nonEmptyRecord(raw.account_report) && !nonEmptyRecord(raw.video_job)
+          && accountProfile.platform === "xiaohongshu" && accountProfile.user_id === raw.profile_user_id
+          && benchmarkProfile(text(accountProfile.profile_url))?.userId === raw.profile_user_id
+        : raw.kind === "video" && nonEmptyRecord(raw.video_job) && !nonEmptyRecord(raw.account_report)
+          && video.profile_user_id === raw.profile_user_id && video.note_id === raw.note_id
+          && /^[a-f0-9]{24}$/.test(text(raw.note_id)));
+    if (!matches) return { ok: false, error: { code: "BENCHMARK_HISTORY_IDENTITY_CONFLICT", message: "保存报告与当前记录的账号或笔记不一致，已停止展示。请返回历史列表重试。" } };
+    return { ok: true, data: {
+      ...this.mapHistorySummary(result.data),
+      accountReport: nonEmptyRecord(result.data.account_report) ? this.mapBenchmarkAccountReport(record(result.data.account_report)) : null,
+      videoJob: nonEmptyRecord(result.data.video_job) ? this.mapBenchmarkAnalysisJob(record(result.data.video_job)) : null,
+      mediaAvailable: Boolean(result.data.media_available),
+    } };
+  }
+
+  private mapHistorySummary(raw: JsonRecord): BenchmarkHistorySummary {
+    return {
+      id: text(raw.record_id), kind: raw.kind === "video" ? "video" : "account", title: text(raw.title),
+      profileUserId: text(raw.profile_user_id), noteId: text(raw.note_id) || undefined,
+      status: raw.status === "partial" ? "partial" : "ready", savedAt: text(raw.saved_at), analyzedAt: text(raw.analyzed_at),
+    };
+  }
+
+  private mapBenchmarkAnalysisJob(raw: JsonRecord): BenchmarkAnalysisJob {
+    const id = text(raw.job_id);
+    const progress = record(raw.progress);
+    // Only links for generated files explicitly returned by the artifact manifest are exposed.
+    const artifacts = records(raw.artifacts).filter((item) =>
+      /^(?:attempt-[1-9][0-9]*\/)?(?:frames\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png)|[A-Za-z0-9_-]+\.(?:wav|mp3))$/.test(text(item.filename)),
+    ).map((item) => ({
+      filename: text(item.filename),
+      mediaType: text(item.media_type),
+      contentUrl: `${this.benchmarkBaseUrl}/v1/benchmark-analysis/jobs/${encodeURIComponent(id)}/artifacts/${text(item.filename).split("/").map(encodeURIComponent).join("/")}`,
+    }));
+    const analysisRaw = nonEmptyRecord(raw.analysis);
+    let analysis: BenchmarkVideoAnalysis | null = null;
+    if (analysisRaw) {
+      const transcript = record(analysisRaw.transcript);
+      const temporal = record(analysisRaw.temporal);
+      const technical = record(analysisRaw.technical);
+      const audio = record(analysisRaw.audio_analysis);
+      const narrative = record(analysisRaw.narrative_analysis);
+      analysis = {
+        status: text(analysisRaw.status) === "complete" ? "complete" : "partial",
+        durationMs: optionalNumber(technical.duration_ms),
+        frames: records(analysisRaw.frames).map((frame) => ({
+          timestampMs: number(frame.timestamp_ms),
+          key: text(frame.key),
+          artifactUrl: artifacts.find((artifact) => artifact.filename === text(frame.key))?.contentUrl,
+          ocrText: text(record(frame.ocr).text),
+          vision: Object.fromEntries(Object.entries(record(frame.vision)).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+        })),
+        capabilities: Object.fromEntries(Object.entries(record(analysisRaw.capabilities)).map(([key, value]) => {
+          const capability = record(value);
+          return [key, {
+            status: text(capability.status, "unavailable") as BenchmarkVideoAnalysis["capabilities"][string]["status"],
+            provider: text(capability.provider),
+            limitations: strings(capability.limitations),
+          }];
+        })),
+        speechStatus: ["present", "absent"].includes(text(temporal.speech_status))
+          ? text(temporal.speech_status) as "present" | "absent" : "unknown",
+        speechDetectionMethod: text(temporal.speech_detection_method),
+        transcript: {
+          text: text(transcript.text),
+          segments: records(transcript.segments).filter((segment) =>
+            typeof segment.start_ms === "number" && typeof segment.end_ms === "number",
+          ).map((segment) => ({ startMs: number(segment.start_ms), endMs: number(segment.end_ms), text: text(segment.text) })),
+          timestampSource: text(transcript.timestamp_source),
+          provider: text(transcript.provider),
+        },
+        audioAnalysis: {
+          rmsDbfs: optionalNumber(audio.rms_dbfs), peakDbfs: optionalNumber(audio.peak_dbfs),
+          crestFactorDb: optionalNumber(audio.crest_factor_db),
+          clippedSampleRatio: optionalNumber(audio.clipped_sample_ratio),
+          lowEnergyRatio: optionalNumber(audio.low_energy_ratio),
+          vadSpeechRatio: optionalNumber(audio.vad_speech_ratio),
+          transcribedCharactersPerSecond: optionalNumber(audio.transcribed_characters_per_second),
+          silences: records(audio.silences).map((silence) => ({ startMs: number(silence.start_ms), endMs: number(silence.end_ms) })),
+          pitchAnalysis: {
+            status: text(record(audio.pitch_analysis).status, "unavailable"),
+            medianHz: optionalNumber(record(audio.pitch_analysis).median_hz),
+            rangeHz: optionalNumber(record(audio.pitch_analysis).p90_p10_range_hz),
+            limitations: strings(record(audio.pitch_analysis).limitations),
+          },
+          findings: strings(audio.findings), limitations: strings(audio.limitations),
+        },
+        creativeInsights: records(analysisRaw.creative_insights).map((insight) => ({
+          claim: text(insight.claim), evidenceFrameKeys: strings(insight.evidence_frame_keys), confidence: optionalNumber(insight.confidence),
+        })),
+        narrativeAnalysis: {
+          sections: records(narrative.sections).map((section) => ({
+            startMs: number(section.start_ms), endMs: number(section.end_ms),
+            role: text(section.role), observation: text(section.observation),
+            strategyHypothesis: text(section.strategy_hypothesis),
+            evidenceFrameKeys: strings(section.evidence_frame_keys), transcriptQuotes: strings(section.transcript_quotes),
+          })),
+          voiceoverFindings: records(narrative.voiceover_findings).map((finding) => ({
+            claim: text(finding.claim), evidenceKind: text(finding.evidence_kind), transcriptQuote: text(finding.transcript_quote),
+          })),
+          audioVisualFindings: records(narrative.audio_visual_findings).map((finding) => ({
+            claim: text(finding.claim), evidenceFrameKeys: strings(finding.evidence_frame_keys), transcriptQuote: text(finding.transcript_quote),
+          })),
+          limitations: strings(narrative.limitations),
+        },
+        limitations: strings(analysisRaw.limitations),
+      };
+    }
+    const problem = nonEmptyRecord(raw.error);
+    return {
+      id, workspaceId: text(raw.workspace_id), profileUserId: text(raw.profile_user_id),
+      noteId: text(raw.note_id), title: text(raw.title),
+      status: text(raw.status, "failed") as BenchmarkAnalysisJob["status"],
+      progress: { stage: text(progress.stage), percent: Math.min(100, Math.max(0, number(progress.percent))), message: text(progress.message) },
+      createdAt: text(raw.created_at), updatedAt: text(raw.updated_at), attempt: number(raw.attempt, 1),
+      sourceEvidence: nonEmptyRecord(raw.source_evidence) ? this.mapBenchmarkNoteSourceEvidence(record(raw.source_evidence)) : null,
+      analysis,
+      report: nonEmptyRecord(raw.report) ? this.mapBenchmarkDeepNoteReport(record(raw.report)) : null,
+      error: problem ? { code: text(problem.code), message: text(problem.message), retryable: Boolean(problem.retryable) } : null,
+      artifacts,
+    };
+  }
+
+  async getLatestBenchmarkDeepReport(): Promise<ApiResult<BenchmarkDeepNoteReport>> {
+    const result = await this.request<JsonRecord>("/v1/benchmark-notes/deep-report/latest");
+    if (!result.ok) return result;
+    return { ok: true, data: this.mapBenchmarkDeepNoteReport(result.data) };
+  }
+
+  private mapBenchmarkDeepNoteReport(raw: JsonRecord): BenchmarkDeepNoteReport {
+    const metrics: BenchmarkDeepMetric[] = (
+      Array.isArray(raw.metrics) ? raw.metrics : []
+    ).map((value) => {
+      const item = record(value);
+      return {
+        key: text(item.key),
+        label: text(item.label),
+        value: text(item.value),
+        interpretation: text(item.interpretation),
+      };
+    });
+    const findings: BenchmarkDeepFinding[] = (
+      Array.isArray(raw.findings) ? raw.findings : []
+    ).map((value) => {
+      const item = record(value);
+      return {
+        category: text(item.category, "limitation") as BenchmarkDeepFinding["category"],
+        confidence: text(item.confidence, "low") as BenchmarkDeepFinding["confidence"],
+        claim: text(item.claim),
+        evidence: strings(item.evidence),
+        reusableMove: text(item.reusable_move) || undefined,
+      };
+    });
+    const timeline: BenchmarkDeepTimelineItem[] = (
+      Array.isArray(raw.timeline) ? raw.timeline : []
+    ).map((value) => {
+      const item = record(value);
+      return {
+        startMs: number(item.start_ms),
+        endMs: number(item.end_ms),
+        label: text(item.label),
+        description: text(item.description),
+        transcript: text(item.transcript),
+        ocrText: strings(item.ocr_text),
+        audioEvents: strings(item.audio_events),
+        evidenceTypes: strings(item.evidence_types) as BenchmarkDeepTimelineItem["evidenceTypes"],
+        confidence: typeof item.confidence === "number" ? item.confidence : undefined,
+        representativeFrameKey: text(item.representative_frame_key) || undefined,
+      };
+    });
+    return {
+      schemaVersion: "1.0.0",
+      sourceKind: text(raw.source_kind) === "worker_asset_analysis"
+        ? "worker_asset_analysis"
+        : "synthetic_demo",
+      sourceLabel: text(raw.source_label),
+      evidenceDepth: "multimodal_timeline_v1",
+      title: text(raw.title),
+      durationMs: number(raw.duration_ms),
+      status: text(raw.status) === "ready" ? "ready" : "partial",
+      summary: text(raw.summary),
+      metrics,
+      findings,
+      timeline,
+      limitations: strings(raw.limitations),
+    };
+  }
+
+  private mapBenchmarkAccountReport(raw: JsonRecord): BenchmarkAccountReport {
+    const signal = (value: unknown): BenchmarkStrategySignal => {
+      const item = record(value);
+      return {
+        key: text(item.key), label: text(item.label), evidence: text(item.evidence),
+        likelyEffect: text(item.likely_effect), reusableMove: text(item.reusable_move),
+      };
+    };
+    const insight = (value: unknown): BenchmarkInsight => {
+      const item = record(value);
+      return {
+        level: text(item.level, "limitation") as BenchmarkInsight["level"],
+        confidence: text(item.confidence, "low") as BenchmarkInsight["confidence"],
+        claim: text(item.claim), evidence: strings(item.evidence),
+      };
+    };
+    const performance = (value: unknown): BenchmarkNotePerformance => {
+      const item = record(value);
+      return {
+        tier: text(item.tier, "unknown") as BenchmarkNotePerformance["tier"],
+        percentile: typeof item.percentile === "number" ? item.percentile : undefined,
+        relativeToMedian: typeof item.relative_to_median === "number" ? item.relative_to_median : undefined,
+        sampleMedianLikesLowerBound: typeof item.sample_median_likes_lower_bound === "number" ? item.sample_median_likes_lower_bound : undefined,
+        caveat: text(item.caveat),
+      };
+    };
+    const noteReport = (value: unknown): BenchmarkNoteReport => {
+      const item = record(value);
+      return {
+        sampleIndex: number(item.sample_index), title: text(item.title),
+        format: item.format === "image" ? "image" : item.format === "video" ? "video" : "unknown",
+        publishedAt: text(item.published_at) || null, likesDisplay: text(item.likes_display),
+        likesLowerBound: typeof item.likes_lower_bound === "number" ? item.likes_lower_bound : undefined,
+        performance: performance(item.performance),
+        strategySignals: (Array.isArray(item.strategy_signals) ? item.strategy_signals : []).map(signal),
+        viralMechanisms: (Array.isArray(item.viral_mechanisms) ? item.viral_mechanisms : []).map(insight),
+        recommendations: strings(item.recommendations), evidenceDepth: "public_metadata_only",
+        limitations: strings(item.limitations),
+      };
+    };
+    const pattern = (value: unknown): BenchmarkTitlePattern => {
+      const item = record(value);
+      return {
+        key: text(item.key), label: text(item.label), matchingNotes: number(item.matching_notes),
+        sharePercent: number(item.share_percent), topCandidateMatches: number(item.top_candidate_matches),
+        medianLikesLowerBound: typeof item.median_likes_lower_bound === "number" ? item.median_likes_lower_bound : undefined,
+        liftVsSampleMedian: typeof item.lift_vs_sample_median === "number" ? item.lift_vs_sample_median : undefined,
+      };
+    };
+    const accountRaw = record(raw.account_report);
+    const accountReport: BenchmarkAccountStrategyReport = {
+      nickname: text(accountRaw.nickname), sampleSize: number(accountRaw.sample_size),
+      evidenceDepth: "public_metadata_only", executiveSummary: text(accountRaw.executive_summary),
+      formatStrategy: text(accountRaw.format_strategy), publishingStrategy: text(accountRaw.publishing_strategy),
+      titlePatterns: (Array.isArray(accountRaw.title_patterns) ? accountRaw.title_patterns : []).map(pattern),
+      topCandidateNoteIndexes: numbers(accountRaw.top_candidate_note_indexes),
+      playbook: strings(accountRaw.playbook), limitations: strings(accountRaw.limitations),
+    };
+    return {
+      schemaVersion: "1.0.0", generatedAt: text(raw.generated_at),
+      snapshot: this.mapBenchmarkAccountSnapshot(record(raw.snapshot)),
+      accountReport,
+      noteReports: (Array.isArray(raw.note_reports) ? raw.note_reports : []).map(noteReport),
+      historyRecordId: text(raw.history_record_id) || undefined,
+      historyWarning: text(raw.history_warning) || undefined,
+    };
+  }
+
+  private benchmarkDiscoveryProblem(raw: JsonRecord, expectedUserId?: string): ApiProblem | null {
+    const acquisition = record(raw.acquisition);
+    const profile = record(raw.profile);
+    const canonical = benchmarkProfile(text(profile.profile_url));
+    const notes = Array.isArray(raw.notes) ? raw.notes.map(record) : null;
+    const validNotes = notes?.every((note) =>
+      (note.identity_status === "verified" && /^[a-f0-9]{24}$/.test(text(note.note_id)))
+      || (note.identity_status === "missing" && !note.note_id),
+    );
+    const identified = notes?.filter((note) => note.identity_status === "verified").length;
+    const expectedStatus = identified === 0 ? "unavailable" : identified === notes?.length ? "complete" : "partial";
+    if (acquisition.discovery_version !== "1" || !notes || !validNotes
+      || acquisition.note_identity_status !== expectedStatus
+      || acquisition.identified_note_count !== identified
+      || acquisition.unresolved_note_count !== notes.length - (identified ?? 0)
+      || !(acquisition.identity_error_code === null || typeof acquisition.identity_error_code === "string")) {
+      let endpoint = "当前研究 API";
+      try { const url = new URL(this.benchmarkBaseUrl); endpoint = `${url.origin}${url.pathname}`; } catch { /* Do not disclose raw configuration. */ }
+      return { code: "BENCHMARK_API_VERSION_MISMATCH", message: `研究 API ${endpoint} 未提供兼容的笔记发现契约（版本 1）。请让维护者更新该服务，并检查 NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL 指向已更新的研究 API，然后重试。` };
+    }
+    if (profile.platform !== "xiaohongshu" || !canonical || canonical.userId !== profile.user_id
+      || (expectedUserId && profile.user_id !== expectedUserId)) {
+      return { code: "BENCHMARK_NOTE_IDENTITY_CONFLICT", message: "研究 API 返回的主页不属于当前账号，已停止展示。" };
+    }
+    return null;
+  }
+
+  private mapBenchmarkAccountSnapshot(raw: JsonRecord): BenchmarkAccountSnapshot {
+    const profile = record(raw.profile);
+    const acquisition = record(raw.acquisition);
+    const analysis = record(raw.analysis);
+    const metric = (value: unknown) => {
+      const item = record(value);
+      return {
+        display: text(item.display, "—"),
+        lowerBound: typeof item.lower_bound === "number" ? item.lower_bound : undefined,
+        precision: text(item.precision, "unknown") as "exact" | "rounded" | "lower_bound" | "unknown",
+      };
+    };
+    const note = (value: unknown): BenchmarkNote => {
+      const item = record(value);
+      return {
+        sampleIndex: number(item.sample_index),
+        noteId: text(item.note_id) || undefined,
+        identityStatus: item.identity_status === "verified" ? "verified" : "missing",
+        title: text(item.title),
+        format: item.format === "image" ? "image" : item.format === "video" ? "video" : "unknown",
+        publishedAt: text(item.published_at) || null,
+        likes: metric(item.likes),
+        pinned: Boolean(item.pinned),
+      };
+    };
+    return {
+      schemaVersion: "1.0.0",
+      profile: {
+        platform: "xiaohongshu", userId: text(profile.user_id), profileUrl: benchmarkProfile(text(profile.profile_url))?.url ?? "",
+        nickname: text(profile.nickname), redId: text(profile.red_id), tags: strings(profile.tags),
+        following: metric(profile.following), followers: metric(profile.followers),
+        likesAndCollections: metric(profile.likes_and_collections),
+      },
+      acquisition: {
+        capturedAt: text(acquisition.captured_at),
+        method: acquisition.method === "authenticated_managed_browser"
+          ? "authenticated_managed_browser"
+          : "public_profile_ssr",
+        fromCache: Boolean(acquisition.from_cache), initialPageHasMore: Boolean(acquisition.initial_page_has_more),
+        completeness: "initial_page_sample", limitations: strings(acquisition.limitations),
+        discoveryVersion: "1",
+        noteIdentityStatus: acquisition.note_identity_status as BenchmarkAccountSnapshot["acquisition"]["noteIdentityStatus"],
+        identifiedNoteCount: number(acquisition.identified_note_count),
+        unresolvedNoteCount: number(acquisition.unresolved_note_count),
+        identityErrorCode: text(acquisition.identity_error_code) || null,
+      },
+      analysis: {
+        sampleSize: number(analysis.sample_size), videoCount: number(analysis.video_count),
+        imageCount: number(analysis.image_count), videoSharePercent: number(analysis.video_share_percent),
+        unknownCount: number(analysis.unknown_count),
+        medianLikesLowerBound: typeof analysis.median_likes_lower_bound === "number" ? analysis.median_likes_lower_bound : undefined,
+        postsLast30Days: number(analysis.posts_last_30_days),
+        medianPublishIntervalDays: typeof analysis.median_publish_interval_days === "number" ? analysis.median_publish_interval_days : undefined,
+        themes: (Array.isArray(analysis.themes) ? analysis.themes : []).map((value) => {
+          const item = record(value);
+          return { theme: text(item.theme), matchingNotes: number(item.matching_notes) };
+        }),
+        topNotes: (Array.isArray(analysis.top_notes) ? analysis.top_notes : []).map(note),
+      },
+      notes: (Array.isArray(raw.notes) ? raw.notes : []).map(note),
+    };
   }
 
   private mapLibraryBuildJob(raw: JsonRecord): LibraryBuildJob {

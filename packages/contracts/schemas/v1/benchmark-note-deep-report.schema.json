@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-note-deep-report.schema.json",
+  "title": "BenchmarkDeepNoteReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "source_kind", "source_label", "evidence_depth", "title",
+    "duration_ms", "status", "summary", "metrics", "findings", "timeline", "limitations"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "source_kind": { "type": "string", "enum": ["worker_asset_analysis", "synthetic_demo"] },
+    "source_label": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "evidence_depth": { "const": "multimodal_timeline_v1" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "duration_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+    "status": { "type": "string", "enum": ["ready", "partial"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 1200 },
+    "metrics": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/Metric" } },
+    "findings": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/Finding" } },
+    "timeline": { "type": "array", "minItems": 1, "maxItems": 2000, "items": { "$ref": "#/$defs/TimelineItem" } },
+    "limitations": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 500 } }
+  },
+  "$defs": {
+    "Metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label", "value", "interpretation"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z0-9_-]+$", "maxLength": 80 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "interpretation": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "Finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "confidence", "claim", "evidence", "reusable_move"],
+      "properties": {
+        "category": { "type": "string", "enum": ["hook", "visual", "narration", "rhythm", "limitation"] },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+        "claim": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "evidence": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "maxLength": 500 } },
+        "reusable_move": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    },
+    "TimelineItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_ms", "end_ms", "label", "description", "transcript", "ocr_text",
+        "audio_events", "evidence_types", "confidence", "representative_frame_key"
+      ],
+      "properties": {
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "end_ms": { "type": "integer", "minimum": 1 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "transcript": { "type": "string", "maxLength": 4000 },
+        "ocr_text": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 200 } },
+        "audio_events": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 200 } },
+        "evidence_types": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["frame", "ocr", "asr", "audio"] } },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "representative_frame_key": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    }
+  }
+}

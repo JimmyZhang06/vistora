@@ -78,7 +78,9 @@ def test_local_launcher_supports_managed_frontend_only_mode() -> None:
     docker_requirement = launcher.index('Require-Command -Name "docker"')
     assert frontend < docker_requirement
     assert '[switch]$FrontendOnly' in launcher
-    assert '"--hostname", "127.0.0.1", "--port", "4173"' in launcher
+    assert '[int]$WebPort = 4173' in launcher
+    assert '$webUrl = "http://127.0.0.1:$WebPort"' in launcher
+    assert '"--hostname", "127.0.0.1", "--port", "$WebPort"' in launcher
     assert '"--host", "127.0.0.1", "--port", "4173"' not in launcher
     assert "$env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl" in launcher
     assert "Save-ManagedProcessState -Processes $managed" in launcher

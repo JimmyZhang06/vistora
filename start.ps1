@@ -6,7 +6,9 @@
     .\start.ps1 -NoBrowser
     .\start.ps1 -NoInstall
     .\start.ps1 -BrowserCapture
+    .\start.ps1 -BenchmarkAnalysis
     .\start.ps1 -FrontendOnly
+    .\start.ps1 -WebPort 4180
     .\start.ps1 -NoDockerRepair
 
   The script starts the durable local stack: PostgreSQL, Redis, MinIO,
@@ -18,10 +20,13 @@ param(
     [switch]$NoBrowser,
     [switch]$NoInstall,
     [switch]$BrowserCapture,
+    [switch]$BenchmarkAnalysis,
     [switch]$FrontendOnly,
     [switch]$NoDockerRepair,
     [ValidateRange(1, 65535)]
     [int]$ApiPort = 8200,
+    [ValidateRange(1, 65535)]
+    [int]$WebPort = 4173,
     [string]$ProviderEnvFile = "",
     [ValidatePattern('^[a-z][a-z0-9_]{0,62}$')]
     [string]$DatabaseName = "vistora"
@@ -37,7 +42,7 @@ $venvRoot = Join-Path $projectRoot ".venv"
 $venvPython = Join-Path $venvRoot "Scripts\python.exe"
 $webRoot = Join-Path $projectRoot "apps\web"
 $apiUrl = "http://127.0.0.1:$ApiPort"
-$webUrl = "http://127.0.0.1:4173"
+$webUrl = "http://127.0.0.1:$WebPort"
 $databaseName = $DatabaseName
 $databaseUser = "vistora"
 $databasePassword = @("vistora", "local", "only") -join "-"
@@ -103,7 +108,8 @@ $providerEnvironmentKeys = @(
     "FRAMEFACTORY_ASR_MODEL",
     "FRAMEFACTORY_ASR_TIMEOUT_SECONDS",
     "FRAMEFACTORY_ASR_RESPONSE_FORMAT",
-    "FRAMEFACTORY_ASR_TIMESTAMP_MODE"
+    "FRAMEFACTORY_ASR_TIMESTAMP_MODE",
+    "FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL"
 )
 
 function Write-Info { param([string]$Message) Write-Host "[i] $Message" -ForegroundColor Cyan }
@@ -725,11 +731,11 @@ if ($FrontendOnly) {
     $managed = @()
     $webProcessRecord = $null
     try {
-        $webReused = Assert-PortAvailableOrHealthy -Port 4173 -HealthUrl $webUrl -Name "Web"
+        $webReused = Assert-PortAvailableOrHealthy -Port $WebPort -HealthUrl $webUrl -Name "Web"
         if (-not $webReused) {
             Write-Info "以仅前端模式启动 Web"
             $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
-                "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "4173"
+                "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$WebPort"
             ) -WorkingDirectory $webRoot
             $managed += $webProcessRecord
             Save-ManagedProcessState -Processes $managed
@@ -898,13 +904,29 @@ if ($BrowserCapture) {
     $env:FRAMEFACTORY_S3_PUBLIC_ENDPOINT_URL = "http://127.0.0.1:${minioApiPort}"
     $env:FRAMEFACTORY_S3_ALLOW_INSECURE_LOOPBACK_PUBLIC_ENDPOINT = "true"
 }
-$env:FRAMEFACTORY_CORS_ALLOW_ORIGINS = "$webUrl,http://localhost:4173"
+$env:FRAMEFACTORY_CORS_ALLOW_ORIGINS = "$webUrl,http://localhost:$WebPort"
 $env:FRAMEFACTORY_CONTRACT_SCHEMA_DIR = Join-Path $projectRoot "packages\contracts\schemas\v1"
 $env:FRAMEFACTORY_OFFICIAL_SEED_MANIFEST = Join-Path $projectRoot "packages\seeds\official-skills\v1\manifest.json"
 $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
 
 Clear-ProviderEnvironment
 Import-ProviderEnvironment -Path $ProviderEnvFile
+if ($BenchmarkAnalysis) {
+    if ([string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL)) {
+        throw "Benchmark analysis requires FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL pointing to a running local browser provider. Connect Xiaohongshu from /benchmarks after startup. See docs/sop/benchmark-video-analysis.md."
+    }
+    if (-not $NoInstall) {
+        Invoke-Checked -FilePath $venvPython -Arguments @(
+            "-m", "pip", "install", "--require-hashes", "-r",
+            (Join-Path $projectRoot "services\worker\requirements-benchmark-lock.txt")
+        )
+    }
+    $env:FRAMEFACTORY_BENCHMARK_JOBS_DIR = Join-Path $projectRoot "var\benchmark-analysis"
+    $env:FRAMEFACTORY_BENCHMARK_PROVIDER_ENV_FILE = [System.IO.Path]::GetFullPath($ProviderEnvFile)
+} else {
+    Remove-Item Env:FRAMEFACTORY_BENCHMARK_JOBS_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:FRAMEFACTORY_BENCHMARK_PROVIDER_ENV_FILE -ErrorAction SilentlyContinue
+}
 if (
     [string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN) -and
     $env:FRAMEFACTORY_RESEARCH_SEARCH_BEARER_TOKEN_SOURCE -eq "FRAMEFACTORY_ASSET_VISION_API_KEY"
@@ -1125,7 +1147,7 @@ if ($apiReused) {
     Restore-WorkerProviderSecrets -Secrets $workerProviderSecrets
     Stop-WithError "检测到未知来源的 Control API；禁止复用外部进程，请先停止占用 8200 端口的服务"
 }
-$webReused = Assert-PortAvailableOrHealthy -Port 4173 -HealthUrl $webUrl -Name "Web"
+$webReused = Assert-PortAvailableOrHealthy -Port $WebPort -HealthUrl $webUrl -Name "Web"
 try {
     Write-Info "启动 Control API"
     $apiProcessRecord = Start-ManagedProcess -Name "api" -FilePath $venvPython -Arguments @(
@@ -1192,7 +1214,7 @@ try {
     if (-not $webReused) {
         Write-Info "启动 Web"
         $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
-            "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "4173"
+            "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$WebPort"
         ) -WorkingDirectory $webRoot
         $managed += $webProcessRecord
         Save-ManagedProcessState -Processes $managed

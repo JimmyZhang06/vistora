@@ -1,0 +1,101 @@
+[
+  {
+    "checked_at": "2026-09-05T17:09:28.785217+00:00",
+    "profile_user_id": "5db5be0e0000000001001e81",
+    "discovery": "passed",
+    "acquisition_method": "authenticated_managed_browser",
+    "identified": 30,
+    "unresolved": 0,
+    "video": 21,
+    "image": 9,
+    "unknown": 0,
+    "identity_error_code": null,
+    "credential_scan": "passed",
+    "details": [
+      {
+        "kind": "video",
+        "status": "passed",
+        "note_id": "6a754ea8000000002500292e",
+        "duration_ms": 84700,
+        "image_count": 0,
+        "trusted_media_origin": true,
+        "video_available": true
+      },
+      {
+        "kind": "image",
+        "status": "passed",
+        "note_id": "6a940812000000000400afcb",
+        "duration_ms": null,
+        "image_count": 5,
+        "trusted_media_origin": true,
+        "video_available": false
+      }
+    ]
+  },
+  {
+    "checked_at": "2026-09-05T17:09:55.389837+00:00",
+    "profile_user_id": "5a8cf39111be10466d285d6b",
+    "discovery": "passed",
+    "acquisition_method": "authenticated_managed_browser",
+    "identified": 32,
+    "unresolved": 0,
+    "video": 30,
+    "image": 2,
+    "unknown": 0,
+    "identity_error_code": null,
+    "credential_scan": "passed",
+    "details": [
+      {
+        "kind": "video",
+        "status": "passed",
+        "note_id": "62556ca00000000021038a4a",
+        "duration_ms": 269467,
+        "image_count": 0,
+        "trusted_media_origin": true,
+        "video_available": true
+      },
+      {
+        "kind": "image",
+        "status": "passed",
+        "note_id": "6a5dc17f000000001d021a9e",
+        "duration_ms": null,
+        "image_count": 14,
+        "trusted_media_origin": true,
+        "video_available": false
+      }
+    ]
+  },
+  {
+    "checked_at": "2026-09-05T17:10:21.014955+00:00",
+    "profile_user_id": "60cf62e80000000020026ec6",
+    "discovery": "passed",
+    "acquisition_method": "authenticated_managed_browser",
+    "identified": 31,
+    "unresolved": 0,
+    "video": 3,
+    "image": 28,
+    "unknown": 0,
+    "identity_error_code": null,
+    "credential_scan": "passed",
+    "details": [
+      {
+        "kind": "video",
+        "status": "passed",
+        "note_id": "692ffd57000000001e025dec",
+        "duration_ms": 37292,
+        "image_count": 0,
+        "trusted_media_origin": true,
+        "video_available": true
+      },
+      {
+        "kind": "image",
+        "status": "passed",
+        "note_id": "6a93e3e00000000003029afd",
+        "duration_ms": null,
+        "image_count": 8,
+        "trusted_media_origin": true,
+        "video_available": false
+      }
+    ]
+  }
+]

@@ -19,6 +19,16 @@ import type {
   AssetPreview,
   AssetSegment,
   AssetUploadRequest,
+  BenchmarkAccountPreviewRequest,
+  BenchmarkAccountReport,
+  BenchmarkConnection,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryDetail,
+  BenchmarkAccountSnapshot,
+  BenchmarkAnalysisJob,
+  BenchmarkDeepNoteReport,
+  BenchmarkNoteSourceEvidence,
+  BenchmarkNoteSourceRequest,
   DocumentVideoCreateRequest,
   DocumentVideoCreateResult,
   RemoteAssetImportRequest,
@@ -240,6 +250,167 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
 
   getSession(): Promise<ApiResult<SessionContext>> {
     return this.execute(() => this.data.session);
+  }
+
+  getBenchmarkConnectionStatus(): Promise<ApiResult<BenchmarkConnection>> {
+    return Promise.resolve({ ok: true, data: { platform: "xiaohongshu", mode: "local_browser", state: "not_configured", qrImageDataUrl: null, expiresAt: null, checkedAt: null, retryAfterSeconds: 3, errorCode: "BENCHMARK_AUTH_NOT_CONFIGURED" } });
+  }
+
+  startBenchmarkConnection(): Promise<ApiResult<BenchmarkConnection>> {
+    return this.getBenchmarkConnectionStatus();
+  }
+
+  getBenchmarkAccountDemo(): Promise<ApiResult<BenchmarkAccountSnapshot>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      profile: {
+        platform: "xiaohongshu", userId: "5a8cf39111be10466d285d6b",
+        profileUrl: "https://www.xiaohongshu.com/user/profile/5a8cf39111be10466d285d6b",
+        nickname: "白昼小熊", redId: "X20010906", tags: ["潮流博主", "时尚博主"],
+        following: { display: "220", lowerBound: 220, precision: "exact" },
+        followers: { display: "419.1万", lowerBound: 4_191_000, precision: "rounded" },
+        likesAndCollections: { display: "999万+", lowerBound: 9_990_000, precision: "lower_bound" },
+      },
+      acquisition: {
+        capturedAt: "2026-09-05T06:30:00Z", method: "public_profile_ssr", fromCache: false,
+        initialPageHasMore: true, completeness: "initial_page_sample",
+        discoveryVersion: "1", noteIdentityStatus: "unavailable",
+        identifiedNoteCount: 0, unresolvedNoteCount: 0, identityErrorCode: null,
+        limitations: ["测试适配器只返回固定的首屏样本。"],
+      },
+      analysis: {
+        sampleSize: 2, videoCount: 1, imageCount: 1, unknownCount: 0, videoSharePercent: 50,
+        medianLikesLowerBound: 72_000, postsLast30Days: 2, medianPublishIntervalDays: 5,
+        themes: [{ theme: "旅行与城市", matchingNotes: 1 }],
+        topNotes: [],
+      },
+      notes: [],
+    }));
+  }
+
+  previewBenchmarkAccount(
+    request: BenchmarkAccountPreviewRequest,
+  ): Promise<ApiResult<BenchmarkAccountSnapshot>> {
+    void request;
+    return this.getBenchmarkAccountDemo();
+  }
+
+  async generateBenchmarkAccountReport(
+    request: BenchmarkAccountPreviewRequest,
+  ): Promise<ApiResult<BenchmarkAccountReport>> {
+    void request;
+    const result = await this.getBenchmarkAccountDemo();
+    if (!result.ok) return result;
+    return { ok: true, data: {
+      schemaVersion: "1.0.0", generatedAt: result.data.acquisition.capturedAt,
+      snapshot: result.data,
+      accountReport: {
+        nickname: result.data.profile.nickname, sampleSize: result.data.analysis.sampleSize,
+        evidenceDepth: "public_metadata_only",
+        executiveSummary: "测试适配器中的公开元数据报告。",
+        formatStrategy: "视频与图文各一篇。", publishingStrategy: "测试样本不足以判断发布节奏。",
+        titlePatterns: [], topCandidateNoteIndexes: [],
+        playbook: ["只复用结构，不复制原文。"], limitations: ["测试适配器不包含媒体内容。"],
+      },
+      noteReports: [],
+    } };
+  }
+
+  getBenchmarkDeepReportDemo(): Promise<ApiResult<BenchmarkDeepNoteReport>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      sourceKind: "synthetic_demo",
+      sourceLabel: "测试适配器样片",
+      evidenceDepth: "multimodal_timeline_v1",
+      title: "多模态分析结构样例",
+      durationMs: 3000,
+      status: "ready",
+      summary: "测试适配器把样片拆为一个带画面、OCR、ASR 和声音事件的时间段。",
+      metrics: [{
+        key: "shot_pace", label: "镜头节奏", value: "1 镜 · 均长 3.0s",
+        interpretation: "测试适配器指标。",
+      }],
+      findings: [{
+        category: "hook", confidence: "high", claim: "前三秒存在文字钩子。",
+        evidence: ["00:00-00:03: 测试画面"], reusableMove: "第一镜明确内容收益。",
+      }],
+      timeline: [{
+        startMs: 0, endMs: 3000, label: "近景", description: "测试画面",
+        transcript: "测试口播", ocrText: ["测试字幕"], audioEvents: ["音乐进入"],
+        evidenceTypes: ["frame", "ocr", "asr", "audio"], confidence: 0.9,
+      }],
+      limitations: ["这是测试适配器数据，不是目标账号的真实视频证据。"],
+    }));
+  }
+
+  getLatestBenchmarkDeepReport(): Promise<ApiResult<BenchmarkDeepNoteReport>> {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: "BENCHMARK_DEEP_REPORT_NOT_FOUND",
+        message: "测试适配器没有真实媒体分析。",
+      },
+    });
+  }
+
+  listBenchmarkHistory(): Promise<ApiResult<BenchmarkHistoryPage>> {
+    return Promise.resolve({ ok: false, error: { code: "BENCHMARK_HISTORY_UNAVAILABLE", message: "历史记录需要连接本机真实分析服务，演示模式不保存报告。", retryable: false } });
+  }
+
+  getBenchmarkHistory(): Promise<ApiResult<BenchmarkHistoryDetail>> {
+    return Promise.resolve({ ok: false, error: { code: "BENCHMARK_HISTORY_UNAVAILABLE", message: "历史记录需要连接本机真实分析服务，演示模式不保存报告。", retryable: false } });
+  }
+
+  private unavailableBenchmarkAnalysis(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return Promise.resolve({ ok: false, error: {
+      code: "BENCHMARK_ANALYSIS_REAL_PROVIDER_REQUIRED",
+      message: "完整视频分析需要真实媒体 Provider，测试适配器不生成目标笔记证据。",
+      retryable: false,
+    } });
+  }
+
+  createBenchmarkAnalysisJob(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return this.unavailableBenchmarkAnalysis();
+  }
+
+  getBenchmarkAnalysisJob(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return this.unavailableBenchmarkAnalysis();
+  }
+
+  getLatestBenchmarkAnalysisJob(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return this.unavailableBenchmarkAnalysis();
+  }
+
+  cancelBenchmarkAnalysisJob(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return this.unavailableBenchmarkAnalysis();
+  }
+
+  retryBenchmarkAnalysisJob(): Promise<ApiResult<BenchmarkAnalysisJob>> {
+    return this.unavailableBenchmarkAnalysis();
+  }
+
+  collectBenchmarkNoteSourceEvidence(
+    request: BenchmarkNoteSourceRequest,
+  ): Promise<ApiResult<BenchmarkNoteSourceEvidence>> {
+    return this.execute(() => ({
+      schemaVersion: "1.0.0",
+      platform: "xiaohongshu",
+      profileUserId: "5a8cf39111be10466d285d6b",
+      noteId: request.noteId,
+      canonicalUrl: `https://www.xiaohongshu.com/explore/${request.noteId}`,
+      capturedAt: "2026-09-05T06:30:00Z",
+      acquisitionMethod: "authenticated_managed_browser",
+      title: "测试详情证据",
+      description: "测试适配器中的脱敏正文。",
+      likes: { display: "10万+", lowerBound: 100_000, precision: "lower_bound" },
+      collects: { display: "1.2万", lowerBound: 12_000, precision: "rounded" },
+      comments: { display: "4192", lowerBound: 4_192, precision: "exact" },
+      media: {
+        kind: "video", videoAvailable: true, imageCount: 0, durationMs: 17_850,
+        width: 3840, height: 2160, trustedMediaOrigin: true,
+      },
+      limitations: ["测试适配器不包含真实浏览器凭据。"],
+    }));
   }
 
   getAccountCapabilities(): Promise<ApiResult<AccountCapabilities>> {
@@ -850,6 +1021,10 @@ export class InMemoryFrameFactoryAdapter implements FrameFactoryAdapter {
         topicMaxLength: 1600,
         aspectRatios: ["16:9", "9:16", "1:1", "4:3"],
         durationSeconds: [15, 30, 45, 60],
+        crawlMaxPagesDefault: 8,
+        crawlMaxPagesLimit: 12,
+        crawlMaxDepthDefault: 1,
+        crawlMaxDepthLimit: 2,
       },
       voices: [],
       subtitles: { supported: false, defaultEnabled: false },

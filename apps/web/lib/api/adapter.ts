@@ -6,6 +6,17 @@ import type {
   AccountSession,
   ApiResult,
   ApiKeyCreateRequest,
+  BenchmarkAccountPreviewRequest,
+  BenchmarkAccountReport,
+  BenchmarkConnection,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryDetail,
+  BenchmarkHistoryQuery,
+  BenchmarkAccountSnapshot,
+  BenchmarkAnalysisJob,
+  BenchmarkDeepNoteReport,
+  BenchmarkNoteSourceEvidence,
+  BenchmarkNoteSourceRequest,
   AssetLibraryCreateRequest,
   AssetLibraryOption,
   Asset,
@@ -79,6 +90,38 @@ import type {
  */
 export interface FrameFactoryAdapter {
   getSession(): Promise<ApiResult<SessionContext>>;
+  getBenchmarkConnectionStatus(signal?: AbortSignal): Promise<ApiResult<BenchmarkConnection>>;
+  startBenchmarkConnection(idempotencyKey: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkConnection>>;
+  getBenchmarkAccountDemo(): Promise<ApiResult<BenchmarkAccountSnapshot>>;
+  previewBenchmarkAccount(
+    request: BenchmarkAccountPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAccountSnapshot>>;
+  generateBenchmarkAccountReport(
+    request: BenchmarkAccountPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAccountReport>>;
+  getBenchmarkDeepReportDemo(): Promise<ApiResult<BenchmarkDeepNoteReport>>;
+  getLatestBenchmarkDeepReport(): Promise<ApiResult<BenchmarkDeepNoteReport>>;
+  collectBenchmarkNoteSourceEvidence(
+    request: BenchmarkNoteSourceRequest,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkNoteSourceEvidence>>;
+  createBenchmarkAnalysisJob(
+    request: BenchmarkNoteSourceRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAnalysisJob>>;
+  getBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>>;
+  listBenchmarkHistory(query: BenchmarkHistoryQuery, signal?: AbortSignal): Promise<ApiResult<BenchmarkHistoryPage>>;
+  getBenchmarkHistory(recordId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkHistoryDetail>>;
+  getLatestBenchmarkAnalysisJob(
+    profileUserId: string,
+    noteId: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<BenchmarkAnalysisJob>>;
+  cancelBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>>;
+  retryBenchmarkAnalysisJob(jobId: string, signal?: AbortSignal): Promise<ApiResult<BenchmarkAnalysisJob>>;
   getAccountCapabilities(): Promise<ApiResult<AccountCapabilities>>;
   getAccountProfile(): Promise<ApiResult<VersionedResource<AccountProfile>>>;
   replaceAccountProfile(

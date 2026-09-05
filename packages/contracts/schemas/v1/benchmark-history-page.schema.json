@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-history-page.schema.json",
+  "title": "BenchmarkHistoryPage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "items", "next_cursor"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "items": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/Summary" } },
+    "next_cursor": { "$ref": "common.schema.json#/$defs/NullableUuid" }
+  },
+  "$defs": {
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "kind", "title", "profile_user_id", "note_id", "status", "saved_at", "analyzed_at"],
+      "properties": {
+        "record_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "kind": { "enum": ["account", "video"] },
+        "title": { "type": "string" },
+        "profile_user_id": { "type": "string", "pattern": "^[0-9a-f]{24}$" },
+        "note_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{24}$" },
+        "status": { "enum": ["ready", "partial"] },
+        "saved_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "analyzed_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    }
+  },
+  "examples": [{ "schema_version": "1.0.0", "items": [], "next_cursor": null }]
+}

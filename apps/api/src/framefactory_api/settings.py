@@ -40,6 +40,9 @@ class Settings:
     redis_enabled: bool = False
     object_storage_enabled: bool = False
     s3_create_bucket: bool = False
+    xhs_managed_browser_base_url: str | None = None
+    benchmark_jobs_dir: Path | None = None
+    benchmark_provider_env_file: Path | None = None
     worker_capabilities: tuple[str, ...] | None = None
     full_ai_provider_name: str | None = None
     full_ai_model_id: str | None = None
@@ -58,6 +61,8 @@ class Settings:
 
     def __post_init__(self) -> None:
         normalized_environment = self.environment.strip().lower()
+        if self.benchmark_jobs_dir is not None and normalized_environment in {"production", "prod"}:
+            raise ValueError("local benchmark jobs require a development installation")
         if self.repository_backend not in {"memory", "postgresql"}:
             raise ValueError(
                 "FRAMEFACTORY_REPOSITORY_BACKEND must be 'memory' or 'postgresql'"
@@ -147,6 +152,17 @@ class Settings:
             ),
             s3_create_bucket=_environment_bool(
                 "FRAMEFACTORY_S3_CREATE_BUCKET", default=False
+            ),
+            xhs_managed_browser_base_url=environment_value(
+                "FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL"
+            ),
+            benchmark_jobs_dir=(
+                Path(value).resolve()
+                if (value := os.getenv("FRAMEFACTORY_BENCHMARK_JOBS_DIR")) else None
+            ),
+            benchmark_provider_env_file=(
+                Path(value).resolve()
+                if (value := os.getenv("FRAMEFACTORY_BENCHMARK_PROVIDER_ENV_FILE")) else None
             ),
             worker_capabilities=(
                 tuple(

@@ -253,7 +253,7 @@ function stepStatusMessage(step: RunStep): string {
       quoteIssues.length ? "存在来源中找不到的直接引语" : "",
       nonFootageIssues.length ? `${nonFootageIssues.length} 个镜头把流程说明当成了可剪辑画面` : "",
     ].filter(Boolean);
-    const durationProblem = summary.duration_fit === false
+    const durationProblem = summary?.duration_fit === false
       ? "；旁白篇幅也未达到目标时长"
       : "";
     return `脚本事实门禁未通过：${reasons.length ? reasons.join("；") : `发现 ${groundingIssues.length} 项证据问题`}${durationProblem}。已停止后续配音与素材匹配，请在审核页退回改写。`;

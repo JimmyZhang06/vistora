@@ -134,13 +134,6 @@ export function SkillCreator() {
         return;
       }
       request = { kind: "fork", workspaceId, identity, sourceSkillId: source.id, sourceVersionId: source.currentVersionId };
-    } else if (method === "distill") {
-      request = {
-        kind: "distill",
-        workspaceId,
-        identity,
-        examples: [{ id: "local-example", kind: "text", label: "示例内容", value: example || "一段用于本地交互演示的示例。" }],
-      };
     } else if (method === "import") {
       if (!importPackage) {
         setError("请先选择并通过校验的 Skill JSON 包。");

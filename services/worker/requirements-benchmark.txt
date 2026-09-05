@@ -1,0 +1,5 @@
+# Optional local benchmark inference runtime. FFmpeg / ffprobe must be on PATH.
+# Models remain independently versioned artifacts; local Whisper downloads are opt-in.
+faster-whisper==1.2.1
+rapidocr-onnxruntime==1.4.4
+numpy==2.2.6

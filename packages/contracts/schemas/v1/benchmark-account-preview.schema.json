@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-account-preview.schema.json",
+  "title": "BenchmarkAccountPreview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["platform", "profile_url"],
+  "properties": {
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "profile_url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "refresh_note_identity": {
+      "type": "boolean",
+      "default": false,
+      "description": "Request bounded identity recovery for an incomplete profile sample. The provider deduplicates and rate limits recovery; this never starts a paid analysis job."
+    }
+  },
+  "examples": [
+    {
+      "platform": "xiaohongshu",
+      "profile_url": "https://www.xiaohongshu.com/user/profile/5a8cf39111be10466d285d6b"
+    }
+  ]
+}

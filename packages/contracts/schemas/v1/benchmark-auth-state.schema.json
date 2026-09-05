@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-auth-state.schema.json",
+  "title": "BenchmarkAuthState",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "platform", "mode", "state", "message", "qr_image_data_url", "expires_at", "checked_at", "retry_after_seconds", "error_code"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "platform": { "const": "xiaohongshu" },
+    "mode": { "const": "local_browser" },
+    "state": { "enum": ["not_configured", "provider_unavailable", "checking", "login_required", "awaiting_scan", "authorized", "expired", "error"] },
+    "message": { "type": "string", "maxLength": 500 },
+    "qr_image_data_url": { "type": ["string", "null"], "pattern": "^data:image/png;base64,[A-Za-z0-9+/]+={0,2}$", "maxLength": 1048576 },
+    "expires_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "checked_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+    "retry_after_seconds": { "type": "integer", "minimum": 3, "maximum": 60 },
+    "error_code": { "type": ["string", "null"], "maxLength": 100 }
+  },
+  "examples": [{ "schema_version": "1.0.0", "platform": "xiaohongshu", "mode": "local_browser", "state": "login_required", "message": "请连接小红书以继续采集。", "qr_image_data_url": null, "expires_at": null, "checked_at": "2026-09-06T00:00:00Z", "retry_after_seconds": 3, "error_code": null }]
+}

@@ -14,7 +14,8 @@ const navigation: ReadonlyArray<{ href: string; label: MessageKey; eyebrow: stri
   { href: "/skills", label: "shell.nav.skills", eyebrow: "04" },
   { href: "/assets", label: "shell.nav.assets", eyebrow: "05" },
   { href: "/channels", label: "shell.nav.channels", eyebrow: "06" },
-  { href: "/settings", label: "shell.nav.settings", eyebrow: "07" },
+  { href: "/benchmarks", label: "shell.nav.benchmarks", eyebrow: "07" },
+  { href: "/settings", label: "shell.nav.settings", eyebrow: "08" },
 ];
 
 type ConnectionState = "checking" | "online" | "offline";

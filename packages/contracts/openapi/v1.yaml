@@ -22,6 +22,7 @@ tags:
   - name: Users
   - name: Workspaces
   - name: Channels
+  - name: Benchmark accounts
   - name: Skills
   - name: Asset libraries
   - name: Render presets
@@ -33,6 +34,208 @@ tags:
   - name: Artifacts
   - name: Events
 paths:
+  /v1/benchmark-auth/xiaohongshu/status:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkXiaohongshuAuthStatus
+      summary: Check this installation's local Xiaohongshu collection login
+      description: >-
+        Development-only, loopback-only route requiring assets:write. Checks the managed
+        browser without creating a QR code or exporting credentials. This is a local
+        browser session, not the official basic_info OAuth API or a grant of content rights.
+        Responses use private, no-store. Poll no faster than retry_after_seconds and stop
+        on completion, expiry, cancellation, or when the page is hidden.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Current connection state, with no provider task or browser session identifiers
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAuthState'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-auth/xiaohongshu/qrcode:
+    post:
+      tags: [Benchmark accounts]
+      operationId: createBenchmarkXiaohongshuLoginQr
+      summary: Start or reuse an explicitly requested local login QR flow
+      description: >-
+        Checks login first and preserves an already authorized session. Reuses an unexpired
+        QR instead of resetting the browser. Only a bounded PNG data URL and expiry are
+        returned; do not persist or log the QR. The user scans and confirms in Xiaohongshu.
+        Success can resume free discovery or detail reads, never a paid analysis job.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - in: header
+          name: Idempotency-Key
+          description: Optional client correlation key; active QR operations are deduplicated per local API process, without durable replay across restarts.
+          schema: {type: string, minLength: 1, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Authorized, awaiting scan, or an explicit recoverable connection state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAuthState'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-history:
+    get:
+      tags: [Benchmark accounts]
+      operationId: listBenchmarkHistory
+      summary: List saved local account and video reports without acquiring new evidence
+      description: Workspace-scoped local research archive. Media has separate retention; all responses use private, no-store.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - {in: query, name: kind, schema: {type: string, enum: [account, video]}}
+        - {in: query, name: q, schema: {type: string, maxLength: 100, default: ''}}
+        - {in: query, name: cursor, schema: {type: string, format: uuid}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      responses:
+        '200':
+          description: Saved reports ordered by save time, newest first
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkHistoryPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-history/{record_id}:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkHistory
+      summary: Read an archived report without starting a new analysis
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - {in: path, name: record_id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Saved report with only still-retained artifact links
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkHistoryDetail'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/jobs:
+    post:
+      tags: [Benchmark accounts]
+      operationId: createBenchmarkAnalysisJob
+      summary: Create a durable local video evidence analysis job
+      description: >-
+        Development-only single-process SQLite research lane; not the production Redis queue.
+        Uses the signed-in managed browser, isolates source media from the asset library, and
+        invokes configured vision/ASR providers. Frame/OCR sampling is bounded, not exhaustive.
+        Partial/failed/cancelled/interrupted states never imply complete evidence.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [platform, profile_url, note_id]
+              properties:
+                platform: {type: string, const: xiaohongshu}
+                profile_url: {type: string, minLength: 1, maxLength: 1000}
+                note_id: {type: string, pattern: '^[0-9a-f]{24}$'}
+      responses:
+        '202':
+          description: Queued or idempotently reused job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAnalysisJob'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/latest:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getLatestBenchmarkAnalysisJob
+      summary: Restore a persisted report for the exact account and optional note
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+        - in: query
+          name: profile_user_id
+          required: true
+          schema: {type: string, pattern: '^[0-9a-f]{24}$'}
+        - in: query
+          name: note_id
+          schema: {type: string, pattern: '^[0-9a-f]{24}$'}
+      responses:
+        '200':
+          description: Persisted job; private no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAnalysisJob'}
+        '404':
+          description: BENCHMARK_ANALYSIS_NOT_FOUND (never a sample report)
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/jobs/{job_id}:
+    parameters:
+      - {$ref: '#/components/parameters/BenchmarkJobId'}
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkAnalysisJob
+      summary: Read durable progress, partial evidence or completed report
+      responses:
+        '200':
+          description: Persisted job; private no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAnalysisJob'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/jobs/{job_id}/cancel:
+    parameters:
+      - {$ref: '#/components/parameters/BenchmarkJobId'}
+    post:
+      tags: [Benchmark accounts]
+      operationId: cancelBenchmarkAnalysisJob
+      summary: Cancel queued work or stop the owned worker process tree
+      responses:
+        '200':
+          description: Current job state; acquisition drains before the next job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAnalysisJob'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/jobs/{job_id}/retry:
+    parameters:
+      - {$ref: '#/components/parameters/BenchmarkJobId'}
+    post:
+      tags: [Benchmark accounts]
+      operationId: retryBenchmarkAnalysisJob
+      summary: Explicitly retry failed, cancelled or interrupted work up to three attempts
+      responses:
+        '200':
+          description: New isolated attempt under the same job identity
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BenchmarkAnalysisJob'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/benchmark-analysis/jobs/{job_id}/artifacts/{filename}:
+    parameters:
+      - {$ref: '#/components/parameters/BenchmarkJobId'}
+      - in: path
+        name: filename
+        required: true
+        schema: {type: string}
+        description: Exact allowlisted attempt-scoped relative name; slash segments are supported
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkAnalysisArtifact
+      summary: Read a generated research frame or extracted audio, never the source MP4
+      responses:
+        '200':
+          description: Workspace-scoped artifact; private no-store and nosniff
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            audio/wav: {schema: {type: string, format: binary}}
+            audio/mpeg: {schema: {type: string, format: binary}}
+        default: {$ref: '#/components/responses/Error'}
   /v1/context:
     get:
       tags: [Context]
@@ -43,6 +246,195 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/CurrentContext'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-accounts/demo:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkAccountDemo
+      summary: Collect and analyse the allowlisted 白昼小熊 public profile initial-page sample
+      description: >-
+        Fetches one bounded public SSR profile page, verifies the expected account identity,
+        and returns explainable sample-level metrics. The demo does not scroll, collect
+        comments, access collections, persist source data, or claim full-history coverage.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Public profile sample and transparent analysis boundaries
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkAccountSnapshot' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-accounts/preview:
+    post:
+      tags: [Benchmark accounts]
+      operationId: previewBenchmarkAccount
+      summary: Collect and analyse a supported public benchmark profile
+      description: >-
+        Validates and canonicalizes a supported public profile URL before fetching one
+        bounded SSR page. If the sample lacks verifiable note identities, bounded
+        authenticated browser card discovery supplements it. refresh_note_identity requests
+        recovery subject to deduplication and cooldown. Acquisition reports discovery_version,
+        identity completeness and a sanitized recovery error independently of metadata.
+        Missing cards are never matched by title or sample index. The preview does not
+        retain share tokens, collect comments, or claim full-history coverage.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BenchmarkAccountPreview' }
+      responses:
+        '200':
+          description: Public profile sample and transparent analysis boundaries
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkAccountSnapshot' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-accounts/report:
+    post:
+      tags: [Benchmark accounts]
+      operationId: generateBenchmarkAccountReport
+      summary: Generate account-level and single-note strategy reports
+      description: >-
+        Collects a bounded public profile snapshot and derives evidence-labelled title,
+        format, cadence, and account-relative performance reports. Accepts the same bounded
+        identity recovery request as preview and includes its completeness in snapshot.
+        Identity recovery does not create or retry paid analysis jobs. The current evidence
+        depth is public metadata only; causal recommendation, transcript, OCR, exposure,
+        completion, share, and full-history claims remain explicitly unavailable.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BenchmarkAccountPreview' }
+      responses:
+        '200':
+          description: Evidence-labelled account and note reports
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkAccountReport' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-notes/source-evidence:
+    post:
+      tags: [Benchmark accounts]
+      operationId: collectBenchmarkNoteSourceEvidence
+      summary: Collect sanitized note-detail evidence through the signed-in local browser
+      description: >-
+        Opens the canonical profile in the configured loopback managed browser, discovers
+        the requested note in a bounded scan, and clicks it without exporting its short-lived
+        xsec token. The response contains visible text, interaction precision, and a media
+        probe, but never includes cookies, access tokens, comment bodies, or signed CDN URLs.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [platform, profile_url, note_id]
+              properties:
+                platform: { const: xiaohongshu }
+                profile_url: { type: string, format: uri, maxLength: 1000 }
+                note_id: { type: string, pattern: '^[0-9a-f]{24}$' }
+      responses:
+        '200':
+          description: Sanitized authenticated note evidence
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkNoteSourceEvidence' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-notes/deep-report/demo:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getBenchmarkNoteDeepReportDemo
+      summary: Return a clearly labelled synthetic multimodal timeline report
+      description: >-
+        Demonstrates the deep-report contract and evidence UI with a synthetic validation
+        clip. It must not be represented as evidence from the selected benchmark account.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Synthetic multimodal report for product validation
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkDeepNoteReport' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-notes/deep-report:
+    post:
+      tags: [Benchmark accounts]
+      operationId: generateBenchmarkNoteDeepReport
+      summary: Derive a deep strategy report from normalized Worker media evidence
+      description: >-
+        Accepts an ordered, non-overlapping multimodal timeline produced by the bounded
+        media Worker. The endpoint derives reproducible hook, visual, narration, rhythm,
+        and evidence metrics, then retains the latest report in process for the active
+        workspace; it does not fetch media or accept credentials.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BenchmarkMediaEvidence' }
+      responses:
+        '200':
+          description: Evidence-grounded single-note deep report
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkDeepNoteReport' }
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/benchmark-notes/deep-report/latest:
+    get:
+      tags: [Benchmark accounts]
+      operationId: getLatestBenchmarkNoteDeepReport
+      summary: Return the latest real deep report for the active workspace
+      description: >-
+        Returns the most recently generated real Worker report kept in this API process for
+        the active workspace. The demo implementation is intentionally non-durable and never
+        falls back to the synthetic validation clip.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceHeader'
+      responses:
+        '200':
+          description: Latest workspace-scoped real deep report
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BenchmarkDeepNoteReport' }
         default:
           $ref: '#/components/responses/Error'
   /v1/full-ai/options:
@@ -1933,6 +2325,11 @@ components:
       in: header
       name: X-API-Key
   parameters:
+    BenchmarkJobId:
+      in: path
+      name: job_id
+      required: true
+      schema: {type: string, format: uuid}
     WorkspaceHeader:
       name: X-Workspace-Id
       in: header
@@ -2089,6 +2486,14 @@ components:
       required: true
       schema: { type: string, format: uuid }
   schemas:
+    BenchmarkAuthState:
+      $ref: '../schemas/v1/benchmark-auth-state.schema.json'
+    BenchmarkHistoryPage:
+      $ref: '../schemas/v1/benchmark-history-page.schema.json'
+    BenchmarkHistoryDetail:
+      $ref: '../schemas/v1/benchmark-history-detail.schema.json'
+    BenchmarkAnalysisJob:
+      $ref: '../schemas/v1/benchmark-analysis-job.schema.json'
     DocumentSourceCreate:
       type: object
       additionalProperties: false
@@ -3048,6 +3453,18 @@ components:
       $ref: '../schemas/v1/workspace.schema.json'
     Channel:
       $ref: '../schemas/v1/channel.schema.json'
+    BenchmarkAccountSnapshot:
+      $ref: '../schemas/v1/benchmark-account-snapshot.schema.json'
+    BenchmarkAccountPreview:
+      $ref: '../schemas/v1/benchmark-account-preview.schema.json'
+    BenchmarkAccountReport:
+      $ref: '../schemas/v1/benchmark-account-report.schema.json'
+    BenchmarkNoteSourceEvidence:
+      $ref: '../schemas/v1/benchmark-note-source-evidence.schema.json'
+    BenchmarkMediaEvidence:
+      $ref: '../schemas/v1/benchmark-media-evidence.schema.json'
+    BenchmarkDeepNoteReport:
+      $ref: '../schemas/v1/benchmark-note-deep-report.schema.json'
     ChannelWrite:
       $ref: '../schemas/v1/channel-write.schema.json'
     Skill:

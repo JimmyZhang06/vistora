@@ -43,6 +43,353 @@ export interface SessionContext {
   workspaces: Workspace[];
 }
 
+export type BenchmarkConnectionState =
+  | "not_configured" | "provider_unavailable" | "checking" | "login_required"
+  | "awaiting_scan" | "authorized" | "expired" | "error";
+
+export interface BenchmarkConnection {
+  platform: "xiaohongshu";
+  mode: "local_browser";
+  state: BenchmarkConnectionState;
+  qrImageDataUrl: string | null;
+  expiresAt: IsoTimestamp | null;
+  checkedAt: IsoTimestamp | null;
+  retryAfterSeconds: number;
+  errorCode: string | null;
+}
+
+export interface BenchmarkPublicMetric {
+  display: string;
+  lowerBound?: number;
+  precision: "exact" | "rounded" | "lower_bound" | "unknown";
+}
+
+export interface BenchmarkProfile {
+  platform: "xiaohongshu";
+  userId: string;
+  profileUrl: string;
+  nickname: string;
+  redId: string;
+  tags: string[];
+  following: BenchmarkPublicMetric;
+  followers: BenchmarkPublicMetric;
+  likesAndCollections: BenchmarkPublicMetric;
+}
+
+export interface BenchmarkNote {
+  sampleIndex: number;
+  noteId?: string;
+  identityStatus: "verified" | "missing";
+  title: string;
+  format: "video" | "image" | "unknown";
+  publishedAt: IsoTimestamp | null;
+  likes: BenchmarkPublicMetric;
+  pinned: boolean;
+}
+
+export interface BenchmarkThemeSignal {
+  theme: string;
+  matchingNotes: number;
+}
+
+export interface BenchmarkAnalysis {
+  sampleSize: number;
+  videoCount: number;
+  imageCount: number;
+  unknownCount: number;
+  videoSharePercent: number;
+  medianLikesLowerBound?: number;
+  postsLast30Days: number;
+  medianPublishIntervalDays?: number;
+  themes: BenchmarkThemeSignal[];
+  topNotes: BenchmarkNote[];
+}
+
+export interface BenchmarkAcquisition {
+  capturedAt: IsoTimestamp;
+  method: "public_profile_ssr" | "authenticated_managed_browser";
+  fromCache: boolean;
+  initialPageHasMore: boolean;
+  completeness: "initial_page_sample";
+  discoveryVersion: "1";
+  noteIdentityStatus: "complete" | "partial" | "unavailable";
+  identifiedNoteCount: number;
+  unresolvedNoteCount: number;
+  identityErrorCode: string | null;
+  limitations: string[];
+}
+
+export interface BenchmarkAccountSnapshot {
+  schemaVersion: "1.0.0";
+  profile: BenchmarkProfile;
+  acquisition: BenchmarkAcquisition;
+  analysis: BenchmarkAnalysis;
+  notes: BenchmarkNote[];
+}
+
+export interface BenchmarkAccountPreviewRequest {
+  platform: "xiaohongshu";
+  profileUrl: string;
+  refreshNoteIdentity?: boolean;
+}
+
+export interface BenchmarkNoteSourceRequest extends BenchmarkAccountPreviewRequest {
+  noteId: string;
+}
+
+export interface BenchmarkNoteSourceEvidence {
+  schemaVersion: "1.0.0";
+  platform: "xiaohongshu";
+  profileUserId: string;
+  noteId: string;
+  canonicalUrl: string;
+  capturedAt: IsoTimestamp;
+  acquisitionMethod: "authenticated_managed_browser";
+  title: string;
+  description: string;
+  likes: BenchmarkPublicMetric;
+  collects: BenchmarkPublicMetric;
+  comments: BenchmarkPublicMetric;
+  media: {
+    kind: "video" | "image";
+    videoAvailable: boolean;
+    imageCount: number;
+    durationMs?: number;
+    width?: number;
+    height?: number;
+    trustedMediaOrigin: boolean;
+  };
+  limitations: string[];
+}
+
+export type BenchmarkEvidenceLevel = "observed" | "derived" | "inference" | "limitation";
+export type BenchmarkConfidence = "high" | "medium" | "low";
+export type BenchmarkPerformanceTier =
+  | "top_candidate"
+  | "above_baseline"
+  | "baseline"
+  | "below_baseline"
+  | "unknown";
+
+export interface BenchmarkStrategySignal {
+  key: string;
+  label: string;
+  evidence: string;
+  likelyEffect: string;
+  reusableMove: string;
+}
+
+export interface BenchmarkInsight {
+  level: BenchmarkEvidenceLevel;
+  confidence: BenchmarkConfidence;
+  claim: string;
+  evidence: string[];
+}
+
+export interface BenchmarkNotePerformance {
+  tier: BenchmarkPerformanceTier;
+  percentile?: number;
+  relativeToMedian?: number;
+  sampleMedianLikesLowerBound?: number;
+  caveat: string;
+}
+
+export interface BenchmarkNoteReport {
+  sampleIndex: number;
+  title: string;
+  format: "video" | "image" | "unknown";
+  publishedAt: IsoTimestamp | null;
+  likesDisplay: string;
+  likesLowerBound?: number;
+  performance: BenchmarkNotePerformance;
+  strategySignals: BenchmarkStrategySignal[];
+  viralMechanisms: BenchmarkInsight[];
+  recommendations: string[];
+  evidenceDepth: "public_metadata_only";
+  limitations: string[];
+}
+
+export interface BenchmarkTitlePattern {
+  key: string;
+  label: string;
+  matchingNotes: number;
+  sharePercent: number;
+  topCandidateMatches: number;
+  medianLikesLowerBound?: number;
+  liftVsSampleMedian?: number;
+}
+
+export interface BenchmarkAccountStrategyReport {
+  nickname: string;
+  sampleSize: number;
+  evidenceDepth: "public_metadata_only";
+  executiveSummary: string;
+  formatStrategy: string;
+  publishingStrategy: string;
+  titlePatterns: BenchmarkTitlePattern[];
+  topCandidateNoteIndexes: number[];
+  playbook: string[];
+  limitations: string[];
+}
+
+export interface BenchmarkAccountReport {
+  schemaVersion: "1.0.0";
+  generatedAt: IsoTimestamp;
+  snapshot: BenchmarkAccountSnapshot;
+  accountReport: BenchmarkAccountStrategyReport;
+  noteReports: BenchmarkNoteReport[];
+  historyRecordId?: string;
+  historyWarning?: string;
+}
+
+export interface BenchmarkHistorySummary {
+  id: string;
+  kind: "account" | "video";
+  title: string;
+  profileUserId: string;
+  noteId?: string;
+  status: "ready" | "partial";
+  savedAt: string;
+  analyzedAt: string;
+}
+
+export interface BenchmarkHistoryPage {
+  items: BenchmarkHistorySummary[];
+  nextCursor?: string;
+}
+
+export interface BenchmarkHistoryDetail extends BenchmarkHistorySummary {
+  accountReport: BenchmarkAccountReport | null;
+  videoJob: BenchmarkAnalysisJob | null;
+  mediaAvailable: boolean;
+}
+
+export interface BenchmarkHistoryQuery {
+  kind?: "account" | "video";
+  q?: string;
+  cursor?: string;
+}
+
+export type BenchmarkDeepFindingCategory = "hook" | "visual" | "narration" | "rhythm" | "limitation";
+
+export interface BenchmarkDeepMetric {
+  key: string;
+  label: string;
+  value: string;
+  interpretation: string;
+}
+
+export interface BenchmarkDeepFinding {
+  category: BenchmarkDeepFindingCategory;
+  confidence: BenchmarkConfidence;
+  claim: string;
+  evidence: string[];
+  reusableMove?: string;
+}
+
+export interface BenchmarkDeepTimelineItem {
+  startMs: number;
+  endMs: number;
+  label: string;
+  description: string;
+  transcript: string;
+  ocrText: string[];
+  audioEvents: string[];
+  evidenceTypes: Array<"frame" | "ocr" | "asr" | "audio">;
+  confidence?: number;
+  representativeFrameKey?: string;
+}
+
+export interface BenchmarkDeepNoteReport {
+  schemaVersion: "1.0.0";
+  sourceKind: "worker_asset_analysis" | "synthetic_demo";
+  sourceLabel: string;
+  evidenceDepth: "multimodal_timeline_v1";
+  title: string;
+  durationMs: number;
+  status: "ready" | "partial";
+  summary: string;
+  metrics: BenchmarkDeepMetric[];
+  findings: BenchmarkDeepFinding[];
+  timeline: BenchmarkDeepTimelineItem[];
+  limitations: string[];
+}
+
+export type BenchmarkAnalysisJobStatus =
+  | "pending" | "collecting" | "analyzing" | "ready" | "partial"
+  | "failed" | "cancelled" | "interrupted";
+
+export interface BenchmarkAnalysisCapability {
+  status: "complete" | "partial" | "unavailable" | "failed" | "not_applicable";
+  provider: string;
+  limitations: string[];
+}
+
+export interface BenchmarkAnalysisFrame {
+  timestampMs: number;
+  key: string;
+  artifactUrl?: string;
+  ocrText: string;
+  vision: Record<string, string>;
+}
+
+export interface BenchmarkVideoAnalysis {
+  status: "complete" | "partial";
+  durationMs?: number;
+  frames: BenchmarkAnalysisFrame[];
+  capabilities: Record<string, BenchmarkAnalysisCapability>;
+  speechStatus: "present" | "absent" | "unknown";
+  speechDetectionMethod: string;
+  transcript: {
+    text: string;
+    segments: Array<{ startMs: number; endMs: number; text: string }>;
+    timestampSource: string;
+    provider: string;
+  };
+  audioAnalysis: {
+    rmsDbfs?: number;
+    peakDbfs?: number;
+    crestFactorDb?: number;
+    clippedSampleRatio?: number;
+    lowEnergyRatio?: number;
+    vadSpeechRatio?: number;
+    transcribedCharactersPerSecond?: number;
+    silences: Array<{ startMs: number; endMs: number }>;
+    pitchAnalysis: { status: string; medianHz?: number; rangeHz?: number; limitations: string[] };
+    findings: string[];
+    limitations: string[];
+  };
+  creativeInsights: Array<{ claim: string; evidenceFrameKeys: string[]; confidence?: number }>;
+  narrativeAnalysis: {
+    sections: Array<{
+      startMs: number; endMs: number; role: string; observation: string;
+      strategyHypothesis: string; evidenceFrameKeys: string[]; transcriptQuotes: string[];
+    }>;
+    voiceoverFindings: Array<{ claim: string; evidenceKind: string; transcriptQuote: string }>;
+    audioVisualFindings: Array<{ claim: string; evidenceFrameKeys: string[]; transcriptQuote: string }>;
+    limitations: string[];
+  };
+  limitations: string[];
+}
+
+export interface BenchmarkAnalysisJob {
+  id: string;
+  workspaceId: string;
+  profileUserId: string;
+  noteId: string;
+  title: string;
+  status: BenchmarkAnalysisJobStatus;
+  progress: { stage: string; percent: number; message: string };
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+  attempt: number;
+  sourceEvidence: BenchmarkNoteSourceEvidence | null;
+  analysis: BenchmarkVideoAnalysis | null;
+  report: BenchmarkDeepNoteReport | null;
+  error: ApiProblem | null;
+  artifacts: Array<{ filename: string; mediaType: string; contentUrl: string }>;
+}
+
 export type AccountCapabilityState =
   | "available"
   | "management_only"

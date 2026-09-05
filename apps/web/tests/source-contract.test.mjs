@@ -30,15 +30,15 @@ async function collectSources(directory) {
   return output;
 }
 
-test("shell exposes seven primary destinations and accessible navigation", async () => {
+test("shell exposes eight primary destinations and accessible navigation", async () => {
   const [shell, catalogs] = await Promise.all([
     source("components/app-shell.tsx"),
     source("lib/i18n/catalogs.ts"),
   ]);
-  for (const key of ["create", "projects", "batches", "skills", "assets", "channels", "settings"]) {
+  for (const key of ["create", "projects", "batches", "skills", "assets", "channels", "benchmarks", "settings"]) {
     assert.match(shell, new RegExp(`label: "shell\\.nav\\.${key}"`));
   }
-  for (const label of ["创作", "项目", "批量生产", "素材", "频道", "账户与设置", "Create", "Projects", "Batch production", "Assets", "Channels", "Account & settings"]) assert.match(catalogs, new RegExp(label));
+  for (const label of ["创作", "项目", "批量生产", "素材", "频道", "对标分析", "账户与设置", "Create", "Projects", "Batch production", "Assets", "Channels", "Benchmarks", "Account & settings"]) assert.match(catalogs, new RegExp(label));
   assert.match(shell, /className="skip-link"/);
   assert.match(shell, /aria-current=\{current \? "page"/);
   assert.match(shell, /aria-expanded=\{menuOpen\}/);

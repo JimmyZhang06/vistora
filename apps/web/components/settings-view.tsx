@@ -15,14 +15,14 @@ import {
 import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type MessageKey } from "@/lib/i18n";
 import { useTheme, type ThemePreference } from "@/lib/theme";
 
 const themeOptions = [
   { value: "system", icon: "AU", label: "settings.appearance.system", help: "settings.appearance.systemHelp" },
   { value: "light", icon: "LT", label: "settings.appearance.light", help: "settings.appearance.lightHelp" },
   { value: "dark", icon: "DK", label: "settings.appearance.dark", help: "settings.appearance.darkHelp" },
-] as const satisfies ReadonlyArray<{ value: ThemePreference; icon: string }>;
+] as const satisfies ReadonlyArray<{ value: ThemePreference; icon: string; label: MessageKey; help: MessageKey }>;
 
 export function SettingsView() {
   const adapter = useMemo(() => createFrameFactoryAdapter(), []);

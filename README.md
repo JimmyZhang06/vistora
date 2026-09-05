@@ -77,7 +77,23 @@ Document Source 还提供 revision-fenced retention、Legal Hold 和异步 Purge
 - Run、Step、Artifact、Event、批次和人工审核控制面；
 - Channel 元数据管理和 Run 关联。
 
-尚未实现：示例蒸馏服务、真实模型 A/B Skill 测试、平台账号连接、自动上传/发布视频、用户/工作区管理、Pipeline 管理、RenderPreset 管理和 2FA。
+尚未实现：示例蒸馏服务、真实模型 A/B Skill 测试、平台官方 OAuth 账号绑定、自动上传/发布视频、用户/工作区管理、Pipeline 管理、RenderPreset 管理和 2FA。小红书对标支持下述本机浏览器扫码连接。
+
+### 小红书对标分析 Demo
+
+`/benchmarks` 内可检查小红书连接，并在用户点击后显示本机 Provider 的登录二维码；用户在小红书 App 扫码后，系统重新验证登录状态，再恢复当前账号的免费采集或详情获取。二维码过期、服务未配置和连接失败均可明确恢复。扫码不会启动或重试付费视频分析，也不关闭已有浏览器登录。此流程是本机受管浏览器登录，不能视为平台官方 OAuth 或创作者内容再利用授权；安装及操作见 [小红书连接流程](docs/sop/xiaohongshu-connection.md)。已保存的账号及视频报告可在 `/benchmarks/history` 只读查看。
+
+真实视频深析现已接通：在单条视频报告点击「开始完整视频分析」，自动从已登录主页定位视频，完成全时长场景扫描、代表帧视觉理解、OCR、VAD/ASR 与音轨测量，再生成证据化策略报告。最多 36 帧，不宣称逐帧穷尽；按账号＋笔记持久保存，支持恢复、取消和重试。本机启动用 `./start.ps1 -BenchmarkAnalysis`，安装、Provider、预算、保留期及生产边界见 [视频深析 SOP](docs/sop/benchmark-video-analysis.md)。此通道不改变现有账号总体报告的首屏元数据范围。
+
+`/benchmarks` 可粘贴规范的小红书用户主页 URL，并保留白昼小熊（用户 ID `5a8cf39111be10466d285d6b`，小红书号 `X20010906`）作为一键 Seed。`POST /v1/benchmark-accounts/preview` 通过 Provider 注册表选择采集器；当前小红书 Provider 只接受精确的 `https://www.xiaohongshu.com/user/profile/{24 位用户 ID}`，会移除分享查询参数后请求公开 HTML，并生成视频/图文占比、近 30 天发布量、发布间隔、点赞下界、标题主题信号和首屏高互动样本。采集设置 8 秒超时、1 MiB 响应上限、拒绝重定向和按规范主页隔离的 5 分钟进程内缓存（最多 128 个主页）；不抓评论或收藏，不下载媒体，也不持久化源数据。兼容用的 `GET /v1/benchmark-accounts/demo` 仍指向 Seed。
+
+`POST /v1/benchmark-accounts/report` 在同一快照上生成账号总体报告和逐条笔记报告。报告使用账号内互动下界百分位识别“高表现候选”，归纳对话式标题、第一人称、反差、方法承诺、感官意象、地点、数字和极简悬念等可复测策略。所有爆款解释都区分样本推导、机制推断和证据限制；当前深度为 `public_metadata_only`，不声称已分析正文、封面、视频语音、镜头、曝光、完播或分享。
+
+`POST /v1/benchmark-notes/source-evidence` 已实现本机可替换的真实详情 Provider：它从已登录受管浏览器中的规范主页发现并点击目标笔记，返回正文、互动量精度和媒体探针，同时不输出 Cookie、短期令牌或签名媒体 URL。完整运行、安全与页面兼容流程见 [`docs/sop/xiaohongshu-benchmark-provider.md`](docs/sop/xiaohongshu-benchmark-provider.md)。
+
+`POST /v1/benchmark-notes/deep-report` 保留为旧的证据转换入口，其最新结果仅是进程内缓存；系统样片接口明确标注 `synthetic_demo`，不是目标账号证据。`/benchmarks` 的完整视频面板现使用新的 `/v1/benchmark-analysis/jobs` 耐久接口，不再把旧的工作区全局最新报告绑定到任意笔记。新通道使用本地隔离研究文件和 SQLite，不假称已经集成生产对象存储。
+
+这是可运行的技术验证，不是全量监控器：公开 SSR 的主页总量可能降精度，首屏仍有 `hasMore` 时所有分析都会明确标为样本结论。账户采集不依赖单篇媒体解析网站。登录会话由用户本机外部浏览器 Provider 管理；Vistora 不接收、返回或归档 Cookie，也不把登录二维码写入历史报告。扩展完整分页或公网服务前，需要评估平台条款、速率限制、数据保留和隔离执行边界。
 
 ## 系统架构
 
@@ -105,7 +121,7 @@ flowchart LR
 
 | 目录 | 职责 |
 | --- | --- |
-| `apps/web` | React 19 + Vinext 工作台；标准、Full-AI、网页、PDF、档案活化、申请演示、证据中心、项目、批次、Skill、素材、频道和设置 |
+| `apps/web` | React 19 + Vinext 工作台；标准、Full-AI、网页、PDF、档案活化、申请演示、证据中心、对标分析、项目、批次、Skill、素材、频道和设置 |
 | `apps/api` | FastAPI 控制面；资源生命周期、幂等、并发控制、审核、签名 URL 和 Provider readiness |
 | `services/worker` | DAG 调度、Provider 适配、素材分析、浏览器采集、渲染、QC 和恢复 |
 | `packages/contracts` | OpenAPI 3.1 与 JSON Schema 2020-12 公共契约 |

@@ -5,6 +5,8 @@ import base64
 import hashlib
 import inspect
 import json
+import re
+import sqlite3
 import tempfile
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -16,7 +18,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from .account import (
     AccountCapabilitiesResponse,
@@ -30,6 +32,35 @@ from .account import (
     ProfileUpdate,
     SessionResponse,
 )
+from .benchmark_accounts import (
+    BenchmarkAccountError,
+    BenchmarkAccountGateway,
+    BenchmarkAccountPreview,
+    BenchmarkSnapshot,
+)
+from .benchmark_auth import (
+    BenchmarkAuthRequest,
+    BenchmarkAuthService,
+    BenchmarkAuthStatus,
+    require_local_auth_access,
+)
+from .benchmark_history import BenchmarkHistoryDetail, BenchmarkHistoryPage, HistoryKind
+from .benchmark_job_models import BenchmarkJobResponse
+from .benchmark_jobs import BenchmarkJobError, BenchmarkJobService
+from .benchmark_media_reports import (
+    BenchmarkDeepNoteReport,
+    BenchmarkMediaEvidence,
+    benchmark_deep_report_demo,
+    build_benchmark_deep_note_report,
+)
+from .benchmark_note_sources import (
+    BenchmarkNoteSourceEvidence,
+    BenchmarkNoteSourceGateway,
+    BenchmarkNoteSourceRequest,
+    XiaohongshuAuthenticatedNoteProvider,
+)
+from .benchmark_reports import BenchmarkAccountReport, build_benchmark_account_report
+from .benchmark_seeds import BAIZHOU_XIAOXIONG
 from .context import (
     DefaultWorkspaceContextProvider,
     WorkspaceContext,
@@ -500,6 +531,35 @@ async def _enqueue_asset_analysis(
     )
 
 
+async def _collect_benchmark_snapshot(
+    gateway: BenchmarkAccountGateway,
+    *,
+    platform: str,
+    profile_url: str,
+    refresh_note_identity: bool = False,
+) -> BenchmarkSnapshot:
+    try:
+        return await gateway.collect(
+            platform, profile_url, refresh_note_identity=refresh_note_identity,
+        )
+    except BenchmarkAccountError as exc:
+        if exc.code in {
+            "BENCHMARK_PLATFORM_UNSUPPORTED",
+            "BENCHMARK_PROFILE_INVALID",
+        }:
+            status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+        elif exc.code in {"BENCHMARK_SOURCE_UNAVAILABLE", "BENCHMARK_DISCOVERY_BUSY"}:
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            status_code = status.HTTP_502_BAD_GATEWAY
+        raise ApiError(
+            status_code,
+            exc.code,
+            str(exc),
+            details={"retryable": exc.retryable},
+        ) from exc
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -508,6 +568,10 @@ def create_app(
     job_queue: JobQueue | None = None,
     object_storage: ObjectStorage | None = None,
     remote_asset_gateway: RemoteAssetGateway | None = None,
+    benchmark_account_gateway: BenchmarkAccountGateway | None = None,
+    benchmark_note_source_gateway: BenchmarkNoteSourceGateway | None = None,
+    benchmark_job_service: BenchmarkJobService | None = None,
+    benchmark_auth_service: BenchmarkAuthService | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_environment()
     resolved_provider = context_provider or DefaultWorkspaceContextProvider(resolved_settings)
@@ -549,6 +613,28 @@ def create_app(
             application.state.remote_asset_gateway = (
                 remote_asset_gateway or RemoteAssetGateway()
             )
+            application.state.benchmark_account_gateway = (
+                benchmark_account_gateway
+                or BenchmarkAccountGateway(
+                    managed_browser_base_url=(
+                        resolved_settings.xhs_managed_browser_base_url
+                    )
+                )
+            )
+            application.state.benchmark_note_source_gateway = (
+                benchmark_note_source_gateway
+                or (
+                    BenchmarkNoteSourceGateway(
+                        XiaohongshuAuthenticatedNoteProvider(
+                            managed_browser_base_url=(
+                                resolved_settings.xhs_managed_browser_base_url
+                            )
+                        )
+                    )
+                    if resolved_settings.xhs_managed_browser_base_url
+                    else None
+                )
+            )
             application.state.control_service = ControlService(
                 resolved_repository,
                 validator,
@@ -583,6 +669,23 @@ def create_app(
                 queue=resolved_queue,
                 validate_scheduler_run=lambda value: validator.validate("run", value),
             )
+            resolved_benchmark_jobs = benchmark_job_service
+            if resolved_benchmark_jobs is None and resolved_settings.benchmark_jobs_dir:
+                if not resolved_settings.xhs_managed_browser_base_url:
+                    raise ValueError(
+                        "local benchmark jobs require the managed XHS browser provider"
+                    )
+                resolved_benchmark_jobs = BenchmarkJobService(
+                    root=resolved_settings.benchmark_jobs_dir,
+                    provider_env_file=resolved_settings.benchmark_provider_env_file,
+                    media_acquirer=XiaohongshuAuthenticatedNoteProvider(
+                        managed_browser_base_url=resolved_settings.xhs_managed_browser_base_url
+                    ).acquire_media,
+                )
+            if resolved_benchmark_jobs is not None:
+                await resolved_benchmark_jobs.start()
+                owned_resources.append(resolved_benchmark_jobs)
+            application.state.benchmark_job_service = resolved_benchmark_jobs
             application.state.webpage_video_service = WebpageVideoControlService(
                 resolved_repository,
                 WebpageVideoRuntimeConfiguration(
@@ -640,6 +743,8 @@ def create_app(
                 validate_scheduler_run=lambda value: validator.validate("run", value),
             )
             application.state.persistence = resolved_settings.repository_backend
+            if application.state.benchmark_auth_service is not None:
+                owned_resources.append(application.state.benchmark_auth_service)
             yield
         finally:
             for resource in reversed(owned_resources):
@@ -661,6 +766,17 @@ def create_app(
     app.state.job_queue = job_queue
     app.state.object_storage = object_storage
     app.state.remote_asset_gateway = remote_asset_gateway
+    app.state.benchmark_account_gateway = benchmark_account_gateway
+    app.state.benchmark_note_source_gateway = benchmark_note_source_gateway
+    app.state.benchmark_job_service = benchmark_job_service
+    app.state.benchmark_auth_service = (
+        benchmark_auth_service
+        or (BenchmarkAuthService(resolved_settings.xhs_managed_browser_base_url)
+            if resolved_settings.xhs_managed_browser_base_url
+            and resolved_settings.environment.strip().lower() in {"development", "test"}
+            else None)
+    )
+    app.state.benchmark_deep_reports = {}
     app.state.full_ai_service = None
     app.state.webpage_video_service = None
     app.state.persistence = resolved_settings.repository_backend
@@ -685,8 +801,22 @@ def create_app(
     @app.middleware("http")
     async def add_request_id(request: Request, call_next: Any) -> Response:
         request.state.request_id = _request_id(request)
+        origin = request.headers.get("origin")
+        if (request.url.path.startswith("/v1/benchmark-analysis/")
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin
+            and origin not in resolved_settings.cors_allow_origins
+            and not (resolved_settings.cors_allow_origin_regex
+                     and re.fullmatch(resolved_settings.cors_allow_origin_regex, origin))):
+            return JSONResponse(status_code=403, content={
+                "schema_version": "1.0.0", "code": "BENCHMARK_ORIGIN_REJECTED",
+                "message": "This origin cannot mutate local research jobs",
+                "request_id": request.state.request_id, "details": {},
+            }, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
+        if request.url.path.startswith("/v1/benchmark-"):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
     @app.exception_handler(ApiError)
@@ -704,11 +834,24 @@ def create_app(
             headers={"X-Request-Id": request_id},
         )
 
+    @app.exception_handler(BenchmarkJobError)
+    async def handle_benchmark_job_error(request: Request, exc: BenchmarkJobError) -> JSONResponse:
+        return await handle_api_error(
+            request, ApiError(exc.status_code, exc.code, exc.message,
+                              details={"retryable": exc.retryable})
+        )
+
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         request_id = _request_id(request)
+        errors = exc.errors()
+        if request.url.path.startswith("/v1/benchmark-"):
+            # Pydantic errors otherwise echo rejected URLs and extra credential
+            # values through `input`/`ctx`, including malformed sharing links.
+            errors = [{"loc": item["loc"], "type": item["type"],
+                       "msg": "Invalid benchmark request field"} for item in errors]
         return JSONResponse(
             status_code=422,
             content={
@@ -716,7 +859,7 @@ def create_app(
                 "code": "REQUEST_VALIDATION_FAILED",
                 "message": "The request does not match the API contract",
                 "request_id": request_id,
-                "details": {"errors": json.loads(json.dumps(exc.errors(), default=str))},
+                "details": {"errors": json.loads(json.dumps(errors, default=str))},
             },
             headers={"X-Request-Id": request_id},
         )
@@ -747,6 +890,336 @@ def create_app(
             workspace_id=context.workspace_id,
             workspace_name=context.workspace_name,
         )
+
+    @app.get("/v1/benchmark-auth/xiaohongshu/status", response_model=BenchmarkAuthStatus,
+             tags=["Benchmark accounts"])
+    async def get_benchmark_auth_status(
+        request: Request, context: ContextDependency,
+    ) -> BenchmarkAuthStatus:
+        require_local_auth_access(request, context, resolved_settings)
+        service = request.app.state.benchmark_auth_service
+        if service is None:
+            return BenchmarkAuthStatus(
+                state="not_configured", error_code="BENCHMARK_AUTH_NOT_CONFIGURED",
+                message="尚未配置本机小红书采集服务。请按启动说明配置后重试。",
+            )
+        return await service.status()
+
+    @app.post("/v1/benchmark-auth/xiaohongshu/qrcode", response_model=BenchmarkAuthStatus,
+              tags=["Benchmark accounts"])
+    async def start_benchmark_auth(
+        command: BenchmarkAuthRequest, request: Request, context: ContextDependency,
+        idempotency_key: Annotated[str | None, Header(min_length=1, max_length=128)] = None,
+    ) -> BenchmarkAuthStatus:
+        del command, idempotency_key  # One deduplicated QR operation per installation.
+        require_local_auth_access(request, context, resolved_settings)
+        service = request.app.state.benchmark_auth_service
+        if service is None:
+            return BenchmarkAuthStatus(
+                state="not_configured", error_code="BENCHMARK_AUTH_NOT_CONFIGURED",
+                message="尚未配置本机小红书采集服务。请按启动说明配置后重试。",
+            )
+        return await service.status(start=True)
+
+    @app.get(
+        "/v1/benchmark-accounts/demo",
+        response_model=BenchmarkSnapshot,
+        tags=["Benchmark accounts"],
+    )
+    async def get_benchmark_account_demo(
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkSnapshot:
+        del context  # Resolve the current workspace boundary even though this demo is read-only.
+        gateway: BenchmarkAccountGateway | None = (
+            request.app.state.benchmark_account_gateway
+        )
+        if gateway is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "Benchmark account collection is not configured",
+            )
+        snapshot = await _collect_benchmark_snapshot(
+            gateway,
+            platform=BAIZHOU_XIAOXIONG.platform,
+            profile_url=BAIZHOU_XIAOXIONG.profile_url,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return snapshot
+
+    @app.post(
+        "/v1/benchmark-accounts/preview",
+        response_model=BenchmarkSnapshot,
+        tags=["Benchmark accounts"],
+    )
+    async def preview_benchmark_account(
+        command: BenchmarkAccountPreview,
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkSnapshot:
+        del context
+        gateway: BenchmarkAccountGateway | None = (
+            request.app.state.benchmark_account_gateway
+        )
+        if gateway is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "Benchmark account collection is not configured",
+            )
+        snapshot = await _collect_benchmark_snapshot(
+            gateway,
+            platform=command.platform,
+            profile_url=command.profile_url,
+            refresh_note_identity=command.refresh_note_identity,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return snapshot
+
+    @app.post(
+        "/v1/benchmark-accounts/report",
+        response_model=BenchmarkAccountReport,
+        tags=["Benchmark accounts"],
+    )
+    async def generate_benchmark_account_report(
+        command: BenchmarkAccountPreview,
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkAccountReport:
+        _require_asset_permission(context, "assets:write")
+        gateway: BenchmarkAccountGateway | None = (
+            request.app.state.benchmark_account_gateway
+        )
+        if gateway is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "Benchmark account collection is not configured",
+            )
+        snapshot = await _collect_benchmark_snapshot(
+            gateway,
+            platform=command.platform,
+            profile_url=command.profile_url,
+            refresh_note_identity=command.refresh_note_identity,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        report = build_benchmark_account_report(snapshot)
+        service = request.app.state.benchmark_job_service
+        if service is None:
+            report.history_warning = "历史存储未启用。本次报告尚未保存。"
+        else:
+            try:
+                report.history_record_id = UUID(service.save_account_history(
+                    str(context.workspace_id), report,
+                ))
+            except (BenchmarkJobError, ApiError, OSError, sqlite3.Error):
+                report.history_warning = "历史记录保存失败。请检查本机存储空间和服务状态后重试。"
+        return report
+
+    @app.get(
+        "/v1/benchmark-notes/deep-report/demo",
+        response_model=BenchmarkDeepNoteReport,
+        tags=["Benchmark accounts"],
+    )
+    async def get_benchmark_note_deep_report_demo(
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkDeepNoteReport:
+        del context
+        response.headers["Cache-Control"] = "private, no-store"
+        return benchmark_deep_report_demo()
+
+    @app.post(
+        "/v1/benchmark-notes/source-evidence",
+        response_model=BenchmarkNoteSourceEvidence,
+        tags=["Benchmark accounts"],
+    )
+    async def collect_benchmark_note_source_evidence(
+        command: BenchmarkNoteSourceRequest,
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkNoteSourceEvidence:
+        del context
+        gateway: BenchmarkNoteSourceGateway | None = (
+            request.app.state.benchmark_note_source_gateway
+        )
+        if gateway is None:
+            raise ApiError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "Authenticated benchmark note collection is not configured",
+            )
+        try:
+            evidence = await gateway.collect(
+                command.platform, command.profile_url, command.note_id
+            )
+        except BenchmarkAccountError as exc:
+            if exc.code in {
+                "BENCHMARK_PLATFORM_UNSUPPORTED",
+                "BENCHMARK_PROFILE_INVALID",
+                "BENCHMARK_NOTE_INVALID",
+            }:
+                status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+            elif exc.code == "BENCHMARK_NOTE_NOT_IN_SAMPLE":
+                status_code = status.HTTP_404_NOT_FOUND
+            elif exc.code in {
+                "BENCHMARK_PROVIDER_UNAVAILABLE",
+                "BENCHMARK_AUTHENTICATION_REQUIRED",
+                "BENCHMARK_SOURCE_UNAVAILABLE",
+            }:
+                status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            else:
+                status_code = status.HTTP_502_BAD_GATEWAY
+            raise ApiError(
+                status_code,
+                exc.code,
+                str(exc),
+                details={"retryable": exc.retryable},
+            ) from exc
+        response.headers["Cache-Control"] = "private, no-store"
+        return evidence
+
+    def benchmark_jobs(
+        request: Request, context: WorkspaceContext, *, write: bool = False,
+    ) -> BenchmarkJobService:
+        _require_asset_permission(context, "assets:write" if write else "assets:read")
+        service = request.app.state.benchmark_job_service
+        if service is None:
+            raise ApiError(503, "BENCHMARK_ANALYSIS_UNAVAILABLE",
+                           "Local video analysis is not configured; see the benchmark analysis SOP")
+        return service
+
+    @app.get("/v1/benchmark-history", response_model=BenchmarkHistoryPage,
+             tags=["Benchmark accounts"])
+    async def list_benchmark_history(
+        request: Request, context: ContextDependency,
+        kind: HistoryKind | None = None,
+        q: Annotated[str, Query(max_length=100)] = "",
+        cursor: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> dict[str, Any]:
+        return benchmark_jobs(request, context).history.list(
+            str(context.workspace_id), kind=kind, query=q.strip(),
+            cursor=str(cursor) if cursor else None, limit=limit,
+        )
+
+    @app.get("/v1/benchmark-history/{record_id}", response_model=BenchmarkHistoryDetail,
+             tags=["Benchmark accounts"])
+    async def get_benchmark_history(
+        record_id: UUID, request: Request, context: ContextDependency,
+    ) -> dict[str, Any]:
+        return benchmark_jobs(request, context).history.get(
+            str(context.workspace_id), str(record_id),
+        )
+
+    @app.post("/v1/benchmark-analysis/jobs", response_model=BenchmarkJobResponse,
+              status_code=202, tags=["Benchmark accounts"])
+    async def create_benchmark_analysis_job(
+        command: BenchmarkNoteSourceRequest, request: Request,
+        context: ContextDependency, idempotency_key: IdempotencyHeader,
+    ) -> dict[str, Any]:
+        return await benchmark_jobs(request, context, write=True).create(
+            workspace_id=str(context.workspace_id), profile_url=command.profile_url,
+            note_id=command.note_id, idempotency_key=idempotency_key,
+        )
+
+    @app.get("/v1/benchmark-analysis/latest", response_model=BenchmarkJobResponse,
+             tags=["Benchmark accounts"])
+    async def latest_benchmark_analysis_job(
+        request: Request, context: ContextDependency,
+        profile_user_id: Annotated[str, Query(pattern=r"^[0-9a-f]{24}$")],
+        note_id: Annotated[str | None, Query(pattern=r"^[0-9a-f]{24}$")] = None,
+    ) -> dict[str, Any]:
+        job = await benchmark_jobs(request, context).latest(
+            str(context.workspace_id), profile_user_id, note_id,
+        )
+        if job is None:
+            raise ApiError(404, "BENCHMARK_ANALYSIS_NOT_FOUND", "No analysis exists for this note")
+        return job
+
+    @app.get("/v1/benchmark-analysis/jobs/{job_id}", response_model=BenchmarkJobResponse,
+             tags=["Benchmark accounts"])
+    async def get_benchmark_analysis_job(
+        job_id: UUID, request: Request, context: ContextDependency,
+    ) -> dict[str, Any]:
+        return await benchmark_jobs(request, context).get(str(context.workspace_id), str(job_id))
+
+    @app.post("/v1/benchmark-analysis/jobs/{job_id}/cancel", response_model=BenchmarkJobResponse,
+              tags=["Benchmark accounts"])
+    async def cancel_benchmark_analysis_job(
+        job_id: UUID, request: Request, context: ContextDependency,
+    ) -> dict[str, Any]:
+        return await benchmark_jobs(request, context, write=True).cancel(
+            str(context.workspace_id), str(job_id)
+        )
+
+    @app.post("/v1/benchmark-analysis/jobs/{job_id}/retry", response_model=BenchmarkJobResponse,
+              tags=["Benchmark accounts"])
+    async def retry_benchmark_analysis_job(
+        job_id: UUID, request: Request, context: ContextDependency,
+    ) -> dict[str, Any]:
+        return await benchmark_jobs(request, context, write=True).retry(
+            str(context.workspace_id), str(job_id)
+        )
+
+    @app.get("/v1/benchmark-analysis/jobs/{job_id}/artifacts/{filename:path}",
+             response_class=FileResponse, tags=["Benchmark accounts"])
+    async def get_benchmark_analysis_artifact(
+        job_id: UUID, filename: str, request: Request, context: ContextDependency,
+    ) -> FileResponse:
+        path = await benchmark_jobs(request, context).artifact(
+            str(context.workspace_id), str(job_id), filename
+        )
+        return FileResponse(path, headers={
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        })
+
+    @app.post(
+        "/v1/benchmark-notes/deep-report",
+        response_model=BenchmarkDeepNoteReport,
+        tags=["Benchmark accounts"],
+    )
+    async def generate_benchmark_note_deep_report(
+        command: BenchmarkMediaEvidence,
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkDeepNoteReport:
+        response.headers["Cache-Control"] = "private, no-store"
+        if command.source_kind != "worker_asset_analysis":
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "BENCHMARK_MEDIA_SOURCE_INVALID",
+                "Only real Worker media evidence can be submitted to this endpoint",
+            )
+        report = build_benchmark_deep_note_report(command)
+        request.app.state.benchmark_deep_reports[context.workspace_id] = report
+        return report
+
+    @app.get(
+        "/v1/benchmark-notes/deep-report/latest",
+        response_model=BenchmarkDeepNoteReport,
+        tags=["Benchmark accounts"],
+    )
+    async def get_latest_benchmark_note_deep_report(
+        request: Request,
+        response: Response,
+        context: ContextDependency,
+    ) -> BenchmarkDeepNoteReport:
+        response.headers["Cache-Control"] = "private, no-store"
+        report = request.app.state.benchmark_deep_reports.get(context.workspace_id)
+        if report is None:
+            raise ApiError(
+                status.HTTP_404_NOT_FOUND,
+                "BENCHMARK_DEEP_REPORT_NOT_FOUND",
+                "No real deep report has been generated for this workspace",
+            )
+        return report
 
     @app.get(
         "/v1/full-ai/options",

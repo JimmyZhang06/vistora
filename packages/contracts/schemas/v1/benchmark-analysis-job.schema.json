@@ -1,0 +1,473 @@
+{
+  "$defs": {
+    "BenchmarkDeepFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "hook",
+            "visual",
+            "narration",
+            "rhythm",
+            "limitation"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "claim": {
+          "title": "Claim",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "reusable_move": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reusable Move"
+        }
+      },
+      "required": [
+        "category",
+        "confidence",
+        "claim",
+        "evidence"
+      ],
+      "title": "BenchmarkDeepFinding",
+      "type": "object"
+    },
+    "BenchmarkDeepMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "interpretation": {
+          "title": "Interpretation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "value",
+        "interpretation"
+      ],
+      "title": "BenchmarkDeepMetric",
+      "type": "object"
+    },
+    "BenchmarkDeepNoteReport": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "worker_asset_analysis",
+            "synthetic_demo"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "source_label": {
+          "title": "Source Label",
+          "type": "string"
+        },
+        "evidence_depth": {
+          "const": "multimodal_timeline_v1",
+          "default": "multimodal_timeline_v1",
+          "title": "Evidence Depth",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "duration_ms": {
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "partial"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkDeepMetric"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkDeepFinding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkDeepTimelineItem"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_kind",
+        "source_label",
+        "title",
+        "duration_ms",
+        "status",
+        "summary",
+        "metrics",
+        "findings",
+        "timeline",
+        "limitations"
+      ],
+      "title": "BenchmarkDeepNoteReport",
+      "type": "object"
+    },
+    "BenchmarkDeepTimelineItem": {
+      "additionalProperties": false,
+      "properties": {
+        "start_ms": {
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "transcript": {
+          "title": "Transcript",
+          "type": "string"
+        },
+        "ocr_text": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Ocr Text",
+          "type": "array"
+        },
+        "audio_events": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Audio Events",
+          "type": "array"
+        },
+        "evidence_types": {
+          "items": {
+            "enum": [
+              "frame",
+              "ocr",
+              "asr",
+              "audio"
+            ],
+            "type": "string"
+          },
+          "title": "Evidence Types",
+          "type": "array"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "representative_frame_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Representative Frame Key"
+        }
+      },
+      "required": [
+        "start_ms",
+        "end_ms",
+        "label",
+        "description",
+        "transcript",
+        "ocr_text",
+        "audio_events",
+        "evidence_types"
+      ],
+      "title": "BenchmarkDeepTimelineItem",
+      "type": "object"
+    },
+    "BenchmarkJobArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "media_type": {
+          "title": "Media Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "filename",
+        "media_type"
+      ],
+      "title": "BenchmarkJobArtifact",
+      "type": "object"
+    },
+    "BenchmarkJobFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "BenchmarkJobFailure",
+      "type": "object"
+    },
+    "BenchmarkJobProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "percent": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Percent",
+          "type": "number"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "percent",
+        "message"
+      ],
+      "title": "BenchmarkJobProgress",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "title": "Workspace Id",
+      "type": "string"
+    },
+    "profile_user_id": {
+      "pattern": "^[0-9a-f]{24}$",
+      "title": "Profile User Id",
+      "type": "string"
+    },
+    "note_id": {
+      "pattern": "^[0-9a-f]{24}$",
+      "title": "Note Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "collecting",
+        "analyzing",
+        "ready",
+        "partial",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "progress": {
+      "$ref": "#/$defs/BenchmarkJobProgress"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "attempt": {
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "source_evidence": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Evidence"
+    },
+    "analysis": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Analysis"
+    },
+    "report": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BenchmarkDeepNoteReport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BenchmarkJobFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/BenchmarkJobArtifact"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "job_id",
+    "workspace_id",
+    "profile_user_id",
+    "note_id",
+    "title",
+    "status",
+    "progress",
+    "created_at",
+    "updated_at",
+    "attempt",
+    "source_evidence",
+    "analysis",
+    "report",
+    "error",
+    "artifacts"
+  ],
+  "title": "BenchmarkJobResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-analysis-job.schema.json"
+}

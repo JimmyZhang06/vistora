@@ -95,12 +95,14 @@ def test_implemented_v1_routes_are_declared_in_the_canonical_openapi() -> None:
     for route in app.routes:
         if not route.path.startswith("/v1/"):
             continue
-        declared = contract["paths"].get(route.path)
-        assert declared is not None, f"canonical OpenAPI is missing {route.path}"
+        # Starlette converters (e.g. {filename:path}) are not OpenAPI parameter names.
+        public_path = getattr(route, "path_format", route.path)
+        declared = contract["paths"].get(public_path)
+        assert declared is not None, f"canonical OpenAPI is missing {public_path}"
         for method in route.methods or ():
             if method == "HEAD":
                 continue
-            live_operations.add((route.path, method.lower()))
+            live_operations.add((public_path, method.lower()))
             assert method.lower() in declared, (
                 f"canonical OpenAPI is missing {method} {route.path}"
             )

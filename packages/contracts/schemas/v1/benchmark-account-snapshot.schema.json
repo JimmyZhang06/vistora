@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-account-snapshot.schema.json",
+  "title": "BenchmarkAccountSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "acquisition", "analysis", "notes"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "profile": { "$ref": "#/$defs/Profile" },
+    "acquisition": { "$ref": "#/$defs/Acquisition" },
+    "analysis": { "$ref": "#/$defs/Analysis" },
+    "notes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/Note" }
+    }
+  },
+  "$defs": {
+    "Metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display", "lower_bound", "precision"],
+      "properties": {
+        "display": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "lower_bound": { "type": ["integer", "null"], "minimum": 0 },
+        "precision": { "type": "string", "enum": ["exact", "rounded", "lower_bound", "unknown"] }
+      }
+    },
+    "Profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform", "user_id", "profile_url", "nickname", "red_id", "tags",
+        "following", "followers", "likes_and_collections"
+      ],
+      "properties": {
+        "platform": { "const": "xiaohongshu" },
+        "user_id": { "type": "string", "pattern": "^[0-9a-f]{24}$" },
+        "profile_url": { "type": "string", "format": "uri", "maxLength": 300 },
+        "nickname": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "red_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 80 } },
+        "following": { "$ref": "#/$defs/Metric" },
+        "followers": { "$ref": "#/$defs/Metric" },
+        "likes_and_collections": { "$ref": "#/$defs/Metric" }
+      }
+    },
+    "Note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_index", "note_id", "identity_status", "title", "format", "published_at", "likes", "pinned"],
+      "properties": {
+        "sample_index": { "type": "integer", "minimum": 1 },
+        "note_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{24}$" },
+        "identity_status": {
+          "type": "string",
+          "enum": ["verified", "missing"],
+          "description": "Whether this card has a verified note identity. A verified identity alone does not guarantee access to the note or supported video media."
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "format": { "type": "string", "enum": ["video", "image", "unknown"] },
+        "published_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "likes": { "$ref": "#/$defs/Metric" },
+        "pinned": { "type": "boolean" }
+      }
+    },
+    "ThemeSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theme", "matching_notes"],
+      "properties": {
+        "theme": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "matching_notes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_size", "video_count", "image_count", "unknown_count", "video_share_percent",
+        "median_likes_lower_bound", "posts_last_30_days", "median_publish_interval_days",
+        "themes", "top_notes"
+      ],
+      "properties": {
+        "sample_size": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "video_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "image_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "unknown_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "video_share_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "median_likes_lower_bound": { "type": ["integer", "null"], "minimum": 0 },
+        "posts_last_30_days": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "median_publish_interval_days": { "type": ["number", "null"], "minimum": 0 },
+        "themes": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/ThemeSignal" } },
+        "top_notes": { "type": "array", "maxItems": 5, "items": { "$ref": "#/$defs/Note" } }
+      }
+    },
+    "Acquisition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "captured_at", "method", "from_cache", "initial_page_has_more",
+        "completeness", "limitations", "discovery_version", "note_identity_status",
+        "identified_note_count", "unresolved_note_count", "identity_error_code"
+      ],
+      "properties": {
+        "captured_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "method": {
+          "enum": ["public_profile_ssr", "authenticated_managed_browser"]
+        },
+        "from_cache": { "type": "boolean" },
+        "initial_page_has_more": { "type": "boolean" },
+        "completeness": { "const": "initial_page_sample" },
+        "discovery_version": { "const": "1" },
+        "note_identity_status": {
+          "type": "string",
+          "enum": ["complete", "partial", "unavailable"],
+          "description": "Identity completeness for this bounded sample, independent of displayable profile metadata or full-history coverage."
+        },
+        "identified_note_count": { "type": "integer", "minimum": 0 },
+        "unresolved_note_count": { "type": "integer", "minimum": 0 },
+        "identity_error_code": {
+          "type": ["string", "null"],
+          "description": "Sanitized diagnostic code when identity recovery is incomplete. Never includes a URL, token, response body, or credential."
+        },
+        "limitations": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "maxLength": 500 } }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0.0",
+      "profile": {
+        "platform": "xiaohongshu",
+        "user_id": "5a8cf39111be10466d285d6b",
+        "profile_url": "https://www.xiaohongshu.com/user/profile/5a8cf39111be10466d285d6b",
+        "nickname": "白昼小熊",
+        "red_id": "X20010906",
+        "tags": ["潮流博主", "时尚博主"],
+        "following": { "display": "220", "lower_bound": 220, "precision": "exact" },
+        "followers": { "display": "1万+", "lower_bound": 10000, "precision": "lower_bound" },
+        "likes_and_collections": { "display": "1万+", "lower_bound": 10000, "precision": "lower_bound" }
+      },
+      "acquisition": {
+        "captured_at": "2026-09-05T06:30:00Z",
+        "method": "public_profile_ssr",
+        "from_cache": false,
+        "initial_page_has_more": true,
+        "completeness": "initial_page_sample",
+        "discovery_version": "1",
+        "note_identity_status": "complete",
+        "identified_note_count": 1,
+        "unresolved_note_count": 0,
+        "identity_error_code": null,
+        "limitations": ["Only the public SSR initial-page sample is represented."]
+      },
+      "analysis": {
+        "sample_size": 1,
+        "video_count": 1,
+        "image_count": 0,
+        "unknown_count": 0,
+        "video_share_percent": 100,
+        "median_likes_lower_bound": 72000,
+        "posts_last_30_days": 1,
+        "median_publish_interval_days": null,
+        "themes": [{ "theme": "旅行与城市", "matching_notes": 1 }],
+        "top_notes": [{
+          "sample_index": 1,
+          "note_id": "222222222222222222222222",
+          "identity_status": "verified",
+          "title": "晒晒清迈的阳光",
+          "format": "video",
+          "published_at": "2026-08-29T03:07:50Z",
+          "likes": { "display": "7.2万", "lower_bound": 72000, "precision": "rounded" },
+          "pinned": false
+        }]
+      },
+      "notes": [{
+        "sample_index": 1,
+        "note_id": "222222222222222222222222",
+        "identity_status": "verified",
+        "title": "晒晒清迈的阳光",
+        "format": "video",
+        "published_at": "2026-08-29T03:07:50Z",
+        "likes": { "display": "7.2万", "lower_bound": 72000, "precision": "rounded" },
+        "pinned": false
+      }]
+    }
+  ]
+}

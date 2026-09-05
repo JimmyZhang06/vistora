@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.framefactory.dev/v1/benchmark-history-detail.schema.json",
+  "title": "BenchmarkHistoryDetail",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_id", "kind", "title", "profile_user_id", "note_id", "status", "saved_at", "analyzed_at", "account_report", "video_job", "media_available"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/ContractVersion" },
+    "record_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+    "kind": { "enum": ["account", "video"] },
+    "title": { "type": "string" },
+    "profile_user_id": { "type": "string", "pattern": "^[0-9a-f]{24}$" },
+    "note_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{24}$" },
+    "status": { "enum": ["ready", "partial"] },
+    "saved_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "analyzed_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "account_report": { "anyOf": [{ "$ref": "benchmark-account-report.schema.json" }, { "type": "null" }] },
+    "video_job": { "anyOf": [{ "$ref": "benchmark-analysis-job.schema.json" }, { "type": "null" }] },
+    "media_available": { "type": "boolean" }
+  }
+}
