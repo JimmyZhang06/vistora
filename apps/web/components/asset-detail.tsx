@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFrameFactoryAdapter, type Asset, type AssetPoster, type AssetPreview, type AssetSegment } from "@/lib/api";
-import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { Badge, LoadingScaffold, PageHeading, StatePanel } from "@/components/page-heading";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { UiSelect } from "@/components/ui-select";
 
@@ -200,7 +200,7 @@ export function AssetDetail({ libraryId, assetId }: { libraryId: string; assetId
     setAsset(result.data); setNotice("素材已恢复，服务端正在重新判定可用状态。");
   }
 
-  if (loading) return <div className="page"><div className="asset-detail-skeleton" aria-label="正在加载素材详情" /></div>;
+  if (loading) return <div className="page"><h1 className="sr-only" tabIndex={-1}>素材详情正在加载</h1><LoadingScaffold title="正在读取素材详情" description="正在同步处理进度、权利门禁与分析证据。" /></div>;
   if (error || !asset) return <div className="page"><StatePanel code="ERR" title="无法打开素材" description={error || "素材不存在"} error><Link className="button-secondary" href={`/assets/${encodeURIComponent(libraryId)}`}>返回素材库</Link></StatePanel></div>;
 
   const analysis = asset.analysis;

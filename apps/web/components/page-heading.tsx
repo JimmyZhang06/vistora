@@ -58,3 +58,28 @@ export function StatePanel({
     </section>
   );
 }
+
+export function LoadingScaffold({
+  title,
+  description = "正在同步工作区与版本数据，请稍候。",
+  cards = 3,
+}: {
+  title: string;
+  description?: string;
+  cards?: number;
+}) {
+  return (
+    <section className="loading-scaffold" aria-busy="true" aria-live="polite">
+      <header>
+        <span aria-hidden="true" />
+        <div>
+          <strong>{title}</strong>
+          <small>{description}</small>
+        </div>
+      </header>
+      <div className="loading-scaffold-grid" aria-hidden="true">
+        {Array.from({ length: cards }, (_, index) => <i key={index} />)}
+      </div>
+    </section>
+  );
+}

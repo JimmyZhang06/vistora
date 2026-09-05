@@ -324,7 +324,7 @@ export function CreateComposer() {
       <section className="create-cinematic" aria-labelledby="create-title">
         <div className="create-intro">
           <p className="eyebrow">01 / CREATE · DIRECTOR&apos;S DESK</p>
-          <h1 id="create-title" tabIndex={-1}>把一个想法，变成可发布的内容</h1>
+          <h1 id="create-title" tabIndex={-1} aria-label="把一个想法，变成可发布的内容"><span>把一个想法，</span><span>变成可发布的内容</span></h1>
           <p>从输入、生成与人工审核，到最终成片和证据报告。每次运行都保存独立版本快照，过程可追踪、可恢复。</p>
           <div className="create-intro-actions">
             <Link className="button" href="/create/application-demo">开始推荐演示</Link>
@@ -337,7 +337,7 @@ export function CreateComposer() {
 
       <section className="create-paths" aria-labelledby="create-paths-title">
         <div className="create-paths-heading">
-          <p className="eyebrow">CHOOSE A WORKFLOW</p>
+          <p className="eyebrow">WORKFLOW / 创作路径</p>
           <h2 id="create-paths-title">选择最接近目标的起点</h2>
           <p>首次体验建议从申请演示开始；每条路径都会明确展示输入、人工门禁、成本和最终产物。</p>
         </div>
@@ -346,16 +346,16 @@ export function CreateComposer() {
             <span>推荐</span><h3>申请评审演示</h3><p>用公开网页完成截图、镜头板审核、成片和证据报告闭环。</p><strong>约 3–5 分钟完成配置 →</strong>
           </Link>
           <Link className="create-path-card" href="/create/ai">
-            <span>GENERATED</span><h3>全 AI 影片</h3><p>无现有素材时，从脚本、画面到声音全流程生成。</p><strong>进入生成工作台 →</strong>
+            <span>全链路生成</span><h3>全 AI 影片</h3><p>无现有素材时，从脚本、画面到声音全流程生成。</p><strong>进入生成工作台 →</strong>
           </Link>
           <Link className="create-path-card" href="/create/webpage-video">
-            <span>WEB CAPTURE</span><h3>网页截图成片</h3><p>将网站内容整理为可审核、可追溯的短视频。</p><strong>创建网页视频 →</strong>
+            <span>网页采集</span><h3>网页截图成片</h3><p>将网站内容整理为可审核、可追溯的短视频。</p><strong>创建网页视频 →</strong>
           </Link>
           <Link className="create-path-card" href="/create/document-video">
-            <span>LOCAL PILOT</span><h3>文件讲解视频</h3><p>以 PDF 页面为证据层，叠加旁白、字幕与非事实性动态底图。</p><strong>打开本地试运行入口 →</strong>
+            <span>本地文件</span><h3>文件讲解视频</h3><p>以 PDF 页面为证据层，叠加旁白、字幕与非事实性动态底图。</p><strong>打开本地试运行入口 →</strong>
           </Link>
           <Link className="create-path-card" href="/create/broadcast-revival">
-            <span>INDUSTRY</span><h3>广电记忆活化</h3><p>面向历史影像整理、审核和再创作的行业流程。</p><strong>打开行业工作流 →</strong>
+            <span>行业方案</span><h3>广电记忆活化</h3><p>面向历史影像整理、审核和再创作的行业流程。</p><strong>打开行业工作流 →</strong>
           </Link>
         </div>
       </section>

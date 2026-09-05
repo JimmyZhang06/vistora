@@ -12,7 +12,7 @@ import {
   type RunStatus,
   type RunStep,
 } from "@/lib/api";
-import { Badge, StatePanel } from "@/components/page-heading";
+import { Badge, LoadingScaffold, StatePanel } from "@/components/page-heading";
 
 const statusLabels: Record<RunStatus, string> = {
   queued: "排队中",
@@ -441,7 +441,7 @@ export function RunDetail({ runId }: { runId: string }) {
     return (
       <div className="page run-detail-page" aria-busy="true">
         <h1 className="sr-only">项目执行状态</h1>
-        <div className="run-detail-skeleton" aria-label="正在加载项目执行状态"><div /><div /><div /></div>
+        <LoadingScaffold title="正在读取项目执行状态" description="正在同步步骤进度、审核记录与最终产物。" />
       </div>
     );
   }

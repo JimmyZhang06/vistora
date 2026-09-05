@@ -15,7 +15,7 @@ import {
   type SkillVersion,
   type ValidationReport,
 } from "@/lib/api";
-import { Badge, StatePanel } from "@/components/page-heading";
+import { Badge, LoadingScaffold, StatePanel } from "@/components/page-heading";
 import { UiSelect } from "@/components/ui-select";
 
 export type StudioView = "overview" | "editor" | "test" | "versions" | "usage" | "publish";
@@ -68,7 +68,7 @@ export function SkillStudio({ skillId, initialView }: { skillId: string; initial
     return () => { cancelled = true; };
   }, [adapter, skillId]);
 
-  if (loading) return <div className="page page--wide" aria-busy="true"><h1 className="sr-only" tabIndex={-1}>Skill 正在加载</h1><div className="loading-grid"><div className="loading-card" /><div className="loading-card" /><div className="loading-card" /></div></div>;
+  if (loading) return <div className="page page--wide"><h1 className="sr-only" tabIndex={-1}>Skill 正在加载</h1><LoadingScaffold title="正在打开 Skill 工作台" description="正在同步规格、版本、测试记录与使用数据。" /></div>;
   if (!detail) return <div className="page"><h1 className="sr-only" tabIndex={-1}>Skill 不可用</h1><StatePanel code="ERR" title="无法打开这个 Skill" description={error || "它可能已移出当前工作区。"} error><button className="button-secondary" type="button" onClick={() => void load()}>重试</button><Link className="button-ghost" href="/skills">返回列表</Link></StatePanel></div>;
 
   const basePath = `/skills/${detail.skill.id}`;

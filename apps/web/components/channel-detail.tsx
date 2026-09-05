@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { channelPlatformLabel } from "@/lib/channel-platforms";
 import { AccessibleTabs, type TabOption } from "@/components/accessible-tabs";
-import { Badge, PageHeading, StatePanel } from "@/components/page-heading";
+import { Badge, LoadingScaffold, PageHeading, StatePanel } from "@/components/page-heading";
 
 type DetailTab = "overview" | "content" | "brand" | "defaults" | "connections" | "activity";
 const tabLabel = "频道详情";
@@ -147,7 +147,7 @@ export function ChannelDetail({ channelId }: { channelId: string }) {
     setMessage("频道已归档。");
   }
 
-  if (loading) return <div className="page"><h1 className="sr-only" tabIndex={-1}>频道详情</h1><div className="channel-detail-skeleton" aria-label="正在加载频道详情" aria-live="polite" /></div>;
+  if (loading) return <div className="page"><h1 className="sr-only" tabIndex={-1}>频道详情</h1><LoadingScaffold title="正在读取频道详情" description="正在同步默认组合、历史运行与发布状态。" /></div>;
   if (error || !channel) return <div className="page"><h1 className="sr-only" tabIndex={-1}>频道详情</h1><StatePanel code="ERR" title="无法打开频道" description={error || "服务器没有返回频道记录。"} error><button className="button" type="button" onClick={() => void load()}>重新加载</button><Link className="button-ghost" href="/channels">返回频道列表</Link></StatePanel></div>;
 
   const displayStatus = statusPresentation(channel.status);

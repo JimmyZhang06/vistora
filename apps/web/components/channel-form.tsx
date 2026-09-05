@@ -12,7 +12,7 @@ import {
   type RunComposition,
 } from "@/lib/api";
 import { CHANNEL_PLATFORM_OPTIONS, normalizeChannelPlatform } from "@/lib/channel-platforms";
-import { PageHeading, StatePanel } from "@/components/page-heading";
+import { LoadingScaffold, PageHeading, StatePanel } from "@/components/page-heading";
 import { UiSelect } from "@/components/ui-select";
 
 const emptyComposition: RunComposition = { skillVersionId: "", pipelineVersionId: "", assetLibraryIds: [] };
@@ -161,7 +161,7 @@ export function ChannelForm({ channelId }: { channelId?: string }) {
     }));
   }
 
-  if (loading) return <div className="page"><h1 className="sr-only" tabIndex={-1}>{editing ? "编辑频道" : "新建频道"}</h1><div className="channel-form-skeleton" aria-label="正在加载频道表单" aria-live="polite" /></div>;
+  if (loading) return <div className="page"><h1 className="sr-only" tabIndex={-1}>{editing ? "编辑频道" : "新建频道"}</h1><LoadingScaffold title={editing ? "正在打开频道配置" : "正在准备频道配置"} description="正在读取平台、品牌资产与默认创作组合。" cards={2} /></div>;
   if (error) return <div className="page"><h1 className="sr-only" tabIndex={-1}>{editing ? "编辑频道" : "新建频道"}</h1><StatePanel code="ERR" title={editing ? "无法打开频道编辑器" : "无法创建频道"} description={error} error><button className="button" type="button" onClick={() => void load()}>重新加载</button><Link className="button-ghost" href="/channels">返回频道列表</Link></StatePanel></div>;
 
   const missingRequiredOptions = !options?.skills.length || !options.pipelines.length;
