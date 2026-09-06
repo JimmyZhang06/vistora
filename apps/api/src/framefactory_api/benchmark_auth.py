@@ -156,9 +156,10 @@ def _provider_request(
     return result
 
 
-def _fresh_platform_login(base_url: str) -> bool:
+def _fresh_platform_login(base_url: str) -> bool | None:
     """Check a fresh platform response, never cookie presence or a stale provider tab."""
     from playwright.sync_api import sync_playwright
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     provider = _provider_request(base_url, "GET", "/browser/managed/status", None)
     port = provider.get("cdp_port")
@@ -190,14 +191,21 @@ def _fresh_platform_login(base_url: str) -> bool:
                 return False
             if response is None or response.status >= 400:
                 raise ValueError("platform unavailable")
-            # Wait for actual account state from this fresh page. Missing/ambiguous state
-            # is an error, not proof that authentication succeeded or failed.
-            page.wait_for_function("""() => {
-                const state = window.__INITIAL_STATE__?.user?.userInfo;
-                const user = state?.value ?? state;
-                return typeof user?.guest === 'boolean'
-                    || Boolean(document.querySelector('.login-container'));
-            }""")
+            # Prefer quick, bounded state inference. If JS bootstrap is delayed,
+            # keep the flow in a checking state.
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const state = window.__INITIAL_STATE__?.user?.userInfo;
+                        const user = state?.value ?? state;
+                        const hasUserState = typeof user?.guest === 'boolean'
+                          || Boolean(document.querySelector('.login-container'));
+                        return hasUserState || !!user;
+                    }""",
+                    timeout=5_000,
+                )
+            except PlaywrightTimeoutError:
+                return None
             result = page.evaluate("""() => {
                 if (document.querySelector('.login-container')) return false;
                 const state = window.__INITIAL_STATE__?.user?.userInfo;
@@ -205,11 +213,19 @@ def _fresh_platform_login(base_url: str) -> bool:
                 if (user?.guest === true) return false;
                 const id = user?.userId ?? user?.user_id ?? '';
                 if (user?.guest === false && /^[0-9a-f]{24}$/.test(id)) return true;
+                const profile = window.__INITIAL_STATE__?.user?.userPageData?.basicInfo;
+                if (profile?.userId && /^[0-9a-f]{24}$/.test(profile.userId)) return true;
                 return null;
             }""")
             if type(result) is not bool:
-                raise ValueError("ambiguous platform login state")
+                # Ambiguous state is intentionally non-authoritative.
+                return None
             return result
+        except PlaywrightTimeoutError as exc:
+            del exc
+            # Missing selectors/state in this environment usually means initialization
+            # is still in progress; report checking instead of forcing login.
+            return None
         finally:
             if page is not None:
                 with contextlib.suppress(Exception):
@@ -220,7 +236,7 @@ def _fresh_platform_login(base_url: str) -> bool:
 
 
 Transport = Callable[[str, str, dict[str, Any] | None], Awaitable[dict[str, Any]]]
-PlatformCheck = Callable[[], Awaitable[bool]]
+PlatformCheck = Callable[[], Awaitable[bool | None]]
 
 
 class BenchmarkAuthService:
@@ -337,8 +353,13 @@ class BenchmarkAuthService:
             if now - self._last_auth_start < 3:
                 return self._view("awaiting_scan" if self._qr else "checking")
             self._last_auth_start = now
-        if start or self._logged_in is None or now - self._last_check >= 3:
+        if start or self._last_check == 0 or now - self._last_check >= 3:
             checked = await self._platform_check()
+            if checked is None:
+                self._logged_in = None
+                self._last_check = time.monotonic()
+                self._checked_at = datetime.now(UTC)
+                return self._view("checking")
             if type(checked) is not bool:
                 return self._view("error", error_code="BENCHMARK_AUTH_STATUS_INVALID")
             self._logged_in = checked
@@ -354,6 +375,8 @@ class BenchmarkAuthService:
                 return self._view("expired")
         if self._qr:
             return self._view("awaiting_scan")
+        if self._logged_in is None and not self._task_id and not self._request_id:
+            return self._view("checking")
         if self._task_id:
             if start:
                 return await self._finish_qr_operation()

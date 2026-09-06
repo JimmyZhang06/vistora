@@ -260,6 +260,26 @@ async def test_pending_qr_reuses_post_to_consume_and_does_not_trust_provider_log
 
 
 @pytest.mark.asyncio
+async def test_provider_login_claim_requires_platform_verification_before_authorized():
+    provider = FixtureProvider()
+
+    async def two_step_request(method, path, body):
+        provider.calls.append((method, path, body))
+        if len(provider.calls) == 1:
+            return qr_task(result={"is_logged_in": True})
+        return qr_task(result={"is_logged_in": False})
+
+    service = BenchmarkAuthService(
+        "http://127.0.0.1:5556", transport=two_step_request, platform_check=provider.check
+    )
+    assert (await service.status(start=True)).state == "checking"
+    assert (await service.status()).state == "login_required"
+    provider.logged_in = True
+    service._last_check = 0
+    assert (await service.status()).state == "authorized"
+
+
+@pytest.mark.asyncio
 async def test_pending_timeout_does_not_duplicate_uncertain_qr_operation():
     provider = FixtureProvider()
     provider.task = qr_task(status="running", result=None)
@@ -405,6 +425,25 @@ async def test_post_completes_slow_qr_and_consumes_without_get_side_effects():
     assert len({call[2]["request_id"] for call in provider.calls}) == 1
 
 
+@pytest.mark.asyncio
+async def test_indefinite_platform_initialize_state_stays_checking():
+    checks = 0
+
+    async def never_ready():
+        nonlocal checks
+        checks += 1
+        return None
+
+    service = BenchmarkAuthService(
+        "http://127.0.0.1:5556",
+        transport=lambda *_args, **_kwargs: asyncio.sleep(0, result={"unexpected": "provider_called"}),
+        platform_check=never_ready,
+    )
+    assert (await service.status()).state == "checking"
+    assert (await service.status(start=False)).state == "checking"
+    assert checks == 1
+
+
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -437,7 +476,7 @@ def test_fresh_platform_check_uses_new_page_and_closes_it(monkeypatch, url, stat
         set_default_timeout=lambda timeout: None,
         route=lambda pattern, handler: calls.append("block-images"),
         goto=lambda target, **kwargs: calls.append(target) or SimpleNamespace(status=200),
-        wait_for_function=lambda script: None,
+        wait_for_function=lambda script, timeout=None: None,
         evaluate=lambda script: state,
         close=lambda: calls.append("page-closed"),
     )
@@ -467,7 +506,7 @@ def test_fresh_platform_check_uses_new_page_and_closes_it(monkeypatch, url, stat
             "cookie_present": True,
         },
     )
-    if expected is None:
+    if expected is None and url.startswith("https://evil.example"):
         with pytest.raises(ValueError):
             _fresh_platform_login("http://127.0.0.1:5556")
     else:
