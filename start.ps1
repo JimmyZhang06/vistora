@@ -1,3 +1,4 @@
+#requires -Version 7.2
 <#
   Vistora local production-like launcher.
 
@@ -7,6 +8,7 @@
     .\start.ps1 -NoInstall
     .\start.ps1 -BrowserCapture
     .\start.ps1 -BenchmarkAnalysis
+    .\start.ps1 -Xiaohongshu
     .\start.ps1 -FrontendOnly
     .\start.ps1 -WebPort 4180
     .\start.ps1 -NoDockerRepair
@@ -21,8 +23,13 @@ param(
     [switch]$NoInstall,
     [switch]$BrowserCapture,
     [switch]$BenchmarkAnalysis,
+    [switch]$Xiaohongshu,
+    [switch]$ExternalXhsBrowser,
+    [ValidateRange(1, 65535)]
+    [int]$XhsBrowserPort = 5556,
     [switch]$FrontendOnly,
     [switch]$NoDockerRepair,
+    [switch]$Restart,
     [ValidateRange(1, 65535)]
     [int]$ApiPort = 8200,
     [ValidateRange(1, 65535)]
@@ -33,6 +40,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$enableXhs = $Xiaohongshu -or $BenchmarkAnalysis
+if ($FrontendOnly -and $enableXhs) {
+    throw "小红书采集需要 API，不能与 -FrontendOnly 同时使用"
+}
+if ($ExternalXhsBrowser -and -not $enableXhs) {
+    throw "-ExternalXhsBrowser 需要 -Xiaohongshu 或 -BenchmarkAnalysis"
+}
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtimeRoot = Join-Path $projectRoot "var\runtime"
 $logRoot = Join-Path $projectRoot "var\logs"
@@ -57,7 +71,10 @@ $s3AccessKey = "vistora"
 $s3SecretKey = "vistora-local-only"
 if ([string]::IsNullOrWhiteSpace($ProviderEnvFile)) {
     $ProviderEnvFile = Join-Path $projectRoot "var\secrets\worker-provider.env"
+} elseif (-not [IO.Path]::IsPathRooted($ProviderEnvFile)) {
+    $ProviderEnvFile = Join-Path $projectRoot $ProviderEnvFile
 }
+$ProviderEnvFile = [IO.Path]::GetFullPath($ProviderEnvFile)
 $providerEnvironmentKeys = @(
     "FRAMEFACTORY_OPENAI_BASE_URL",
     "FRAMEFACTORY_OPENAI_API_KEY",
@@ -112,6 +129,15 @@ $providerEnvironmentKeys = @(
     "FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL"
 )
 
+. (Join-Path $projectRoot 'tools/local-launcher.ps1')
+$launcherLease = $null
+$environmentBefore = @{}
+Get-ChildItem Env: | ForEach-Object { $environmentBefore[$_.Name] = $_.Value }
+try {
+$launcherLease = Open-LauncherLease -RuntimeRoot $runtimeRoot
+$launchReady = $false
+$launchConfig = $null
+
 function Write-Info { param([string]$Message) Write-Host "[i] $Message" -ForegroundColor Cyan }
 function Write-Good { param([string]$Message) Write-Host "[OK] $Message" -ForegroundColor Green }
 function Stop-WithError {
@@ -133,7 +159,8 @@ function Invoke-Checked {
         [string[]]$Arguments,
         [string]$FailureMessage,
         [int]$TimeoutSeconds = 0,
-        [switch]$CaptureOutput
+        [switch]$CaptureOutput,
+        [switch]$QuietFailure
     )
     if ($TimeoutSeconds -gt 0) {
         $command = Get-Command $FilePath -ErrorAction Stop
@@ -162,7 +189,7 @@ function Invoke-Checked {
             $stdout = $stdoutTask.GetAwaiter().GetResult()
             $stderr = $stderrTask.GetAwaiter().GetResult()
             if ($process.ExitCode -ne 0) {
-                if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                if (-not $QuietFailure -and -not [string]::IsNullOrWhiteSpace($stderr)) {
                     Write-Host $stderr.TrimEnd() -ForegroundColor DarkRed
                 }
                 throw "$FailureMessage（退出码 $($process.ExitCode)）"
@@ -323,6 +350,13 @@ function Wait-Http {
     )
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
         if (Test-Http $Url) {
+            if ($ProcessId) {
+                $listener = Get-ListeningProcessId -Port ([uri]$Url).Port
+                $owned = @($ProcessId) + @(Get-DescendantProcessIds -RootProcessId $ProcessId)
+                if ($null -eq $listener -or $listener -notin $owned) {
+                    throw "$Name 的地址被其他进程响应，拒绝误报就绪。"
+                }
+            }
             Write-Good "$Name 已就绪"
             return
         }
@@ -351,12 +385,7 @@ function Assert-PortAvailableOrHealthy {
     param([int]$Port, [string]$HealthUrl, [string]$Name, [switch]$RequireDurableApi)
     $owner = Get-ListeningProcessId -Port $Port
     if ($null -eq $owner) { return $false }
-    $healthy = if ($RequireDurableApi) { Test-DurableApi } else { Test-Http $HealthUrl }
-    if ($healthy) {
-        Write-Good "$Name 已在端口 $Port 运行，本次复用"
-        return $true
-    }
-    Stop-WithError "端口 $Port 已由 PID $owner 占用，但不是可用的 $Name"
+    throw "$Name 端口 $Port 已由 PID $owner 占用；禁止复用外部进程。"
 }
 
 function Start-ManagedProcess {
@@ -378,9 +407,13 @@ function Start-ManagedProcess {
             Move-Item -LiteralPath $log -Destination (Join-Path $archiveRoot "$leaf.$archiveStamp$extension")
         }
     }
-    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments `
-        -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $quotedArguments = @($Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ })
+    $savedHandles = @(Suspend-StandardHandleInheritance)
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `
+            -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    } finally { Restore-StandardHandleInheritance -Handles $savedHandles }
     $tracked = Get-Process -Id $process.Id -ErrorAction Stop
     return [ordered]@{
         name = $Name
@@ -397,20 +430,80 @@ if (Test-Path -LiteralPath $statePath) {
     $live = @($previous.processes | Where-Object {
         $candidate = Get-Process -Id ([int]$_.pid) -ErrorAction SilentlyContinue
         if (-not $candidate) { return $false }
-        if ($null -ne $_.started_at_filetime_utc) {
-            return [Math]::Abs(
-                $candidate.StartTime.ToFileTimeUtc() - [long]$_.started_at_filetime_utc
-            ) -le [TimeSpan]::TicksPerSecond * 2
-        }
-        $actual = $candidate.StartTime
-        $recorded = [DateTime]::Parse([string]$_.started_at_utc)
-        return [Math]::Abs(($actual - $recorded).TotalSeconds) -le 2
+        return Test-LauncherProcess $_
     })
     if ($live.Count -gt 0) {
-        Stop-WithError "已有 start.ps1 管理的进程仍在运行，请先执行 .\stop.ps1"
+        if ($previous.project_root -ne $projectRoot) {
+            throw '进程记录不属于当前项目，拒绝操作。'
+        }
+        if ($Restart) {
+            # stop.ps1 uses the same lease; invoke its verified stop path only
+            # after releasing ours, then acquire it again before any mutation.
+            $launcherLease.Dispose()
+            $launcherLease = $null
+            & (Join-Path $projectRoot 'stop.ps1')
+            if ($LASTEXITCODE -ne 0) { throw '停止旧实例失败，未启动新实例。' }
+            $launcherLease = Open-LauncherLease -RuntimeRoot $runtimeRoot
+            if (Test-Path -LiteralPath $statePath) {
+                throw '停止后发现新的运行记录，请重试以避免覆盖并发启动。'
+            }
+        } else {
+            $config = $previous.launch_config
+            $stamp = Get-LauncherSourceStamp -ProjectRoot $projectRoot -ProviderFile $ProviderEnvFile
+            $sameConfig = $config -and $previous.ready -and
+                $config.frontend_only -eq [bool]$FrontendOnly -and
+                $config.browser_capture -eq [bool]$BrowserCapture -and
+                $config.xiaohongshu -eq [bool]$enableXhs -and
+                $config.benchmark_analysis -eq [bool]$BenchmarkAnalysis -and
+                $config.external_xhs -eq [bool]$ExternalXhsBrowser -and
+                $config.database_name -eq $DatabaseName -and
+                $config.provider_file -eq $ProviderEnvFile -and
+                $previous.source_stamp -eq $stamp -and
+                (-not $PSBoundParameters.ContainsKey('ApiPort') -or $config.api_port -eq $ApiPort) -and
+                (-not $PSBoundParameters.ContainsKey('WebPort') -or $config.web_port -eq $WebPort) -and
+                (-not $PSBoundParameters.ContainsKey('XhsBrowserPort') -or $config.xhs_port -eq $XhsBrowserPort)
+            if (-not $sameConfig -or $live.Count -ne @($previous.processes).Count) {
+                throw '已有实例的代码、配置或进程状态不一致，请使用相同参数加 -Restart 精准重启。'
+            }
+            foreach ($record in $live) {
+                $url = switch ($record.name) {
+                    'web' { "http://127.0.0.1:$($config.web_port)" }
+                    'api' { "http://127.0.0.1:$($config.api_port)/readyz" }
+                    'xiaohongshu-browser' { "http://127.0.0.1:$($config.xhs_port)/browser/managed/status" }
+                }
+                if ($url) { Wait-Http -Url $url -Name $record.name -ProcessId $record.pid -Attempts 1 }
+            }
+            Write-Good "Vistora 已在运行：http://127.0.0.1:$($config.web_port)/create（已核对配置、进程和健康状态）"
+            if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$($config.web_port)/create" }
+            return
+        }
     }
-    Remove-Item -LiteralPath $statePath
+    if (Test-Path -LiteralPath $statePath) { Remove-Item -LiteralPath $statePath }
 }
+
+$WebPort = Resolve-LauncherPort -Preferred $WebPort -Explicit $PSBoundParameters.ContainsKey('WebPort') -Name 'Web'
+if (-not $FrontendOnly) {
+    $ApiPort = Resolve-LauncherPort -Preferred $ApiPort -Explicit $PSBoundParameters.ContainsKey('ApiPort') -Name 'API' -Reserved @($WebPort)
+}
+if ($enableXhs -and -not $ExternalXhsBrowser) {
+    $XhsBrowserPort = Resolve-LauncherPort -Preferred $XhsBrowserPort -Explicit $PSBoundParameters.ContainsKey('XhsBrowserPort') -Name '小红书浏览器' -Reserved @($WebPort, $ApiPort)
+}
+if ($BrowserCapture -and -not (Test-LocalPortBindable $browserProxyPort)) {
+    throw "截图代理端口 $browserProxyPort 不可用。"
+}
+$apiUrl = "http://127.0.0.1:$ApiPort"
+$webUrl = "http://127.0.0.1:$WebPort"
+$launchConfig = [ordered]@{
+    api_port=$ApiPort; web_port=$WebPort; xhs_port=$XhsBrowserPort
+    frontend_only=[bool]$FrontendOnly; browser_capture=[bool]$BrowserCapture
+    xiaohongshu=[bool]$enableXhs; benchmark_analysis=[bool]$BenchmarkAnalysis
+    external_xhs=[bool]$ExternalXhsBrowser; database_name=$DatabaseName; provider_file=$ProviderEnvFile
+}
+$sourceStamp = Get-LauncherSourceStamp -ProjectRoot $projectRoot -ProviderFile $ProviderEnvFile
+$env:PYTHONPATH = (Join-Path $projectRoot 'apps/api/src') + [IO.Path]::PathSeparator + (Join-Path $projectRoot 'services/worker')
+$env:NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL = $apiUrl
+# Local rendering does not need Cloudflare's optional geolocation metadata fetch.
+$env:CLOUDFLARE_CF_FETCH_ENABLED = 'false'
 
 # Vinext allows only one development server per app directory. Detect a manual
 # or orphaned server before starting infrastructure so the launcher fails fast
@@ -434,9 +527,13 @@ try {
 Require-Command -Name "node" -InstallHint "请安装 Node.js 22.13 或更高版本。"
 Require-Command -Name "npm" -InstallHint "npm 应随 Node.js 一起安装。"
 
-$nodeMajor = [int]((& node -p "process.versions.node.split('.')[0]").Trim())
-if ($nodeMajor -lt 22) {
-    Stop-WithError "需要 Node.js 22 或更高版本，当前为 $(& node -v)"
+if ([version]((& node -p "process.versions.node").Trim()) -lt [version]'22.13.0') {
+    Stop-WithError "需要 Node.js 22.13 或更高版本，当前为 $(& node -v)"
+}
+$nodeExecutable = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+$vinextCli = Join-Path $webRoot 'node_modules/vinext/dist/cli.js'
+if ($NoInstall -and -not (Test-Path -LiteralPath $vinextCli -PathType Leaf)) {
+    throw 'Web 依赖缺失，请移除 -NoInstall 后重试以安装锁文件中的依赖。'
 }
 
 function Wait-Tcp {
@@ -503,9 +600,7 @@ function Stop-ManagedProcesses {
     foreach ($entry in $records) {
         $process = Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue
         if (-not $process) { continue }
-        $sameProcess = [Math]::Abs(
-            $process.StartTime.ToFileTimeUtc() - [long]$entry.started_at_filetime_utc
-        ) -le [TimeSpan]::TicksPerSecond * 2
+        $sameProcess = Test-LauncherProcess $entry
         if (-not $sameProcess) { continue }
         if (Get-Command "taskkill.exe" -ErrorAction SilentlyContinue) {
             & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
@@ -528,9 +623,13 @@ function Save-ManagedProcessState {
     $state = [ordered]@{
         project_root = $projectRoot
         created_at_utc = [DateTime]::UtcNow.ToString("o")
+        schema_version = 2
+        ready = $launchReady
+        launch_config = $launchConfig
+        source_stamp = $sourceStamp
         processes = @($Processes)
     }
-    $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-LauncherState -Path $statePath -State $state
 }
 
 function Move-StaleDockerSocketDirectory {
@@ -588,9 +687,6 @@ function Repair-DockerDesktopStartup {
         "com.docker.build",
         "com.docker.proxy"
     ) -ErrorAction SilentlyContinue)
-    if ($dockerProcesses.Count -gt 0) {
-        throw "$OriginalFailure。Docker Desktop 进程仍在运行，退出 Docker Desktop 后重试"
-    }
 
     $localAppData = [Environment]::GetFolderPath(
         [Environment+SpecialFolder]::LocalApplicationData
@@ -604,7 +700,7 @@ function Repair-DockerDesktopStartup {
         [ordered]@{ Path = Join-Path $localAppData "docker-secrets-engine"; Parent = $localAppData }
     )
     $backups = @()
-    foreach ($entry in $socketPaths) {
+    foreach ($entry in $(if ($dockerProcesses.Count -eq 0) { $socketPaths } else { @() })) {
         $backup = Move-StaleDockerSocketDirectory -Path $entry.Path `
             -ExpectedParent $entry.Parent
         if ($backup) {
@@ -613,26 +709,38 @@ function Repair-DockerDesktopStartup {
         }
     }
 
-    Write-Info "尝试启动 Docker Desktop"
-    Invoke-Checked -FilePath "docker" -Arguments @("desktop", "start") `
-        -FailureMessage "Docker Desktop 自动启动失败" -TimeoutSeconds 90
-    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    if ($dockerProcesses.Count -eq 0) {
+        # Launch independently: timing out `docker desktop start` with tree-kill
+        # can kill the backend too and leave stale AF_UNIX sockets behind.
+        $dockerBin = (Get-Command docker -CommandType Application | Select-Object -First 1).Source
+        $desktopRoot = Split-Path (Split-Path (Split-Path $dockerBin -Parent) -Parent) -Parent
+        $desktopExe = Join-Path $desktopRoot 'Docker Desktop.exe'
+        if (-not (Test-Path -LiteralPath $desktopExe -PathType Leaf)) {
+            throw '找不到已安装的 Docker Desktop 程序，请从桌面启动 Docker Desktop 后重试。'
+        }
+        Write-Info "启动 Docker Desktop，等待实际引擎就绪"
+        Start-Process -FilePath $desktopExe -WorkingDirectory $desktopRoot -WindowStyle Hidden | Out-Null
+    } else {
+        Write-Info 'Docker Desktop 正在运行，等待实际引擎就绪'
+    }
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
         try {
             $serverVersion = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
                 "info", "--format", "{{.ServerVersion}}"
-            ) -FailureMessage "Docker Engine 尚未就绪" -TimeoutSeconds 10 -CaptureOutput)).Trim()
+            ) -FailureMessage "Docker Engine 尚未就绪" -TimeoutSeconds 3 -CaptureOutput -QuietFailure)).Trim()
             if (-not [string]::IsNullOrWhiteSpace($serverVersion)) {
                 Write-Good "Docker Desktop 已恢复：$serverVersion"
                 return
             }
         } catch {
-            if ($attempt -eq 11) {
+            if ($attempt -eq 29) {
                 $backupHint = if ($backups.Count -gt 0) {
                     "；socket 备份：$($backups -join ', ')"
                 } else { "" }
-                throw "Docker Desktop 自动修复后仍未就绪$backupHint"
+                throw "Docker Desktop 引擎仍未就绪。请查看 $dockerParent/log/host/com.docker.backend.exe.log$backupHint"
             }
-            Start-Sleep -Seconds 2
+            if ($attempt % 5 -eq 0) { Write-Info '等待 Docker Engine...' }
+            Start-Sleep -Seconds 1
         }
     }
 }
@@ -717,13 +825,7 @@ if ($FrontendOnly) {
         Stop-WithError "-FrontendOnly 不能与 -BrowserCapture 同时使用"
     }
     if (-not $NoInstall) {
-        Write-Info "按锁文件校验 Web 依赖"
-        Push-Location $webRoot
-        try {
-            Invoke-Checked -FilePath "npm" -Arguments @("ci") -FailureMessage "Web 依赖安装失败"
-        } finally {
-            Pop-Location
-        }
+        Install-WebDependencies
     }
 
     $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
@@ -734,8 +836,8 @@ if ($FrontendOnly) {
         $webReused = Assert-PortAvailableOrHealthy -Port $WebPort -HealthUrl $webUrl -Name "Web"
         if (-not $webReused) {
             Write-Info "以仅前端模式启动 Web"
-            $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
-                "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$WebPort"
+            $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath $nodeExecutable -Arguments @(
+                $vinextCli, "dev", "--hostname", "127.0.0.1", "--port", "$WebPort"
             ) -WorkingDirectory $webRoot
             $managed += $webProcessRecord
             Save-ManagedProcessState -Processes $managed
@@ -745,6 +847,7 @@ if ($FrontendOnly) {
         } else {
             Wait-Http -Url $webUrl -Name "Web"
         }
+        $launchReady = $true
         Save-ManagedProcessState -Processes $managed
     } catch {
         Stop-ManagedProcesses -Processes $managed
@@ -769,11 +872,20 @@ $dockerContext = ([string](Invoke-Checked -FilePath "docker" -Arguments @(
 if ($dockerContext -ne "desktop-linux") {
     Stop-WithError "当前 Docker context 为 '$dockerContext'；为避免误操作远程资源，请切换到 desktop-linux"
 }
+if ($env:DOCKER_HOST -or $env:DOCKER_TLS_VERIFY -or $env:DOCKER_CERT_PATH) {
+    throw '检测到 Docker 连接覆盖变量，请先移除 DOCKER_HOST / DOCKER_TLS_VERIFY / DOCKER_CERT_PATH 后重试，避免连接错误的引擎。'
+}
+$dockerEndpoint = ([string](Invoke-Checked -FilePath 'docker' -Arguments @(
+    'context', 'inspect', 'desktop-linux', '--format', '{{.Endpoints.docker.Host}}'
+) -FailureMessage '无法验证本地 Docker 引擎地址' -TimeoutSeconds 20 -CaptureOutput)).Trim()
+if ($dockerEndpoint -ne 'npipe:////./pipe/dockerDesktopLinuxEngine') {
+    throw 'desktop-linux 未指向本机 Docker Desktop Linux 引擎，拒绝启动持久化服务。'
+}
 
 try {
     Invoke-Checked -FilePath "docker" -Arguments @("info", "--format", "{{.ServerVersion}}") `
         -FailureMessage "Docker Desktop 未运行、引擎未就绪或当前用户无法访问 Docker" `
-        -TimeoutSeconds 20
+        -TimeoutSeconds 20 -QuietFailure
 } catch {
     try {
         Repair-DockerDesktopStartup -OriginalFailure $_.Exception.Message
@@ -833,16 +945,12 @@ if (-not $NoInstall) {
         ) -FailureMessage "Playwright Chromium 安装失败"
     }
 
-    Write-Info "按锁文件校验 Web 依赖"
-    Push-Location $webRoot
-    try {
-        Invoke-Checked -FilePath "npm" -Arguments @("ci") -FailureMessage "Web 依赖安装失败"
-    } finally {
-        Pop-Location
-    }
+    Install-WebDependencies
 }
 
 $env:POSTGRES_DB = $databaseName
+$env:PERSISTENCE_BIND_ADDRESS = "127.0.0.1"
+$env:FRAMEFACTORY_S3_CORS_ALLOW_ORIGIN = "$webUrl,http://localhost:$WebPort"
 $env:POSTGRES_USER = $databaseUser
 $env:POSTGRES_PASSWORD = $databasePassword
 $env:POSTGRES_PORT = "$postgresPort"
@@ -911,13 +1019,28 @@ $env:NEXT_PUBLIC_FRAMEFACTORY_API_URL = $apiUrl
 
 Clear-ProviderEnvironment
 Import-ProviderEnvironment -Path $ProviderEnvFile
+if ($enableXhs) {
+    $env:NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL = $apiUrl
+    # Account report history shares the durable research store. Opening it does
+    # not enqueue analysis; interrupted jobs still require explicit user retry.
+    $env:FRAMEFACTORY_BENCHMARK_JOBS_DIR = Join-Path $projectRoot "var\benchmark-analysis"
+    if ($ExternalXhsBrowser) {
+        if ([string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL)) {
+            throw "外部浏览器模式需要配置 FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL"
+        }
+    } else {
+        $env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL = "http://127.0.0.1:$XhsBrowserPort"
+        if (-not $NoInstall -and -not $BrowserCapture) {
+            Invoke-Checked -FilePath $venvPython -Arguments @(
+                "-m", "playwright", "install", "chromium"
+            ) -FailureMessage "小红书采集浏览器安装失败"
+        }
+    }
+}
 if ($BenchmarkAnalysis) {
     # This mode starts research routes in this API. Override a stale .env.local
     # research URL so the Web cannot keep targeting a previous standalone API.
     $env:NEXT_PUBLIC_FRAMEFACTORY_BENCHMARK_API_URL = $apiUrl
-    if ([string]::IsNullOrWhiteSpace($env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL)) {
-        throw "Benchmark analysis requires FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL pointing to a running local browser provider. Connect Xiaohongshu from /benchmarks after startup. See docs/sop/benchmark-video-analysis.md."
-    }
     if (-not $NoInstall) {
         Invoke-Checked -FilePath $venvPython -Arguments @(
             "-m", "pip", "install", "--require-hashes", "-r",
@@ -927,7 +1050,9 @@ if ($BenchmarkAnalysis) {
     $env:FRAMEFACTORY_BENCHMARK_JOBS_DIR = Join-Path $projectRoot "var\benchmark-analysis"
     $env:FRAMEFACTORY_BENCHMARK_PROVIDER_ENV_FILE = [System.IO.Path]::GetFullPath($ProviderEnvFile)
 } else {
-    Remove-Item Env:FRAMEFACTORY_BENCHMARK_JOBS_DIR -ErrorAction SilentlyContinue
+    if (-not $enableXhs) {
+        Remove-Item Env:FRAMEFACTORY_BENCHMARK_JOBS_DIR -ErrorAction SilentlyContinue
+    }
     Remove-Item Env:FRAMEFACTORY_BENCHMARK_PROVIDER_ENV_FILE -ErrorAction SilentlyContinue
 }
 if (
@@ -1152,6 +1277,19 @@ if ($apiReused) {
 }
 $webReused = Assert-PortAvailableOrHealthy -Port $WebPort -HealthUrl $webUrl -Name "Web"
 try {
+    if ($enableXhs -and -not $ExternalXhsBrowser) {
+        if ($null -ne (Get-ListeningProcessId -Port $XhsBrowserPort)) {
+            throw "小红书浏览器端口 $XhsBrowserPort 已占用；请选择 -XhsBrowserPort，或显式使用 -ExternalXhsBrowser。不自动复用未知服务。"
+        }
+        Write-Info "启动项目自带的小红书采集浏览器，登录档案保留在 var/browser/xiaohongshu"
+        $xhsProcess = Start-ManagedProcess -Name "xiaohongshu-browser" -FilePath $venvPython -Arguments @(
+            "-m", "framefactory_api.xhs_browser", "--port", "$XhsBrowserPort"
+        ) -WorkingDirectory $projectRoot
+        $managed += $xhsProcess
+        Save-ManagedProcessState -Processes $managed
+        Wait-Http -Url "$env:FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL/browser/managed/status" `
+            -Name "小红书采集浏览器" -ProcessId $xhsProcess.pid
+    }
     Write-Info "启动 Control API"
     $apiProcessRecord = Start-ManagedProcess -Name "api" -FilePath $venvPython -Arguments @(
         "-m", "uvicorn", "framefactory_api.main:app", "--host", "127.0.0.1", "--port", "$ApiPort"
@@ -1163,7 +1301,7 @@ try {
     Assert-FullAiApiConfiguration -ExpectedReady $fullAiExpectedReady `
         -ExpectedProvider $env:FRAMEFACTORY_FULL_AI_PROVIDER_NAME `
         -ExpectedModel $env:FRAMEFACTORY_FULL_AI_MODEL_ID
-    if ($BenchmarkAnalysis) {
+    if ($enableXhs) {
         Invoke-Checked -FilePath $venvPython -Arguments @(
             (Join-Path $projectRoot "tools\verify_benchmark_runtime.py"),
             "--api-url", $apiUrl, "--web-origin", $webUrl
@@ -1222,8 +1360,8 @@ try {
 
     if (-not $webReused) {
         Write-Info "启动 Web"
-        $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath "npm.cmd" -Arguments @(
-            "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$WebPort"
+        $webProcessRecord = Start-ManagedProcess -Name "web" -FilePath $nodeExecutable -Arguments @(
+            $vinextCli, "dev", "--hostname", "127.0.0.1", "--port", "$WebPort"
         ) -WorkingDirectory $webRoot
         $managed += $webProcessRecord
         Save-ManagedProcessState -Processes $managed
@@ -1234,6 +1372,15 @@ try {
         Wait-Http -Url $webUrl -Name "Web"
     }
 
+    foreach ($record in $managed) {
+        if (-not (Test-LauncherProcess $record)) {
+            throw "$($record.name) 在启动期间退出，请查看 $logRoot。"
+        }
+    }
+    if ((Get-LauncherSourceStamp -ProjectRoot $projectRoot -ProviderFile $ProviderEnvFile) -ne $sourceStamp) {
+        throw '启动期间源码或配置发生变化，请重试以确保所有进程使用同一版本。'
+    }
+    $launchReady = $true
     Save-ManagedProcessState -Processes $managed
 } catch {
     Restore-WorkerProviderSecrets -Secrets $workerProviderSecrets
@@ -1249,4 +1396,16 @@ Write-Host "日志：$logRoot"
 Write-Host "停止：.\stop.ps1（保留数据库）；.\stop.ps1 -Infrastructure（同时停止基础设施）"
 if (-not $NoBrowser) {
     Start-Process "$webUrl/create"
+}
+} catch {
+    Write-Host "[X] $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+} finally {
+    $managedEnvironment = '^(FRAMEFACTORY_|NEXT_PUBLIC_FRAMEFACTORY_|POSTGRES_|REDIS_PORT$|MINIO_|PERSISTENCE_BIND_ADDRESS$|PYTHONPATH$|CLOUDFLARE_CF_FETCH_ENABLED$)'
+    Get-ChildItem Env: | Where-Object { $_.Name -match $managedEnvironment } |
+        ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue }
+    foreach ($name in $environmentBefore.Keys | Where-Object { $_ -match $managedEnvironment }) {
+        Set-Item -LiteralPath "Env:$name" -Value $environmentBefore[$name]
+    }
+    if ($null -ne $launcherLease) { $launcherLease.Dispose() }
 }

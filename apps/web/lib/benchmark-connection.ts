@@ -50,13 +50,13 @@ export class BenchmarkConnectionFlow {
     clearTimeout(this.timer);
   }
 
-  async check() {
+  async check(resumeCollection = false) {
     if (this.disposed || this.view.active || this.view.busy || !this.visible) return;
-    await this.fetch(false);
+    await this.fetch(false, resumeCollection);
   }
 
   async start() {
-    if (this.disposed || this.view.active || this.view.busy || !this.visible) return;
+    if (this.disposed || this.view.active || !this.visible) return;
     this.deadline = this.now() + 180_000;
     this.failures = 0;
     this.publish({ active: true, paused: false, notice: "", connection: null });
@@ -110,7 +110,7 @@ export class BenchmarkConnectionFlow {
     }, Math.min(delaySeconds * 1000, this.deadline - this.now()));
   }
 
-  private async fetch(createQr: boolean) {
+  private async fetch(createQr: boolean, resumeCollection = false) {
     this.stopRequest();
     const epoch = this.epoch;
     const request = new AbortController();
@@ -145,7 +145,7 @@ export class BenchmarkConnectionFlow {
     if (wasActive && connection.state !== "authorized" && this.expired()) return;
     const active = wasActive && (connection.state === "checking" || connection.state === "awaiting_scan");
     this.publish({ connection: { ...connection, qrImageDataUrl: active ? connection.qrImageDataUrl : null }, active, notice: "" });
-    if (wasActive && connection.state === "authorized") this.onConnected();
+    if ((wasActive || resumeCollection) && connection.state === "authorized") this.onConnected();
     if (active) this.schedule(connection.retryAfterSeconds);
   }
 }

@@ -26,7 +26,7 @@ def main() -> None:
         while True:
             time.sleep(1)
 
-    def new_page():
+    def request(*_args, **_kwargs):
         # Mimic Playwright's newly spawned Node driver in this helper's tree.
         subprocess.Popen(
             [sys.executable, __file__, "heartbeat", driver_marker],
@@ -40,13 +40,15 @@ def main() -> None:
                 time.sleep(0.02)
             Path(marker).write_text("started", encoding="utf-8")
         return SimpleNamespace(
-            url="https://www.xiaohongshu.com/explore", set_default_timeout=lambda _: None,
-            route=lambda *_: None, goto=lambda *_a, **_k: SimpleNamespace(status=200),
-            wait_for_function=lambda *_: None, evaluate=lambda _: True,
-            close=hang if stage == "close" else lambda: None,
+            url="https://www.xiaohongshu.com/explore", status=200, headers={},
+            body=lambda: (b'<script>window.__INITIAL_STATE__={"user":{"userInfo":'
+                          b'{"guest":false,"userId":"222222222222222222222222"}}}</script>'),
+            dispose=hang if stage == "close" else lambda: None,
         )
 
-    browser = SimpleNamespace(contexts=[SimpleNamespace(new_page=new_page)], close=lambda: None)
+    browser = SimpleNamespace(
+        contexts=[SimpleNamespace(request=SimpleNamespace(get=request))], close=lambda: None,
+    )
 
     class Playwright:
         def __enter__(self):

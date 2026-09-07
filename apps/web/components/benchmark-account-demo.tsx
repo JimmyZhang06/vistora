@@ -9,9 +9,10 @@ import {
   type BenchmarkPublicMetric,
 } from "@/lib/api";
 import { Badge, LoadingScaffold, PageHeading, StatePanel } from "@/components/page-heading";
+import { UiSelect } from "@/components/ui-select";
 
 import { BenchmarkVideoAnalysisPanel } from "@/components/benchmark-video-analysis";
-import { BenchmarkConnectionPanel } from "@/components/benchmark-connection";
+import { BenchmarkConnectionPanel, type BenchmarkConnectionHandle } from "@/components/benchmark-connection";
 import { benchmarkProfile, benchmarkRecoveryMessage, refreshedBenchmarkSelection, verifiedBenchmarkNote } from "@/lib/benchmark-recovery";
 
 const SEED_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/5a8cf39111be10466d285d6b";
@@ -92,6 +93,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceError, setSourceError] = useState("");
   const [loading, setLoading] = useState(!archivedReport);
+  const [interactive, setInteractive] = useState(false);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState("");
   const [identityLoading, setIdentityLoading] = useState(false);
@@ -99,6 +101,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
   const [savedVideo, setSavedVideo] = useState<SavedVideoSelection | null>(null);
   const [connectionRequired, setConnectionRequired] = useState(false);
   const pendingConnection = useRef<PendingConnectionOperation | null>(null);
+  const connectionPanel = useRef<BenchmarkConnectionHandle | null>(null);
   const profileRequest = useRef(0);
   const sourceRequest = useRef(0);
   const profileController = useRef<AbortController | null>(null);
@@ -106,8 +109,9 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
   const identityController = useRef<AbortController | null>(null);
   const identityLastStarted = useRef(0);
 
-  const load = useCallback(async (requestedUrl: string, preferredNoteId?: string) => {
+  const load = useCallback(async (requestedUrl: string, preferredNoteId?: string, refreshIdentity = false) => {
     pendingConnection.current = null;
+    setConnectionRequired(false);
     const requestId = ++profileRequest.current;
     const requestedProfile = benchmarkProfile(requestedUrl);
     const saved = savedVideoSelection();
@@ -132,6 +136,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
     const result = await adapter.generateBenchmarkAccountReport({
       platform: "xiaohongshu",
       profileUrl: requestedProfile?.url ?? requestedUrl.trim(),
+      refreshNoteIdentity: refreshIdentity,
     }, controller.signal);
     if (requestId !== profileRequest.current) return;
     if (result.ok) {
@@ -164,6 +169,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
   const loadSourceEvidence = useCallback(async (noteId: string) => {
     if (sourceController.current) return;
     pendingConnection.current = null;
+    setConnectionRequired(false);
     const requestId = ++sourceRequest.current;
     const expectedProfileId = report?.snapshot.profile.userId;
     const controller = new AbortController();
@@ -201,6 +207,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
     }
     pendingConnection.current = null;
     identityLastStarted.current = Date.now();
+    setConnectionRequired(false);
     const controller = new AbortController();
     identityController.current = controller;
     const profileEpoch = profileRequest.current;
@@ -252,8 +259,12 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
     const pending = pendingConnection.current;
     pendingConnection.current = null;
     setConnectionRequired(false);
-    if (!pending || pending.profileEpoch !== profileRequest.current || pending.selectionEpoch !== sourceRequest.current) return;
-    if (pending.kind === "profile") void load(pending.profileUrl, pending.preferredNoteId);
+    if (!pending) {
+      void load(profileUrl, undefined, true);
+      return;
+    }
+    if (pending.profileEpoch !== profileRequest.current || pending.selectionEpoch !== sourceRequest.current) return;
+    if (pending.kind === "profile") void load(pending.profileUrl, pending.preferredNoteId, true);
     else if (pending.kind === "source") void loadSourceEvidence(pending.noteId);
     else void refreshNoteIdentity(true);
   }
@@ -263,6 +274,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
     const profileEpoch = profileRequest;
     const sourceEpoch = sourceRequest;
     const timer = window.setTimeout(() => {
+      setInteractive(true);
       const saved = savedVideoSelection();
       const queryNoteId = new URLSearchParams(window.location.search).get("note");
       const preferredNoteId = queryNoteId && /^[0-9a-f]{24}$/.test(queryNoteId) ? queryNoteId : undefined;
@@ -281,7 +293,19 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void load(profileUrl);
+    // Freeze this click's target and invalidate any passive discovery in flight.
+    profileController.current?.abort();
+    sourceController.current?.abort();
+    sourceController.current = null;
+    identityController.current?.abort();
+    identityController.current = null;
+    pendingConnection.current = { kind: "profile", profileUrl,
+      profileEpoch: ++profileRequest.current, selectionEpoch: ++sourceRequest.current };
+    setLoading(false);
+    setSourceLoading(false);
+    setIdentityLoading(false);
+    setConnectionRequired(true);
+    void connectionPanel.current?.start();
   }
 
   function useSeed() {
@@ -289,7 +313,17 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
     void load(SEED_PROFILE_URL);
   }
 
+  function connectForIdentity() {
+    pendingConnection.current = { kind: "identity", profileEpoch: profileRequest.current,
+      selectionEpoch: sourceRequest.current };
+    setConnectionRequired(true);
+    setIdentityMessage("");
+    void connectionPanel.current?.start();
+    document.getElementById("benchmark-connection")?.scrollIntoView({ block: "start" });
+  }
+
   const snapshot = report?.snapshot ?? null;
+  const identityNeedsLogin = snapshot?.acquisition.identityErrorCode === "BENCHMARK_AUTHENTICATION_REQUIRED";
   const selectedNote = selectedNoteIndex === null ? null : report?.noteReports.find((item) => item.sampleIndex === selectedNoteIndex) ?? null;
   const selectedSnapshotNote = snapshot?.notes.find(
     (item) => item.sampleIndex === selectedNote?.sampleIndex,
@@ -310,6 +344,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
       />
 
       {!archivedReport ? <BenchmarkConnectionPanel
+        ref={connectionPanel}
         key={`${benchmarkProfile(profileUrl)?.userId ?? profileUrl}:${selectedNoteIndex ?? "none"}`}
         adapter={adapter} required={connectionRequired} onConnected={resumeAfterConnection}
       /> : null}
@@ -331,6 +366,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
               id="benchmark-profile-url"
               className="input"
               type="url"
+              disabled={!interactive}
               value={profileUrl}
               onChange={(event) => {
                 pendingConnection.current = null;
@@ -357,7 +393,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
               required
             />
             <button className="button" type="submit" disabled={loading}>
-              {loading ? "正在发现笔记…" : "生成策略报告"}
+              {loading ? "正在采集…" : "连接小红书并采集"}
             </button>
           </div>
           <p>
@@ -442,12 +478,19 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
             <article><span>点赞中位数下界</span><strong>{compactNumber(snapshot.analysis.medianLikesLowerBound)}</strong><small>“10万+”按 10 万计算</small></article>
           </section>
 
-          {!archivedReport ? <section className="panel" aria-label="笔记发现完整性">
-            <h3>笔记身份核验</h3>
-            <p>已核验 {snapshot.acquisition.identifiedNoteCount} 篇 · {snapshot.acquisition.unresolvedNoteCount} 篇仍缺少可核验身份。只有已核验的笔记可获取媒体；图文详情不进入视频深析。</p>
-            {snapshot.acquisition.identityErrorCode ? <p className="benchmark-deep-error">{benchmarkRecoveryMessage({ code: snapshot.acquisition.identityErrorCode, message: "部分笔记字段不足，请补全笔记信息后重试。" })}（{snapshot.acquisition.identityErrorCode}）</p> : null}
-            <button className="button-secondary" type="button" disabled={identityLoading} onClick={() => void refreshNoteIdentity()}>{identityLoading ? "正在补全笔记信息…" : "补全笔记信息"}</button>
-            {identityLoading ? <p role="status">正在补全笔记信息 → 等待选择笔记 → 获取媒体 → 分析 → 报告</p> : null}
+          {!archivedReport ? <section className="panel benchmark-identity" aria-label="笔记发现完整性" aria-busy={identityLoading}>
+            <header><div><h3>笔记信息</h3><p>核验笔记归属后可获取媒体，图文不会进入视频分析。</p></div>
+              <div className="benchmark-identity-counts"><Badge tone="neutral">已核验 {snapshot.acquisition.identifiedNoteCount} 篇</Badge><Badge tone={snapshot.acquisition.unresolvedNoteCount ? "warning" : "success"}>待补全 {snapshot.acquisition.unresolvedNoteCount} 篇</Badge></div>
+            </header>
+            <div className="benchmark-identity-recovery" data-warning={Boolean(snapshot.acquisition.identityErrorCode) || undefined}>
+              <div role="status">
+                <strong>{identityNeedsLogin ? "连接小红书后继续补全" : snapshot.acquisition.identityErrorCode ? "部分笔记信息暂时无法获取" : snapshot.acquisition.unresolvedNoteCount ? "部分笔记需要补充信息" : "当前样本的笔记信息已核验"}</strong>
+                <p>{identityNeedsLogin ? "需要确认小红书登录。点击“连接并补全”，扫码或验证成功后会自动继续。" : snapshot.acquisition.identityErrorCode ? benchmarkRecoveryMessage({ code: snapshot.acquisition.identityErrorCode, message: "请补全笔记信息后重试。" }) : "可重新检查当前主页，更新笔记信息。"}</p>
+              </div>
+              <button className={identityNeedsLogin ? "button" : "button-secondary"} type="button" disabled={identityLoading} onClick={() => identityNeedsLogin ? connectForIdentity() : void refreshNoteIdentity()}>{identityLoading ? "正在补全…" : identityNeedsLogin ? "连接并补全" : "补全笔记信息"}</button>
+            </div>
+            {snapshot.acquisition.identityErrorCode ? <details className="benchmark-diagnostic"><summary>查看诊断信息</summary><code>{snapshot.acquisition.identityErrorCode}</code></details> : null}
+            {identityLoading ? <p role="status">正在重新读取主页并核验笔记，请稍候。</p> : null}
             {identityMessage ? <p role="status">{identityMessage}</p> : null}
           </section> : null}
 
@@ -535,12 +578,11 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
                   aria-labelledby="benchmark-note-report-tab"
                 >
                   <div className="benchmark-note-picker">
-                    <label htmlFor="benchmark-note-select">选择一篇笔记</label>
-                    <select
-                      id="benchmark-note-select"
-                      className="select"
-                      value={selectedNote?.sampleIndex ?? ""}
-                      onChange={(event) => {
+                    <span className="field-label">选择一篇笔记</span>
+                    <UiSelect
+                      ariaLabel="选择一篇笔记"
+                      value={String(selectedNote?.sampleIndex ?? "")}
+                      onChange={(value) => {
                         pendingConnection.current = null;
                         ++sourceRequest.current;
                         sourceController.current?.abort();
@@ -549,7 +591,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
                         identityController.current = null;
                         setIdentityLoading(false);
                         setSourceLoading(false);
-                        setSelectedNoteIndex(event.target.value ? Number(event.target.value) : null);
+                        setSelectedNoteIndex(value ? Number(value) : null);
                         setSourceEvidence(null);
                         setSourceError("");
                       }}
@@ -560,7 +602,7 @@ export function BenchmarkAccountDemo({ archivedReport }: { archivedReport?: Benc
                           {String(item.sampleIndex).padStart(2, "0")} · {verifiedBenchmarkNote(snapshot.notes.find((note) => note.sampleIndex === item.sampleIndex)) ? "已核验" : "身份待补全"} · {item.likesDisplay} · {item.title}
                         </option>
                       ))}
-                    </select>
+                    </UiSelect>
                   </div>
 
                   {selectedNote ? (

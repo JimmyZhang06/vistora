@@ -1,3 +1,4 @@
+#requires -Version 7.2
 <# Stop only processes recorded by start.ps1. Persistent volumes are preserved. #>
 [CmdletBinding()]
 param([switch]$Infrastructure)
@@ -6,6 +7,10 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $statePath = Join-Path $projectRoot "var\runtime\local-processes.json"
 $composePath = Join-Path $projectRoot "deploy\docker-compose.persistence.yml"
+. (Join-Path $projectRoot 'tools/local-launcher.ps1')
+$launcherLease = $null
+try {
+$launcherLease = Open-LauncherLease -RuntimeRoot (Join-Path $projectRoot 'var/runtime')
 
 function Get-DescendantProcessIds {
     param([int]$RootProcessId)
@@ -31,18 +36,13 @@ function Get-DescendantProcessIds {
 
 if (Test-Path -LiteralPath $statePath) {
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    foreach ($entry in $state.processes) {
+    if ($state.project_root -ne $projectRoot) { throw '进程记录不属于当前项目，拒绝停止。' }
+    $records = @($state.processes)
+    [array]::Reverse($records)
+    foreach ($entry in $records) {
         $process = Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue
         if (-not $process) { continue }
-        $sameProcess = if ($null -ne $entry.started_at_filetime_utc) {
-            [Math]::Abs(
-                $process.StartTime.ToFileTimeUtc() - [long]$entry.started_at_filetime_utc
-            ) -le [TimeSpan]::TicksPerSecond * 2
-        } else {
-            $actualStart = $process.StartTime
-            $recordedStart = [DateTime]::Parse([string]$entry.started_at_utc)
-            [Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -le 2
-        }
+        $sameProcess = Test-LauncherProcess $entry
         if (-not $sameProcess) {
             Write-Warning "跳过 $($entry.name) PID $($entry.pid)：PID 已被其他进程复用"
             continue
@@ -70,7 +70,15 @@ if (Test-Path -LiteralPath $statePath) {
 }
 
 if ($Infrastructure) {
-    & docker compose -f $composePath down
+    # Always address the intended local daemon, never a selected remote context.
+    & docker --context desktop-linux compose -f $composePath down
     if ($LASTEXITCODE -ne 0) { throw "停止持久化服务失败" }
     Write-Host "[OK] 已停止持久化服务；数据卷仍保留" -ForegroundColor Green
+}
+$global:LASTEXITCODE = 0
+} catch {
+    Write-Host "[X] $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+} finally {
+    if ($null -ne $launcherLease) { $launcherLease.Dispose() }
 }

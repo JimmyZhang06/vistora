@@ -1,5 +1,7 @@
 "use client";
 
+import { UiSelect } from "@/components/ui-select";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useMemo, useRef, useState } from "react";
@@ -124,8 +126,8 @@ export function DocumentVideoPilotStudio() {
               <textarea className="textarea" value={topic} maxLength={1600} disabled={frozen} required onChange={(event) => setTopic(event.target.value)} placeholder="例如：用两分钟解释方案的核心价值、实施路径和关键数据" />
             </label>
             <div className="settings-grid">
-              <label className="field"><span className="field-label">目标时长</span><select className="select" value={duration} disabled={frozen} onChange={(event) => setDuration(Number(event.target.value))}><option value={60}>60 秒</option><option value={120}>120 秒</option><option value={180}>180 秒</option><option value={300}>300 秒</option></select></label>
-              <label className="field"><span className="field-label">画幅</span><select className="select" value={aspectRatio} disabled={frozen} onChange={(event) => setAspectRatio(event.target.value as DocumentVideoCreateRequest["aspectRatio"])}><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option><option value="1:1">1:1 方形</option></select></label>
+              <div className="field"><span className="field-label">目标时长</span><UiSelect ariaLabel="目标时长" value={String(duration)} disabled={frozen} onChange={(value) => setDuration(Number(value))}><option value={60}>60 秒</option><option value={120}>120 秒</option><option value={180}>180 秒</option><option value={300}>300 秒</option></UiSelect></div>
+              <div className="field"><span className="field-label">画幅</span><UiSelect ariaLabel="画幅" value={String(aspectRatio)} disabled={frozen} onChange={(value) => setAspectRatio(value as DocumentVideoCreateRequest["aspectRatio"])}><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option><option value="1:1">1:1 方形</option></UiSelect></div>
             </div>
             <label className="check-row"><input type="checkbox" checked={generatedBackground} disabled={frozen} onChange={(event) => setGeneratedBackground(event.target.checked)} /><span>允许 Agnes 装饰背景；未配置时使用有审计记录的程序化背景</span></label>
             <label className="check-row"><input type="checkbox" checked={rightsConfirmed} disabled={frozen} required onChange={(event) => setRightsConfirmed(event.target.checked)} /><span>我确认有权上传、处理并生成这份文件的讲解视频</span></label>

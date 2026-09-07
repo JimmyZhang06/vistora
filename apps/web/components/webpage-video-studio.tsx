@@ -1,5 +1,7 @@
 "use client";
 
+import { UiSelect } from "@/components/ui-select";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -347,8 +349,8 @@ export function WebpageVideoStudio({ mode = "standard" }: { mode?: "standard" | 
                 <fieldset className="web-video-crawl" disabled={formFrozen || state !== "ready"}>
                 <legend>定向解析范围</legend>
                 <div>
-                  <label className="field" htmlFor="web-video-max-pages"><span>最多页面</span><select id="web-video-max-pages" className="select" value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))}>{[1, 4, 6, 8, 10, 12].filter((value) => value <= (options?.limits.crawlMaxPagesLimit ?? 12)).map((value) => <option key={value} value={value}>{value} 页</option>)}</select><small>{applicationDemo ? "演示预设 4 页，控制耗时与现场风险。" : "发现更多候选时会在上限处停止。"}</small></label>
-                  <label className="field" htmlFor="web-video-max-depth"><span>链接深度</span><select id="web-video-max-depth" className="select" value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))}>{[0, 1, 2].filter((value) => value <= (options?.limits.crawlMaxDepthLimit ?? 2)).map((value) => <option key={value} value={value}>{value === 0 ? "仅目标页" : value === 1 ? "导航与一层链接" : "最多两层"}</option>)}</select><small>不会无限遍历分页或日历 URL。</small></label>
+                  <div className="field"><span>最多页面</span><UiSelect ariaLabel="最多页面" value={String(maxPages)} onChange={(value) => setMaxPages(Number(value))}>{[1, 4, 6, 8, 10, 12].filter((value) => value <= (options?.limits.crawlMaxPagesLimit ?? 12)).map((value) => <option key={value} value={value}>{value} 页</option>)}</UiSelect><small>{applicationDemo ? "演示预设 4 页，控制耗时与现场风险。" : "发现更多候选时会在上限处停止。"}</small></div>
+                  <div className="field"><span>链接深度</span><UiSelect ariaLabel="链接深度" value={String(maxDepth)} onChange={(value) => setMaxDepth(Number(value))}>{[0, 1, 2].filter((value) => value <= (options?.limits.crawlMaxDepthLimit ?? 2)).map((value) => <option key={value} value={value}>{value === 0 ? "仅目标页" : value === 1 ? "导航与一层链接" : "最多两层"}</option>)}</UiSelect><small>不会无限遍历分页或日历 URL。</small></div>
                 </div>
                 <label className="web-video-switch">
                   <input aria-label="使用 sitemap 发现候选页面" type="checkbox" checked={includeSitemap} onChange={(event) => setIncludeSitemap(event.target.checked)} />
@@ -389,14 +391,14 @@ export function WebpageVideoStudio({ mode = "standard" }: { mode?: "standard" | 
                   ))}
                 </div>
               </fieldset>
-              <label className="field" htmlFor="web-video-voice">
+              <div className="field">
                 <span>旁白声音</span>
-                <select id="web-video-voice" className="select" value={voiceProfileId} disabled={formFrozen || state !== "ready"} onChange={(event) => setVoiceProfileId(event.target.value)}>
+                <UiSelect ariaLabel="旁白声音" value={String(voiceProfileId)} disabled={formFrozen || state !== "ready"} onChange={(value) => setVoiceProfileId(value)}>
                   <option value="">系统默认声音</option>
                   {(options?.voices ?? []).map((voice) => <option key={voice.id} value={voice.id}>{voice.name}{voice.language ? ` · ${voice.language}` : ""}</option>)}
-                </select>
+                </UiSelect>
                 <small>{options?.voices.length ? "只显示后端当前允许的 voice。" : "后端未返回可选 voice，将使用系统默认值。"}</small>
-              </label>
+              </div>
               <label className="web-video-switch" aria-disabled={!options?.subtitles.supported || undefined}>
                 <input aria-label="生成字幕" type="checkbox" checked={subtitlesEnabled} disabled={formFrozen || !options?.subtitles.supported} onChange={(event) => setSubtitlesEnabled(event.target.checked)} />
                 <span aria-hidden="true" />

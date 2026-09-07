@@ -49,8 +49,8 @@ DOM 卡片可能没有发布时间或可靠的媒体类型，此时分别返回 
 
 ## 3. 标准运行流程
 
-1. 启动回环受管浏览器 Provider，地址只能是 `http://127.0.0.1:{port}`。
-2. 将 `FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL` 指向该回环 Origin，启动更新后的 API/Web。
+1. 用 `start.ps1 -Xiaohongshu` 启动项目自带的回环受管浏览器及 API/Web；如需视频深析用 `-BenchmarkAnalysis`。
+2. 已有外部服务时，显式加 `-ExternalXhsBrowser`，将 `FRAMEFACTORY_XHS_MANAGED_BROWSER_BASE_URL` 指向 `http://127.0.0.1:{port}`。默认启动不再需要外部服务，不接受仿二维码 mock 作为真实验收证据。
 3. 在 `/benchmarks` 中检查连接；未登录时由用户点击生成二维码并在小红书 App 扫码。也可在持久化浏览器中登录后重新检查。验证码只能由用户处理；登录成功只恢复当前免费采集，不自动运行付费分析。
 4. API 先尝试公开 SSR；来源失败或解析结果缺少可核验笔记身份时，自动连接 Provider 的回环 CDP，只新建临时页签。已登录页的 SSR 仍缺身份时，使用受限同页卡片链接发现。
 5. 详情 Provider 打开规范主页，在最多 12 次滚动内查找目标笔记。

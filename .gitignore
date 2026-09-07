@@ -43,6 +43,12 @@ src/agent/blockchain/config.json
 /tmp/
 /artifacts/
 /output/
+# Ad-hoc local browser probes and mock process output; maintained tests live in tests/.
+/.tmp_mock_provider_pid.txt
+/mock_provider.err
+/mock_provider.out
+/temp_e2e_benchmark_ui.py
+/temp_playwright_check.py
 /.pytest_cache/
 /.ruff_cache/
 /.pytest-*/

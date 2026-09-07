@@ -19,7 +19,7 @@ API `ready` 只代表本次有界分析的配置阶段成功，不代表全量�
 
 ## 2. 安装与启动
 
-前提：Windows/Python 3.12、仓库 API/Worker 基础依赖、PATH 中的 FFmpeg/FFprobe，以及已启动的兼容受管浏览器 Provider。可在 `/benchmarks` 内连接小红书并扫码登录；无需重复复制 Cookie、CDN URL 或上传视频。登录过期仍需用户扫码或处理平台验证，不能保证永久无人介入。详见 [连接流程](xiaohongshu-connection.md)。
+前提：Windows/Python 3.12、仓库 API/Worker 基础依赖、PATH 中的 FFmpeg/FFprobe。`start.ps1 -BenchmarkAnalysis` 自动启动项目自带的持久化浏览器；使用外部浏览器时须显式加 `-ExternalXhsBrowser`。可在 `/benchmarks` 内连接小红书并扫码登录；无需重复复制 Cookie、CDN URL 或上传视频。登录过期仍需用户扫码或处理平台验证，不能保证永久无人介入。详见 [连接流程](xiaohongshu-connection.md)。
 
 首次安装可选多模态依赖（锁含直接及传递依赖 SHA256）：
 

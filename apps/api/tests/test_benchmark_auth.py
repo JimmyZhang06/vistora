@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import struct
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -436,7 +437,9 @@ async def test_indefinite_platform_initialize_state_stays_checking():
 
     service = BenchmarkAuthService(
         "http://127.0.0.1:5556",
-        transport=lambda *_args, **_kwargs: asyncio.sleep(0, result={"unexpected": "provider_called"}),
+        transport=lambda *_args, **_kwargs: asyncio.sleep(
+            0, result={"unexpected": "provider_called"},
+        ),
         platform_check=never_ready,
     )
     assert (await service.status()).state == "checking"
@@ -466,22 +469,34 @@ def test_provider_origin_cannot_be_remote_or_carry_credentials(base_url):
         ("https://www.xiaohongshu.com/explore", False, False),
         ("https://www.xiaohongshu.com/explore", True, True),
         ("https://www.xiaohongshu.com/explore", None, None),
+        ("https://www.xiaohongshu.com/website-login/error", None, "restricted"),
+        ("https://www.xiaohongshu.com/explore", "redirect-restricted", "restricted"),
         ("https://evil.example/login", True, None),
     ],
 )
-def test_fresh_platform_check_uses_new_page_and_closes_it(monkeypatch, url, state, expected):
+def test_fresh_platform_check_uses_http_without_changing_tabs(monkeypatch, url, state, expected):
     calls = []
-    page = SimpleNamespace(
+    viewer = {"guest": not state, "userId": "2" * 24} if type(state) is bool else {}
+    payload = ('<script>window.__INITIAL_STATE__=' + json.dumps({
+        "user": {"userInfo": viewer, "userPageData": {"basicInfo": {"userId": "1" * 24}}},
+    }) + '</script>').encode()
+    response = SimpleNamespace(
         url=url,
-        set_default_timeout=lambda timeout: None,
-        route=lambda pattern, handler: calls.append("block-images"),
-        goto=lambda target, **kwargs: calls.append(target) or SimpleNamespace(status=200),
-        wait_for_function=lambda script, timeout=None: None,
-        evaluate=lambda script: state,
-        close=lambda: calls.append("page-closed"),
+        status=302 if state == "redirect-restricted" else 200,
+        headers={"location": "/website-login/captcha"},
+        body=lambda: payload,
+        dispose=lambda: calls.append("response-disposed"),
     )
+
+    def get(target, **kwargs):
+        assert kwargs["max_redirects"] == 0
+        assert kwargs["timeout"] == 10_000
+        assert kwargs["headers"]["Cache-Control"] == "no-cache"
+        calls.append(target)
+        return response
+
     browser = SimpleNamespace(
-        contexts=[SimpleNamespace(new_page=lambda: calls.append("new-page") or page)],
+        contexts=[SimpleNamespace(request=SimpleNamespace(get=get))],
         close=lambda: calls.append("disconnected"),
     )
 
@@ -506,11 +521,59 @@ def test_fresh_platform_check_uses_new_page_and_closes_it(monkeypatch, url, stat
             "cookie_present": True,
         },
     )
-    if expected is None and url.startswith("https://evil.example"):
+    if expected == "restricted":
+        from framefactory_api.benchmark_accounts import BenchmarkAccountError
+
+        with pytest.raises(BenchmarkAccountError) as error:
+            _fresh_platform_login("http://127.0.0.1:5556")
+        assert error.value.code == "BENCHMARK_AUTH_PLATFORM_RESTRICTED"
+    elif expected is None and url.startswith("https://evil.example"):
         with pytest.raises(ValueError):
             _fresh_platform_login("http://127.0.0.1:5556")
     else:
         assert _fresh_platform_login("http://127.0.0.1:5556") is expected
-    assert "new-page" in calls
     assert "https://www.xiaohongshu.com/explore" in calls
-    assert calls[-2:] == ["page-closed", "disconnected"]
+    assert calls[-2:] == ["response-disposed", "disconnected"]
+
+
+def test_delayed_platform_restriction_crosses_browser_process_boundary(monkeypatch):
+    from framefactory_api.benchmark_accounts import BenchmarkAccountError
+    from framefactory_api.browser_process import run_browser_operation
+
+    # The helper serializes only a known error code, never platform response text.
+    monkeypatch.setattr(
+        "framefactory_api.browser_process._run_owned_process",
+        lambda *args, **kwargs: b'{"ok":false,"code":"BENCHMARK_AUTH_PLATFORM_RESTRICTED"}',
+    )
+    with pytest.raises(BenchmarkAccountError, match="browser could not complete") as error:
+        run_browser_operation("login", {}, timeout_seconds=1)
+    assert error.value.code == "BENCHMARK_AUTH_PLATFORM_RESTRICTED"
+
+
+@pytest.mark.asyncio
+async def test_explicit_login_queued_during_passive_check_is_not_lost():
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def check():
+        entered.set()
+        await release.wait()
+        return False
+
+    async def transport(method, path, body):
+        calls.append(path)
+        return qr_task()
+
+    service = BenchmarkAuthService("http://127.0.0.1:5556", transport=transport,
+                                   platform_check=check, response_wait_seconds=0.001)
+    try:
+        assert (await service.status()).state == "checking"
+        await entered.wait()
+        assert (await service.status(start=True)).state == "checking"
+        release.set()
+        await asyncio.gather(*tuple(service._operations))
+        result = await service.status()
+        assert result.state == "awaiting_scan"
+        assert len(calls) == 1
+    finally:
+        await service.close()

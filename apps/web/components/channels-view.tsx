@@ -1,5 +1,7 @@
 "use client";
 
+import { UiSelect } from "@/components/ui-select";
+
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createFrameFactoryAdapter, type Channel, type ChannelStatus } from "@/lib/api";
@@ -94,19 +96,19 @@ export function ChannelsView() {
           <input id="channel-search" className="input" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、简介或账号" />
           <button className="button-secondary button-small" type="submit">搜索</button>
         </form>
-        <label className="field channel-filter">
+        <div className="field channel-filter">
           <span className="sr-only">平台筛选</span>
-          <select className="select" value={platform} onChange={(event) => setPlatform(event.target.value)}>
+          <UiSelect ariaLabel="平台筛选" value={String(platform)} onChange={(value) => setPlatform(value)}>
             <option value="">全部平台</option>
             {platformOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <label className="field channel-filter">
+          </UiSelect>
+        </div>
+        <div className="field channel-filter">
           <span className="sr-only">状态筛选</span>
-          <select className="select" value={status} onChange={(event) => setStatus(event.target.value as "" | ChannelStatus)}>
+          <UiSelect ariaLabel="状态筛选" value={String(status)} onChange={(value) => setStatus(value as "" | ChannelStatus)}>
             {statusOptions.map((option) => <option value={option.value} key={option.value || "all"}>{option.label}</option>)}
-          </select>
-        </label>
+          </UiSelect>
+        </div>
         {filtersActive ? <button className="button-ghost button-small" type="button" onClick={() => { setSearch(""); setAppliedSearch(""); setPlatform(""); setStatus(""); }}>清除筛选</button> : null}
       </section>
 

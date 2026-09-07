@@ -5,10 +5,11 @@ import { createFrameFactoryAdapter, type ApiProblem, type BenchmarkHistoryDetail
 import { BenchmarkAccountDemo } from "@/components/benchmark-account-demo";
 import { BenchmarkVideoAnalysisPanel } from "@/components/benchmark-video-analysis";
 import { Badge, LoadingScaffold, PageHeading, StatePanel } from "@/components/page-heading";
+import { UiSelect } from "@/components/ui-select";
 
 function historyError(problem: ApiProblem): string {
   if (problem.code === "BENCHMARK_HISTORY_NOT_FOUND") return "这条保存记录不存在或不属于当前工作区，请从列表重新选择。";
-  if (problem.code === "BENCHMARK_HISTORY_CURSOR_INVALID") return "历史列表已变化，请点击“从头刷新”重新加载。";
+  if (problem.code === "BENCHMARK_HISTORY_CURSOR_INVALID") return "历史列表已变化，请点击“刷新列表”重新加载。";
   if (problem.status === 404) return "当前对标服务尚未提供历史接口。请重启或升级本机对标服务后重试。";
   if (problem.code === "BENCHMARK_ANALYSIS_UNAVAILABLE") return "本机对标分析与历史存储尚未启用，请按对标分析 SOP 启动服务后重试。";
   if (problem.status === 401 || problem.status === 403) return "当前会话无法读取这个工作区的历史记录，请恢复登录或工作区权限后重试。";
@@ -102,19 +103,23 @@ export function BenchmarkHistory() {
       <PageHeading eyebrow="BENCHMARK HISTORY" title="历史分析记录"
         description="查看当前工作区已保存的账号策略和视频报告。搜索、翻页与打开记录只读取保存版本，不会重新采集或调用模型。"
         actions={<a className="button-secondary" href="/benchmarks">返回对标分析</a>} />
-      <section className="panel" aria-label="搜索历史分析">
-        <form className="benchmark-profile-form" onSubmit={searchRecords}>
-          <label htmlFor="benchmark-history-search">标题、账号 ID 或笔记 ID</label>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-            <input id="benchmark-history-search" className="input" style={{ flex: "1 1 260px" }} type="search" maxLength={200} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已保存的报告" />
-            <label htmlFor="benchmark-history-kind">报告类型</label>
-            <select id="benchmark-history-kind" className="select" value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}>
+      <section className="panel benchmark-history-search" aria-label="搜索历史分析">
+        <form className="benchmark-history-filters" onSubmit={searchRecords}>
+          <div className="field">
+            <label htmlFor="benchmark-history-search">搜索报告</label>
+            <input id="benchmark-history-search" className="input" type="search" maxLength={200} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入标题、账号 ID 或笔记 ID" />
+          </div>
+          <div className="field">
+            <span className="field-label">报告类型</span>
+            <UiSelect ariaLabel="报告类型" value={kind} onChange={(value) => setKind(value as typeof kind)}>
               <option value="">全部类型</option><option value="account">账号策略</option><option value="video">视频分析</option>
-            </select>
-            <button type="submit" className="button">搜索</button>
+            </UiSelect>
+          </div>
+          <div className="benchmark-history-actions">
+            <button type="submit" className="button" disabled={loading}>{loading ? "读取中…" : "搜索"}</button>
+            <button type="button" className="button-ghost" disabled={loading} onClick={() => void loadRecords(criteria)}>刷新列表</button>
           </div>
         </form>
-        <button type="button" className="button-ghost" disabled={loading} onClick={() => void loadRecords(criteria)}>从头刷新</button>
       </section>
 
       {loading && !items.length ? <LoadingScaffold title="正在读取历史记录" description="从当前工作区读取保存的报告。" /> : null}

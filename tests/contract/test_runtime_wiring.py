@@ -114,8 +114,12 @@ def test_local_launcher_repairs_only_verified_socket_directories() -> None:
     assert 'Join-Path $localAppData "docker-secrets-engine"' in launcher
     assert "[IO.FileAttributes]::ReparsePoint" in launcher
     assert "包含非临时内容，拒绝自动修复" in launcher
-    assert '"desktop", "start"' in launcher
-    assert "-TimeoutSeconds 90" in launcher
+    assert 'Start-Process -FilePath $desktopExe' in launcher
+    assert '-WorkingDirectory $desktopRoot -WindowStyle Hidden' in launcher
+    assert '"desktop", "start"' not in launcher
+    assert '-TimeoutSeconds 3 -CaptureOutput -QuietFailure' in launcher
+    assert '(Get-Command docker -CommandType Application | Select-Object -First 1).Source' in launcher
+    assert '(Get-Command node -CommandType Application | Select-Object -First 1).Source' in launcher
     assert "Move-Item -LiteralPath $resolvedPath -Destination $destination" in launcher
     assert "Remove-Item -LiteralPath $resolvedPath" not in launcher
 

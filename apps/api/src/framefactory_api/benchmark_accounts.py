@@ -161,11 +161,13 @@ class XiaohongshuPublicProfileProvider:
         fetcher: ProfileFetcher | None = None,
         authenticated_fetcher: ProfileFetcher | None = None,
         timeout_seconds: float = 8.0,
+        managed_timeout_seconds: float = 25.0,
         max_response_bytes: int = 1_048_576,
     ) -> None:
         self._fetcher = fetcher or _fetch_public_profile
         self._authenticated_fetcher = authenticated_fetcher
         self._timeout_seconds = timeout_seconds
+        self._managed_timeout_seconds = managed_timeout_seconds
         self._max_response_bytes = max_response_bytes
 
     def resolve(self, profile_url: str) -> BenchmarkAccountIdentity:
@@ -204,7 +206,7 @@ class XiaohongshuPublicProfileProvider:
         try:
             payload = self._authenticated_fetcher(
                 identity.profile_url,
-                self._timeout_seconds,
+                self._managed_timeout_seconds,
                 self._max_response_bytes,
             )
             discovered = parse_public_profile_html(
@@ -1098,7 +1100,7 @@ def _text(value: Any) -> str:
 
 
 def _json_compatible_initial_state(value: str) -> str:
-    """Replace JavaScript undefined literals without changing quoted text."""
+    """Normalize known inert JS literals without evaluating code or changing strings."""
 
     output: list[str] = []
     index = 0
@@ -1120,6 +1122,10 @@ def _json_compatible_initial_state(value: str) -> str:
             quoted = True
             output.append(character)
             index += 1
+            continue
+        if value.startswith("new Map([])", index):
+            output.append("{}")
+            index += len("new Map([])")
             continue
         if value.startswith("undefined", index):
             before = value[index - 1] if index else ""

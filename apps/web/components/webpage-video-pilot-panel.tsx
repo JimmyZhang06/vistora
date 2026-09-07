@@ -1,5 +1,7 @@
 "use client";
 
+import { UiSelect } from "@/components/ui-select";
+
 import { FormEvent, useMemo, useState } from "react";
 import {
   createFrameFactoryAdapter,
@@ -60,7 +62,7 @@ export function WebpageVideoPilotPanel({ run, onSaved }: { run: WebpageVideoRun;
       <form onSubmit={submit}>
         <div className="web-video-pilot-grid">
           <label className="field"><span>客户类型（不含名称）</span><input className="input" required maxLength={120} value={customerSegment} onChange={(event) => setCustomerSegment(event.target.value)} placeholder="例如：香港中小型电商团队" /></label>
-          <label className="field"><span>试点结果</span><select className="select" value={outcome} onChange={(event) => setOutcome(event.target.value as typeof outcome)}><option value="evaluating">评估中</option><option value="adopted">已采用</option><option value="rejected">未采用</option></select></label>
+          <div className="field"><span>试点结果</span><UiSelect ariaLabel="试点结果" value={String(outcome)} onChange={(value) => setOutcome(value as typeof outcome)}><option value="evaluating">评估中</option><option value="adopted">已采用</option><option value="rejected">未采用</option></UiSelect></div>
           <label className="field"><span>原流程耗时（分钟）</span><input className="input" type="number" min={1} max={10080} required value={baselineMinutes} onChange={(event) => setBaselineMinutes(event.target.value)} /></label>
           <label className="field"><span>使用后耗时（分钟）</span><input className="input" type="number" min={1} max={10080} required value={assistedMinutes} onChange={(event) => setAssistedMinutes(event.target.value)} /></label>
           <label className="field"><span>人工修改轮次</span><input className="input" type="number" min={0} max={100} required value={revisionCount} onChange={(event) => setRevisionCount(event.target.value)} /></label>

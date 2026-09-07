@@ -84,7 +84,7 @@ $env:FRAMEFACTORY_DATABASE_URL = "postgresql://vistora:vistora-local-only@127.0.
 
 ## 对标主页 Demo 边界
 
-`GET /v1/benchmark-auth/xiaohongshu/status` 只检查当前本机浏览器会话；`POST /v1/benchmark-auth/xiaohongshu/qrcode` 在用户请求后创建短期二维码，已登录时保持原会话。连接接口要求本机 peer、Host、允许的本机 Origin、默认用户/工作区和 `assets:write`，拒绝生产模式及转发请求。响应不缓存，二维码和 Provider task ID 不进入持久报告。状态、幂等和操作边界见 [连接 SOP](../../docs/sop/xiaohongshu-connection.md)。
+`GET /v1/benchmark-auth/xiaohongshu/status` 只检查当前本机浏览器会话；`POST /v1/benchmark-auth/xiaohongshu/qrcode` 在用户请求后创建短期二维码，已登录时保持原会话。`start.ps1 -Xiaohongshu` 自动启动项目内置的 `framefactory_api.xhs_browser`，无需外部采集服务。连接接口要求本机 peer、Host、允许的本机 Origin、默认用户/工作区和 `assets:write`，拒绝生产模式及转发请求。响应不缓存，二维码和 Provider task ID 不进入持久报告。平台风控返回 `BENCHMARK_AUTH_PLATFORM_RESTRICTED`，停止自动轮询。状态、幂等和操作边界见 [连接 SOP](../../docs/sop/xiaohongshu-connection.md)。
 
 `/v1/benchmark-history` 返回按工作区隔离的账号报告及视频尝试归档。读取历史不会重新采集、登录或执行模型；旧数据库中的视频报告在启动时幂等补入历史。数据库和产物备份、媒体到期及容量限制仍按视频 SOP 执行。
 

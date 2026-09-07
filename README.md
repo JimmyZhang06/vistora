@@ -148,7 +148,7 @@ flowchart LR
 
 ### 环境要求
 
-- Windows PowerShell 7；
+- PowerShell 7.2 或更高版本（`pwsh`）；
 - Python 3.12 x64；
 - Node.js 22.13 或更高版本；
 - Docker Desktop；
@@ -166,9 +166,23 @@ flowchart LR
 # 额外启用独立网页截图 Worker 和本地受限出站代理
 .\start.ps1 -BrowserCapture
 
+# 启动项目自带的小红书浏览器、扫码连接与免费主页/详情采集
+.\start.ps1 -Xiaohongshu
+
+# 同时启用可选视频深析依赖
+.\start.ps1 -BenchmarkAnalysis
+
 # 复用已安装依赖
 .\start.ps1 -NoInstall -BrowserCapture
+
+# 修改代码或启动选项后，停止已记录的旧实例并重新启动
+.\start.ps1 -Xiaohongshu -NoInstall -Restart
 ```
+
+也可在 CMD 中运行 `start.cmd -Xiaohongshu`，或双击 `start.cmd` 启动标准栈；若没有 PowerShell 7，入口会从 Microsoft 官方 GitHub 下载固定版本的便携运行时，校验 SHA-256 和签名后安装到 `var/tools`，无需管理员权限。首次安装需联网；停止入口为 `stop.cmd`。
+同样参数重复启动时，会核对代码、配置、进程身份和 HTTP 就绪状态后复用已有实例。需要换模式或代码已变化时加 `-Restart`。启动失败会清理本次创建的进程，日志保留在 `var/logs`，旧日志归档在 `var/logs/archive`。
+默认 Web/API/内置浏览器端口无法绑定时，会选择可用端口并同步 Web 到 API 的地址，以终端输出的 URL 为准；显式指定的端口不可用时直接报出原因，避免悄悄改用其他地址。
+Docker 仅使用本机 `desktop-linux` 引擎。若 Desktop 未运行，启动器会尝试打开它并有界等待；确认没有 Docker 进程时才会备份残留 socket 目录，不删除数据卷。`-NoDockerRepair` 可禁用此恢复。
 
 启动器会：
 
@@ -209,6 +223,23 @@ FRAMEFACTORY_OPENAI_RESEARCH_MODEL=research-model
 FRAMEFACTORY_OPENAI_WRITING_MODEL=writing-model
 FRAMEFACTORY_OPENAI_QUALITY_MODEL=quality-model
 ```
+
+小红书采集使用 `./start.ps1 -Xiaohongshu` 即可启动项目自带的真实浏览器；登录档案保留在 `var/browser/xiaohongshu`。二维码直接取自小红书页面，仍需本人扫码及处理平台验证。无需外部 Provider 或密钥；完整本地栈仍需 Docker。视频深析用 `-BenchmarkAnalysis`。
+
+仅在已有可信外部浏览器服务时，才配置外部启动命令：
+
+```powershell
+$env:FRAMEFACTORY_XHS_MANAGED_BROWSER_LAUNCH_COMMAND = "C:\\path\\to\\provider.exe"
+$env:FRAMEFACTORY_XHS_MANAGED_BROWSER_LAUNCH_ARGS = "--port 5556 --headless"
+```
+
+随后执行：
+
+```powershell
+.\start-benchmark-automation.ps1
+```
+
+显式配置外部启动命令时，兼容脚本会写入所选 Provider 配置并启动外部服务；默认路径委托正式启动器启动内置浏览器，不修改密钥文件，也不回退到 Mock。`-NoBrowser` 只禁止自动打开 Web 页面；采集浏览器保留界面供人工验证。已运行的外部 Provider 可直接用 `start.ps1 -Xiaohongshu -ExternalXhsBrowser` 接入。
 
 可选 Provider：
 

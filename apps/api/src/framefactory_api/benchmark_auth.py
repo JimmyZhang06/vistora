@@ -21,7 +21,7 @@ from uuid import uuid4
 from fastapi import Request as ApiRequest
 from pydantic import BaseModel, ConfigDict, Field
 
-from .benchmark_accounts import _managed_browser_base_url, _RejectRedirects
+from .benchmark_accounts import BenchmarkAccountError, _managed_browser_base_url, _RejectRedirects
 from .browser_process import run_browser_operation_async
 from .context import WorkspaceContext
 from .errors import ApiError
@@ -37,6 +37,23 @@ AuthState = Literal[
     "expired",
     "error",
 ]
+
+# Only the current viewer's authenticated state can authorize collection. Public
+# userPageData describes a visited author and is never proof of the viewer's login.
+LOGIN_STATE_SCRIPT = """() => {
+    if (location.pathname.startsWith('/website-login/error') ||
+        location.pathname.startsWith('/website-login/captcha')) return 'restricted';
+    const login = document.querySelector('.login-container');
+    if (login?.getClientRects().length && getComputedStyle(login).visibility !== 'hidden') {
+        return false;
+    }
+    const state = window.__INITIAL_STATE__?.user?.userInfo;
+    const user = state?.value ?? state;
+    if (user?.guest === true) return false;
+    const id = user?.userId ?? user?.user_id ?? '';
+    if (user?.guest === false && /^[0-9a-f]{24}$/.test(id)) return true;
+    return null;
+}"""
 
 
 class BenchmarkAuthRequest(BaseModel):
@@ -157,9 +174,11 @@ def _provider_request(
 
 
 def _fresh_platform_login(base_url: str) -> bool | None:
-    """Check a fresh platform response, never cookie presence or a stale provider tab."""
-    from playwright.sync_api import sync_playwright
+    """Check fresh viewer state through HTTP without navigating the user's tabs."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    from .benchmark_accounts import _INITIAL_STATE_MARKER, _json_compatible_initial_state
 
     provider = _provider_request(base_url, "GET", "/browser/managed/status", None)
     port = provider.get("cdp_port")
@@ -167,69 +186,68 @@ def _fresh_platform_login(base_url: str) -> bool | None:
         raise ValueError("managed browser unavailable")
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=5_000)
-        page = None
+        response = None
         try:
             if not browser.contexts:
                 raise ValueError("managed browser context unavailable")
-            page = browser.contexts[0].new_page()
-            page.set_default_timeout(5_000)
-            page.route(
-                "**/*",
-                lambda route: (
-                    route.abort()
-                    if route.request.resource_type in {"image", "media", "font"}
-                    else route.continue_()
-                ),
+            # The browser's HTTP client uses its live session internally. Credentials
+            # never leave the profile, and redirects to other origins are not followed.
+            response = browser.contexts[0].request.get(
+                "https://www.xiaohongshu.com/explore", timeout=10_000,
+                max_redirects=0, headers={"Cache-Control": "no-cache"},
             )
-            response = page.goto(
-                "https://www.xiaohongshu.com/explore", timeout=10_000, wait_until="domcontentloaded"
-            )
-            current = urlsplit(page.url)
-            if current.scheme != "https" or current.hostname != "www.xiaohongshu.com":
-                raise ValueError("unexpected platform navigation")
-            if current.path.startswith("/login"):
-                return False
-            if response is None or response.status >= 400:
-                raise ValueError("platform unavailable")
-            # Prefer quick, bounded state inference. If JS bootstrap is delayed,
-            # keep the flow in a checking state.
-            try:
-                page.wait_for_function(
-                    """() => {
-                        const state = window.__INITIAL_STATE__?.user?.userInfo;
-                        const user = state?.value ?? state;
-                        const hasUserState = typeof user?.guest === 'boolean'
-                          || Boolean(document.querySelector('.login-container'));
-                        return hasUserState || !!user;
-                    }""",
-                    timeout=5_000,
+            current = urlsplit(response.url)
+            if current.scheme != "https" or current.netloc != "www.xiaohongshu.com":
+                raise ValueError("unexpected platform response")
+            if 300 <= response.status < 400:
+                from urllib.parse import urljoin
+
+                current = urlsplit(urljoin(response.url, response.headers.get("location", "")))
+                if current.scheme != "https" or current.netloc != "www.xiaohongshu.com":
+                    raise ValueError("unexpected platform redirect")
+            if current.path.startswith(("/website-login/error", "/website-login/captcha")):
+                raise BenchmarkAccountError(
+                    "BENCHMARK_AUTH_PLATFORM_RESTRICTED", "Platform verification is required",
+                    retryable=False,
                 )
-            except PlaywrightTimeoutError:
+            if current.path.startswith("/login") or response.status == 401:
+                return False
+            if response.status != 200:
+                raise ValueError("platform unavailable")
+            payload = response.body()
+            if len(payload) > 2_000_000:
+                raise ValueError("oversized platform response")
+            html = payload.decode("utf-8")
+            start = html.find(_INITIAL_STATE_MARKER)
+            if start < 0:
                 return None
-            result = page.evaluate("""() => {
-                if (document.querySelector('.login-container')) return false;
-                const state = window.__INITIAL_STATE__?.user?.userInfo;
-                const user = state?.value ?? state;
-                if (user?.guest === true) return false;
-                const id = user?.userId ?? user?.user_id ?? '';
-                if (user?.guest === false && /^[0-9a-f]{24}$/.test(id)) return true;
-                const profile = window.__INITIAL_STATE__?.user?.userPageData?.basicInfo;
-                if (profile?.userId && /^[0-9a-f]{24}$/.test(profile.userId)) return true;
-                return null;
-            }""")
-            if type(result) is not bool:
-                # Ambiguous state is intentionally non-authoritative.
+            start += len(_INITIAL_STATE_MARKER)
+            end = html.find("</script>", start)
+            if end < 0:
                 return None
-            return result
-        except PlaywrightTimeoutError as exc:
-            del exc
-            # Missing selectors/state in this environment usually means initialization
-            # is still in progress; report checking instead of forcing login.
+            try:
+                state = json.loads(_json_compatible_initial_state(html[start:end]))
+            except (ValueError, RecursionError):
+                return None
+            user_state = state.get("user") if isinstance(state, dict) else None
+            viewer = user_state.get("userInfo") if isinstance(user_state, dict) else None
+            if isinstance(viewer, dict) and isinstance(viewer.get("value"), dict):
+                viewer = viewer["value"]
+            if not isinstance(viewer, dict):
+                return None
+            if viewer.get("guest") is True:
+                return False
+            viewer_id = viewer.get("userId", viewer.get("user_id"))
+            if (viewer.get("guest") is False and isinstance(viewer_id, str)
+                    and re.fullmatch(r"[0-9a-f]{24}", viewer_id)):
+                return True
+            return None
+        except PlaywrightTimeoutError:
             return None
         finally:
-            if page is not None:
+            if response is not None:
                 with contextlib.suppress(Exception):
-                    page.close()
+                    response.dispose()
             # Disconnect the CDP client; the existing user's browser remains running.
             with contextlib.suppress(Exception):
                 browser.close()
@@ -270,6 +288,8 @@ class BenchmarkAuthService:
         self._last_auth_start = 0.0
         self._operations: set[asyncio.Task[BenchmarkAuthStatus]] = set()
         self._closed = False
+        self._start_requested = False
+        self._manual_until: datetime | None = None
 
     async def _request(self, method: str, path: str, body: dict[str, Any] | None) -> dict[str, Any]:
         return await run_browser_operation_async(
@@ -277,7 +297,7 @@ class BenchmarkAuthService:
                                  "path": path, "body": body}, timeout_seconds=10,
         )
 
-    async def _check(self) -> bool:
+    async def _check(self) -> bool | None:
         return await run_browser_operation_async(
             "login", {"base_url": self.base_url}, timeout_seconds=35,
         )
@@ -293,15 +313,29 @@ class BenchmarkAuthService:
         self._clear_qr()
 
     def _view(self, state: AuthState, *, error_code: str | None = None) -> BenchmarkAuthStatus:
+        if state == "checking" and self._manual_until:
+            if self._manual_until <= datetime.now(UTC):
+                self._clear_qr()
+                state = "expired"
+            else:
+                error_code = "BENCHMARK_AUTH_MANUAL_VERIFICATION"
         if state == "awaiting_scan" and self._expires_at and self._expires_at <= datetime.now(UTC):
             self._clear_qr()
             state = "expired"
         return BenchmarkAuthStatus(
             state=state,
-            message=_MESSAGES[state],
+            message=(
+                "已打开小红书登录页面。请在采集浏览器中扫码或完成平台验证。"
+                "验证成功后会自动继续采集。"
+                if error_code == "BENCHMARK_AUTH_MANUAL_VERIFICATION" else
+                "小红书要求安全验证或当前网络受限。请在本机采集浏览器中完成平台验证。"
+                "如提示 IP 风险请切换可信网络后点击检查登录状态。"
+                if error_code == "BENCHMARK_AUTH_PLATFORM_RESTRICTED" else _MESSAGES[state]
+            ),
             checked_at=self._checked_at,
             qr_image_data_url=self._qr if state == "awaiting_scan" else None,
-            expires_at=self._expires_at if state == "awaiting_scan" else None,
+            expires_at=(self._expires_at if state == "awaiting_scan" else
+                        self._manual_until if state == "checking" else None),
             error_code=error_code,
         )
 
@@ -311,6 +345,7 @@ class BenchmarkAuthService:
         self._task_id = None
         self._request_id = None
         self._pending_since = 0.0
+        self._manual_until = None
 
     async def status(self, *, start: bool = False) -> BenchmarkAuthStatus:
         if self._closed:
@@ -318,8 +353,12 @@ class BenchmarkAuthService:
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=0.1)
         except TimeoutError:
+            if start:
+                # Preserve an explicit click while the initial passive check owns
+                # the browser. A checking response must not silently lose login intent.
+                self._start_requested = True
             return self._view("checking")
-        operation = asyncio.create_task(self._safe_status(start=start))
+        operation = asyncio.create_task(self._run_status(start=start))
         self._operations.add(operation)
         operation.add_done_callback(self._operations.discard)
         try:
@@ -335,13 +374,65 @@ class BenchmarkAuthService:
             else:
                 operation.add_done_callback(lambda _: self._lock.release())
 
+    async def _run_status(self, *, start: bool) -> BenchmarkAuthStatus:
+        result = await self._safe_status(start=start)
+        if self._start_requested and not self._closed:
+            self._start_requested = False
+            if result.state not in {"authorized", "awaiting_scan"}:
+                result = await self._safe_status(start=True)
+        return result
+
     async def _safe_status(self, *, start: bool) -> BenchmarkAuthStatus:
         try:
             return await self._status(start=start)
+        except BenchmarkAccountError as exc:
+            self._logged_in = None
+            self._last_check = 0.0
+            if start and exc.code != "BENCHMARK_AUTH_PLATFORM_RESTRICTED":
+                try:
+                    provider = await self._transport("GET", "/browser/managed/status", None)
+                    if (provider.get("provider") == "vistora-local-xhs"
+                            and provider.get("state") == "unavailable"):
+                        self._clear_qr()
+                        self._request_id = f"vistora-login-{uuid4().hex}"
+                        return await self._finish_qr_operation()
+                except Exception:
+                    pass
+            if exc.code == "BENCHMARK_AUTH_PLATFORM_RESTRICTED":
+                if self._manual_until:
+                    return self._view("checking")
+                if start:
+                    try:
+                        provider = await self._transport("GET", "/browser/managed/status", None)
+                        if provider.get("provider") == "vistora-local-xhs":
+                            self._request_id = self._request_id or f"vistora-login-{uuid4().hex}"
+                            return await self._finish_qr_operation()
+                    except Exception:
+                        return self._view(
+                            "provider_unavailable",
+                            error_code="BENCHMARK_AUTH_PROVIDER_UNAVAILABLE",
+                        )
+            self._clear_qr()
+            if exc.code == "BENCHMARK_AUTH_PLATFORM_RESTRICTED":
+                return self._view("error", error_code=exc.code)
+            return self._view(
+                "provider_unavailable", error_code="BENCHMARK_AUTH_PROVIDER_UNAVAILABLE",
+            )
         except Exception:
             # Never relay provider exceptions, raw responses, paths, credentials or task IDs.
             self._logged_in = None
             self._last_check = 0.0
+            self._manual_until = None
+            if start:
+                try:
+                    provider = await self._transport("GET", "/browser/managed/status", None)
+                    if (provider.get("provider") == "vistora-local-xhs"
+                            and provider.get("state") == "unavailable"):
+                        self._clear_qr()
+                        self._request_id = f"vistora-login-{uuid4().hex}"
+                        return await self._finish_qr_operation()
+                except Exception:
+                    pass
             return self._view(
                 "provider_unavailable",
                 error_code="BENCHMARK_AUTH_PROVIDER_UNAVAILABLE",
@@ -353,12 +444,26 @@ class BenchmarkAuthService:
             if now - self._last_auth_start < 3:
                 return self._view("awaiting_scan" if self._qr else "checking")
             self._last_auth_start = now
+            if self._manual_until:
+                self._clear_qr()
+        if self._manual_until:
+            provider = await self._transport("GET", "/browser/managed/status", None)
+            if (provider.get("provider") == "vistora-local-xhs"
+                    and provider.get("verification_open") is False):
+                self._clear_qr()
+                return self._view("provider_unavailable",
+                                  error_code="BENCHMARK_AUTH_WINDOW_CLOSED")
         if start or self._last_check == 0 or now - self._last_check >= 3:
             checked = await self._platform_check()
             if checked is None:
                 self._logged_in = None
                 self._last_check = time.monotonic()
                 self._checked_at = datetime.now(UTC)
+                if start:
+                    provider = await self._transport("GET", "/browser/managed/status", None)
+                    if provider.get("provider") == "vistora-local-xhs":
+                        self._request_id = self._request_id or f"vistora-login-{uuid4().hex}"
+                        return await self._finish_qr_operation()
                 return self._view("checking")
             if type(checked) is not bool:
                 return self._view("error", error_code="BENCHMARK_AUTH_STATUS_INVALID")
@@ -368,6 +473,8 @@ class BenchmarkAuthService:
         if self._logged_in:
             self._clear_qr()
             return self._view("authorized")
+        if self._manual_until:
+            return self._view("checking")
         expired = bool(self._expires_at and self._expires_at <= datetime.now(UTC))
         if expired:
             self._clear_qr()
@@ -404,7 +511,8 @@ class BenchmarkAuthService:
                 "POST", "/xhs/login/qrcode?wait_seconds=5", {"request_id": self._request_id}
             )
             result = self._consume_task(task)
-            if result.state != "checking" or self._task_id is None:
+            if (result.state != "checking" or self._task_id is None
+                    or self._manual_until is not None):
                 return result
             if time.monotonic() - self._pending_since >= self._qr_operation_seconds:
                 return self._view("error", error_code="BENCHMARK_AUTH_TASK_TIMEOUT")
@@ -439,6 +547,17 @@ class BenchmarkAuthService:
         if result.get("is_logged_in") is not False:
             self._clear_qr()
             return self._view("error", error_code="BENCHMARK_AUTH_PROVIDER_INVALID")
+        if result.get("requires_verification") is True:
+            try:
+                expires = datetime.fromisoformat(str(result.get("expires_at")))
+                if expires.tzinfo is None:
+                    raise ValueError("missing timezone")
+            except (ValueError, TypeError):
+                self._clear_qr()
+                return self._view("error", error_code="BENCHMARK_AUTH_PROVIDER_INVALID")
+            self._manual_until = min(expires, datetime.now(UTC) + timedelta(seconds=180))
+            self._qr = None
+            return self._view("checking")
         try:
             qr = _png_data_url(result.get("image_data_url"))
             expires = datetime.fromisoformat(str(result.get("expires_at")).replace("Z", "+00:00"))

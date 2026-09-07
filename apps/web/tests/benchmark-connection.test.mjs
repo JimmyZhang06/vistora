@@ -21,6 +21,40 @@ const reply = (state, patch = {}) => ({ ok: true, data: {
 } });
 const flush = async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve(); };
 
+test("an explicit collect click supersedes an unfinished passive status check", async () => {
+  let finishPassive;
+  let resumed = 0;
+  let view;
+  const adapter = {
+    getBenchmarkConnectionStatus: () => new Promise((resolve) => { finishPassive = resolve; }),
+    startBenchmarkConnection: async () => reply("authorized"),
+  };
+  const flow = new BenchmarkConnectionFlow(adapter, (value) => { view = value; }, () => { resumed++; }, () => NOW);
+  const passive = flow.check();
+  await flow.start();
+  assert.equal(resumed, 1);
+  assert.equal(view.connection.state, "authorized");
+  finishPassive(reply("login_required"));
+  await passive;
+  assert.equal(view.connection.state, "authorized");
+  flow.dispose();
+});
+
+test("platform safety restrictions stop polling and preserve the actionable error", async () => {
+  let connected = 0;
+  let view;
+  const adapter = { startBenchmarkConnection: async () => reply("error", {
+    errorCode: "BENCHMARK_AUTH_PLATFORM_RESTRICTED",
+  }), getBenchmarkConnectionStatus: async () => { throw new Error("must not poll"); } };
+  const flow = new BenchmarkConnectionFlow(adapter, (value) => { view = value; }, () => { connected++; }, () => NOW);
+  await flow.start();
+  assert.equal(view.active, false);
+  assert.equal(view.connection.errorCode, "BENCHMARK_AUTH_PLATFORM_RESTRICTED");
+  assert.equal(view.connection.qrImageDataUrl, null);
+  assert.equal(connected, 0);
+  flow.dispose();
+});
+
 test("connection methods use the research API, no-store, bounded cancellable requests and explicit QR creation", async () => {
   const calls = [];
   const adapter = new HttpFrameFactoryAdapter({ baseUrl: "http://main.test", benchmarkBaseUrl: "http://research.test", fetch: async (url, init) => {
@@ -131,6 +165,40 @@ test("successful QR login only notifies once and stops polling", async (t) => {
   assert.equal(h.view.active, false);
   await h.tick(30_000);
   assert.deepEqual(h.calls.map((call) => call.kind), ["start", "status"]);
+});
+
+test("explicit status check resumes pending collection after expiry without creating QR or passive repeats", async (t) => {
+  const h = harness(t, { status: async () => reply("authorized") });
+  await h.flow.start();
+  await h.tick(180_000);
+  assert.equal(h.connected, 0);
+  await h.flow.check(true);
+  assert.equal(h.connected, 1);
+  await h.flow.check();
+  h.flow.setVisible(false);
+  h.flow.setVisible(true);
+  await flush();
+  assert.equal(h.connected, 1);
+  assert.equal(h.calls.filter((call) => call.kind === "start").length, 1);
+});
+
+test("manual verification resumes collection once after returning to the page", async (t) => {
+  const h = harness(t, {
+    start: async () => reply("checking", { errorCode: "BENCHMARK_AUTH_MANUAL_VERIFICATION" }),
+    status: async () => reply("authorized"),
+  });
+  await h.flow.start();
+  assert.equal(h.view.active, true);
+  assert.equal(h.view.connection.qrImageDataUrl, null);
+  h.flow.setVisible(false);
+  await h.tick(15_000);
+  assert.equal(h.calls.length, 1);
+  h.flow.setVisible(true);
+  await flush();
+  assert.equal(h.connected, 1);
+  assert.equal(h.view.active, false);
+  await h.tick(15_000);
+  assert.equal(h.calls.length, 2);
 });
 
 test("hidden pages abort polling and resume with status only; canceled requests cannot resume another selection", async (t) => {

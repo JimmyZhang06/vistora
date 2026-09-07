@@ -162,6 +162,19 @@ def test_profile_parser_accepts_javascript_undefined_without_rewriting_strings()
     assert snapshot.profile.nickname == "白昼小熊"
 
 
+def test_initial_state_empty_map_is_inert_and_quoted_literals_are_preserved():
+    import json
+
+    from framefactory_api.benchmark_accounts import _json_compatible_initial_state
+
+    raw = '{"noteDetailMap":new Map([]),"text":"new Map([]) undefined","missing":undefined}'
+    assert json.loads(_json_compatible_initial_state(raw)) == {
+        "noteDetailMap": {}, "text": "new Map([]) undefined", "missing": None,
+    }
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(_json_compatible_initial_state('{"unsafe":new Map(runCode())}'))
+
+
 def test_profile_parser_rejects_a_mismatched_account() -> None:
     with pytest.raises(BenchmarkAccountError) as error:
         parse_public_profile_html(
@@ -208,6 +221,7 @@ async def test_gateway_falls_back_to_authenticated_browser_without_hiding_method
 
     def public(_url: str, _timeout: float, _limit: int) -> bytes:
         calls.append("public")
+        assert _timeout == 8
         raise BenchmarkAccountError(
             "BENCHMARK_SOURCE_UNAVAILABLE",
             "source redirected to sign-in",
@@ -216,6 +230,7 @@ async def test_gateway_falls_back_to_authenticated_browser_without_hiding_method
 
     def authenticated(_url: str, _timeout: float, _limit: int) -> bytes:
         calls.append("authenticated")
+        assert _timeout == 25
         return _profile_html()
 
     gateway = BenchmarkAccountGateway(
