@@ -17,7 +17,6 @@ Vistora 的文档按用途分层维护。根 README 负责产品与启动总览�
 | 理解批量生产与素材快照 | [批量生产与素材库](BATCH_LIBRARY_IMPLEMENTATION_PLAN.md) |
 | 查看 2026-09-04 的逐功能工程就绪快照与发布阻断 | [产品工程就绪矩阵](PRODUCT_ENGINEERING_READINESS_MATRIX.md) |
 | 运行 PDF 文档本地渲染 Pilot | [Document hybrid pilot](../examples/document-hybrid/README.md) |
-| 准备 HKSTP Ideation 申请材料 | [申请包索引](application/hkstp-ideation-26-23/README.md) |
 | 部署受保护的后端基线 | [生产部署](../deploy/production/README.md) |
 | 判断是否可以发布 | [素材发布验收矩阵](../tools/release/ASSET_ACCEPTANCE_MATRIX.md) |
 | 查看许可 | [PolyForm Noncommercial License](../LICENSE.md) |
@@ -36,10 +35,8 @@ Vistora 的文档按用途分层维护。根 README 负责产品与启动总览�
 
 ## 当前跨模块材料
 
-- [HKSTP 申请总底稿](HKSTP_IDEATION_APPLICATION_MASTER_BRIEF.md)：统一产品、工程、商业与申请主张；其中待验证信息不能直接变成公开事实。
 - [产品工程就绪矩阵](PRODUCT_ENGINEERING_READINESS_MATRIX.md)：按用户入口映射 Web、API、Worker、恢复语义和外部验收缺口；其中 Gate 结论是评估日快照，每个候选版本必须重新执行，不能沿用旧的“通过”。
 - [无素材编辑草案](no-asset-editorial-draft.md)：标准素材不足时的编辑策略研究稿，不是已上线能力说明。
-- `application/hkstp-ideation-26-23/`：申请表、Deck、视频稿、客户验证、尽调和证据登记材料；属于内部审阅资产，不是产品运行文档。
 
 ## 文档维护规则
 
